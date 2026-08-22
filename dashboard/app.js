@@ -1179,7 +1179,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>Come funziona</h3>
-      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>wifi_probes.jsonl</code> per i probe request WiFi e <code>ble_discovery.jsonl</code> per lo scan BLE (un oggetto JSON per riga, moduli WiFi e BLE opzionali; il log BLE scrive di default in <code>/var/log/home-sentinel/</code>, gli altri due nella directory corrente) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
+      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>wifi_probes.jsonl</code> per i probe request WiFi e <code>ble_discovery.jsonl</code> per lo scan BLE (un oggetto JSON per riga, moduli WiFi e BLE opzionali; tutti e tre scrivono di default in <code>/var/log/home-sentinel/</code>) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Stato dei dispositivi</h3>

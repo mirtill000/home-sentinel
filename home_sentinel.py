@@ -397,14 +397,22 @@ def parse_args() -> argparse.Namespace:
         default=3600.0,
         help="Intervallo minimo tra due port-scan dello stesso device (s)",
     )
-    p.add_argument("--lan-log", default="lan_discovery.jsonl", help="Percorso file JSON Lines output LAN discovery")
+    p.add_argument(
+        "--lan-log",
+        default="/var/log/home-sentinel/lan_discovery.jsonl",
+        help="Percorso file JSON Lines output LAN discovery",
+    )
 
     p.add_argument(
         "--wifi-iface",
         default=None,
         help="Interfaccia WiFi in monitor mode per il probe sniffing (omettere per disabilitare)",
     )
-    p.add_argument("--wifi-log", default="wifi_probes.jsonl", help="Percorso file JSON Lines output probe WiFi")
+    p.add_argument(
+        "--wifi-log",
+        default="/var/log/home-sentinel/wifi_probes.jsonl",
+        help="Percorso file JSON Lines output probe WiFi",
+    )
     p.add_argument(
         "--wifi-channels",
         default="1,2,3,4,5,6,7,8,9,10,11,12,13",
