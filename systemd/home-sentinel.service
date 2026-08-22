@@ -11,9 +11,10 @@ Type=simple
 # solo quando è disponibile un adattatore WiFi esterno dedicato in monitor
 # mode: il WiFi onboard del Raspberry Pi 3 non lo supporta bene.
 #
-# Aggiungi "--ble \" (e opzionalmente "--ble-log .../ble_devices.jsonl \")
-# per abilitare lo scan BLE: qui invece basta il Bluetooth onboard del
-# Pi 3, nessun adattatore esterno necessario.
+# Aggiungi "--ble \" per abilitare lo scan BLE: qui invece basta il
+# Bluetooth onboard del Pi 3, nessun adattatore esterno necessario. Scrive
+# di default su /var/log/home-sentinel/ble_discovery.jsonl (sovrascrivibile
+# con "--ble-log ..." se serve un percorso diverso).
 ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
     --subnet 192.168.1.0/24 \
     --lan-log /var/log/home-sentinel/lan_discovery.jsonl
