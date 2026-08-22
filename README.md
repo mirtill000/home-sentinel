@@ -6,8 +6,8 @@ probe request WiFi dei dispositivi nelle vicinanze (richiede un adattatore
 WiFi esterno capace di monitor mode: il WiFi onboard del Raspberry Pi 3
 non lo supporta bene).
 
-Ogni evento viene appeso in tempo reale a due file CSV separati, senza
-bisogno di un database.
+Ogni evento viene appeso in tempo reale a due file **JSON Lines** separati
+(un oggetto JSON per riga), senza bisogno di un database.
 
 ## Installazione
 
@@ -40,19 +40,26 @@ Va eseguito come root (necessario per ARP scan e sniffing 802.11 raw).
 
 ## Output
 
-**`lan_discovery.csv`**: `timestamp, status, ip, mac, hostname, vendor, open_ports`
+Entrambi i file sono **JSON Lines**: un oggetto JSON per riga, senza header.
+Una riga troncata da una scrittura interrotta (crash, spegnimento improvviso)
+viene semplicemente ignorata da un parser JSONL a valle, con la stessa
+resilienza di un CSV con l'ultima riga incompleta.
+
+**`lan_discovery.jsonl`**: `{timestamp, status, ip, mac, hostname, vendor, open_ports}`
 Una riga per ogni device visto ad ogni ciclo di scan (`status=new|online`),
 più una riga `status=offline` la prima volta che un device smette di
-rispondere. `open_ports` è una lista separata da `;`.
+rispondere. `open_ports` è un array di interi (es. `[22, 80]`), non una
+stringa.
 
-**`wifi_probes.csv`**: `timestamp, mac, vendor, ssid, rssi, channel`
+**`wifi_probes.jsonl`**: `{timestamp, mac, vendor, ssid, rssi, channel}`
 Una riga per ogni probe request 802.11 catturato durante il channel
-hopping.
+hopping. `rssi` è un numero, oppure `null` se il radiotap non lo riporta.
 
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 8 sezioni, tutte basate sui dati reali dei due CSV:
+utilizzabile offline) con 8 sezioni, tutte basate sui dati reali dei due log
+JSON Lines:
 
 - **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi, avvisi
   attivi), distribuzione per vendor e per stato, attività di rete 24h, tabella
@@ -61,18 +68,19 @@ utilizzabile offline) con 8 sezioni, tutte basate sui dati reali dei due CSV:
   delle rilevazioni per singolo MAC.
 - **Mappa rete** — topologia schematica (a stella) attorno al gateway
   configurato in Impostazioni.
-- **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal CSV,
+- **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log,
   più il log grezzo dei probe WiFi.
 - **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
   RDP, SMB, VNC, FTP) aperte sui device correnti; nessun dato è inventato.
-- **Impostazioni** — sorgenti CSV (URL o file locale), informazioni di rete
-  mostrate in sidebar, tema.
+- **Impostazioni** — sorgenti dati JSON Lines (URL o file locale), tema
+  (Chiaro/Scuro/Sistema), intervallo di auto-refresh (1/5/15/30/60s o
+  disattivato), informazioni di rete mostrate in sidebar.
 - **Esporta** — scarica dispositivi LAN, log completo, probe WiFi o avvisi
-  in CSV/JSON.
+  in CSV o JSON.
 - **Aiuto** — guida rapida e limiti noti.
 
-Per usarla, servi la cartella `dashboard/` (o copia/linka i CSV al suo
-interno) con un server statico qualsiasi:
+Per usarla, servi la cartella `dashboard/` (o copia/linka i file `.jsonl` al
+suo interno) con un server statico qualsiasi:
 
 ```bash
 cd dashboard
@@ -81,10 +89,10 @@ python3 -m http.server 8080
 ```
 
 In alternativa apri `dashboard/index.html` direttamente come file locale e
-carica i CSV dai campi "carica file locale" in Impostazioni (il fetch via
+carica i log dai campi "carica file locale" in Impostazioni (il fetch via
 URL richiede invece un server, per via delle restrizioni CORS su `file://`).
-I percorsi dei CSV sono configurabili anche via query string, es.
-`?lan=/log/lan_discovery.csv&wifi=/log/wifi_probes.csv`.
+I percorsi sono configurabili anche via query string, es.
+`?lan=/log/lan_discovery.jsonl&wifi=/log/wifi_probes.jsonl`.
 
 Il daemon attuale misura solo presenza e porte aperte, non traffico di rete:
 la dashboard non mostra quindi metriche di banda.
@@ -95,7 +103,7 @@ la dashboard non mostra quindi metriche di banda.
   (iOS 14+/Android 10+) quando non sono associati a una rete: il modulo
   WiFi va inteso come indicatore di attività/presenza nei dintorni, non
   come identificatore univoco affidabile.
-- I CSV generati contengono dati potenzialmente identificativi (MAC, IP,
+- I log generati contengono dati potenzialmente identificativi (MAC, IP,
   hostname) di dispositivi propri e altrui: non sono versionati (vedi
   `.gitignore`) e vanno trattati/conservati di conseguenza.
 - Per l'esecuzione continua si consiglia systemd (vedi

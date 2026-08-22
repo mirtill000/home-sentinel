@@ -39,7 +39,7 @@ const SETTINGS_KEYS = {
   netLabel: "hs.net.label", netSubnet: "hs.net.subnet", netGateway: "hs.net.gateway", netDns: "hs.net.dns",
 };
 const SETTINGS_DEFAULTS = {
-  lanUrl: "lan_discovery.csv", wifiUrl: "wifi_probes.csv", refreshMs: "30000", theme: "dark",
+  lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", refreshMs: "30000", theme: "dark",
   netLabel: "", netSubnet: "", netGateway: "", netDns: "",
 };
 
@@ -77,51 +77,38 @@ const state = {
 };
 
 /* ---------------------------------------------------------------------- *
- * CSV parsing & loading
+ * JSON Lines parsing & loading
  * ---------------------------------------------------------------------- */
 
-function parseCsv(text) {
+/**
+ * Un oggetto JSON per riga. Una riga vuota è ignorata; una riga malformata
+ * (tipicamente l'ultima, troncata da una scrittura interrotta sul daemon)
+ * viene scartata invece di far fallire l'intero caricamento.
+ */
+function parseJsonl(text) {
   const rows = [];
-  let row = [];
-  let field = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; }
-        else { inQuotes = false; }
-      } else {
-        field += c;
-      }
-      continue;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed));
+    } catch {
+      // riga incompleta/corrotta (es. scrittura interrotta a metà): la saltiamo
     }
-    if (c === '"') { inQuotes = true; }
-    else if (c === ",") { row.push(field); field = ""; }
-    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
-    else if (c === "\r") { /* skip */ }
-    else { field += c; }
   }
-  if (field.length || row.length) { row.push(field); rows.push(row); }
-  if (!rows.length) return [];
-
-  const header = rows[0];
-  return rows.slice(1)
-    .filter((r) => r.length === header.length && r.some((v) => v !== ""))
-    .map((r) => Object.fromEntries(header.map((key, idx) => [key, r[idx]])));
+  return rows;
 }
 
-async function fetchCsv(url) {
+async function fetchJsonl(url) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status} su ${url}`);
-  return parseCsv(await res.text());
+  return parseJsonl(await res.text());
 }
 
-function readCsvFile(file) {
+function readJsonlFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(parseCsv(String(reader.result)));
+    reader.onload = () => resolve(parseJsonl(String(reader.result)));
     reader.onerror = () => reject(reader.error);
     reader.readAsText(file);
   });
@@ -144,14 +131,14 @@ async function loadAllOnce() {
   const errors = [];
 
   try {
-    state.lanRows = state.lanFile ? await readCsvFile(state.lanFile) : await fetchCsv(getSetting("lanUrl"));
+    state.lanRows = state.lanFile ? await readJsonlFile(state.lanFile) : await fetchJsonl(getSetting("lanUrl"));
   } catch (err) {
     errors.push(`LAN: ${err.message}`);
     state.lanRows = state.lanRows || [];
   }
 
   try {
-    state.wifiRows = state.wifiFile ? await readCsvFile(state.wifiFile) : await fetchCsv(getSetting("wifiUrl"));
+    state.wifiRows = state.wifiFile ? await readJsonlFile(state.wifiFile) : await fetchJsonl(getSetting("wifiUrl"));
   } catch (err) {
     errors.push(`WiFi: ${err.message}`);
     state.wifiRows = state.wifiRows || [];
@@ -197,6 +184,10 @@ function formatTs(value) {
   const ts = parseTs(value);
   if (ts === null) return escapeHtml(value);
   return new Date(ts).toLocaleString("it-IT");
+}
+
+function formatPorts(ports) {
+  return Array.isArray(ports) && ports.length ? escapeHtml(ports.join(", ")) : "";
 }
 
 function within24h(ts) {
@@ -420,7 +411,7 @@ function computeAlerts() {
 
   for (const dev of lanCurrent) {
     if (dev.status === "offline") continue;
-    const ports = (dev.open_ports || "").split(";").map((s) => s.trim()).filter(Boolean).map(Number);
+    const ports = Array.isArray(dev.open_ports) ? dev.open_ports : [];
     const risky = ports.filter((p) => RISK_PORTS[p]);
     if (!risky.length) continue;
     const isCritical = risky.some((p) => p === 23 || p === 3389 || p === 5900);
@@ -571,7 +562,7 @@ function hostRowHtml(d) {
     <td>${escapeHtml(d.hostname) || '<span class="muted">—</span>'}</td>
     <td class="mono">${escapeHtml(d.mac)}</td>
     <td>${escapeHtml(d.vendor) || '<span class="muted">—</span>'}</td>
-    <td>${escapeHtml(d.open_ports) || '<span class="muted">—</span>'}</td>
+    <td>${formatPorts(d.open_ports) || '<span class="muted">—</span>'}</td>
     <td>${formatTs(d.timestamp)}</td>
     <td>
       <div class="row-menu">
@@ -590,7 +581,7 @@ function hostRowHtml(d) {
       <div class="detail-grid">
         <div><span>Hostname</span>${escapeHtml(d.hostname) || "—"}</div>
         <div><span>Vendor</span>${escapeHtml(d.vendor) || "—"}</div>
-        <div><span>Porte aperte</span>${escapeHtml(d.open_ports) || "—"}</div>
+        <div><span>Porte aperte</span>${formatPorts(d.open_ports) || "—"}</div>
         <div><span>Prima rilevazione</span>${formatTs(firstSeenTs(d.mac))}</div>
       </div>
       <div class="detail-history">
@@ -804,7 +795,7 @@ function renderScansioni(container) {
             </tr>`).join("")}
           </tbody>
         </table>
-        ${cycles.length ? "" : '<p class="empty-state">Nessun ciclo di scansione nel CSV caricato.</p>'}
+        ${cycles.length ? "" : '<p class="empty-state">Nessun ciclo di scansione nel log caricato.</p>'}
       </div>
     </div>
     <div class="card" id="wifi-section-mount"></div>
@@ -868,10 +859,10 @@ function renderImpostazioni(container) {
     <div class="page-section card">
       <div class="card-head"><h2>Sorgenti dati</h2></div>
       <div class="settings-grid">
-        <div class="field"><label for="set-lan-url">CSV discovery LAN</label><input type="text" id="set-lan-url" value="${escapeHtml(getSetting("lanUrl"))}"></div>
-        <div class="field"><label for="set-lan-file">Oppure carica file locale</label><input type="file" id="set-lan-file" accept=".csv"></div>
-        <div class="field"><label for="set-wifi-url">CSV probe WiFi</label><input type="text" id="set-wifi-url" value="${escapeHtml(getSetting("wifiUrl"))}"></div>
-        <div class="field"><label for="set-wifi-file">Oppure carica file locale</label><input type="file" id="set-wifi-file" accept=".csv"></div>
+        <div class="field"><label for="set-lan-url">Log discovery LAN (.jsonl)</label><input type="text" id="set-lan-url" value="${escapeHtml(getSetting("lanUrl"))}"></div>
+        <div class="field"><label for="set-lan-file">Oppure carica file locale</label><input type="file" id="set-lan-file" accept=".jsonl,.ndjson,.json,.txt"></div>
+        <div class="field"><label for="set-wifi-url">Log probe WiFi (.jsonl)</label><input type="text" id="set-wifi-url" value="${escapeHtml(getSetting("wifiUrl"))}"></div>
+        <div class="field"><label for="set-wifi-file">Oppure carica file locale</label><input type="file" id="set-wifi-file" accept=".jsonl,.ndjson,.json,.txt"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -884,7 +875,7 @@ function renderImpostazioni(container) {
           </select>
         </div>
       </div>
-      <p class="field-hint">Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di sicurezza del browser: usa i campi "carica file locale", oppure servi questa cartella con <code>python3 -m http.server</code>. Con CSV di log molto grandi, intervalli di 1-5s rileggono l'intero file ad ogni ciclo: se noti rallentamenti, alza l'intervallo.</p>
+      <p class="field-hint">Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di sicurezza del browser: usa i campi "carica file locale", oppure servi questa cartella con <code>python3 -m http.server</code>. Con log molto grandi, intervalli di 1-5s rileggono l'intero file ad ogni ciclo: se noti rallentamenti, alza l'intervallo.</p>
     </div>
 
     <div class="page-section card">
@@ -952,7 +943,11 @@ function toJsonBlob(rows) { return new Blob([JSON.stringify(rows, null, 2)], { t
 function toCsvBlob(rows) {
   if (!rows.length) return new Blob([""], { type: "text/csv" });
   const headers = Object.keys(rows[0]);
-  const esc = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const esc = (v) => {
+    const raw = Array.isArray(v) ? v.join(";") : v;
+    const s = String(raw ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
   const lines = [headers.join(","), ...rows.map((r) => headers.map((h) => esc(r[h])).join(","))];
   return new Blob([lines.join("\n")], { type: "text/csv" });
 }
@@ -982,7 +977,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>Come funziona</h3>
-      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive due file CSV in continuo — <code>lan_discovery.csv</code> per la discovery LAN e <code>wifi_probes.csv</code> per i probe request WiFi — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
+      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive due file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN e <code>wifi_probes.jsonl</code> per i probe request WiFi (un oggetto JSON per riga) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Stato dei dispositivi</h3>
@@ -1000,7 +995,7 @@ function renderAiuto(container) {
         <li><strong>Mappa rete</strong> — rappresentazione schematica della rete attorno al gateway configurato.</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN e dei probe WiFi grezzi.</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte potenzialmente a rischio aperte, generati dai dati reali.</li>
-        <li><strong>Impostazioni</strong> — sorgenti CSV, informazioni di rete mostrate in sidebar, tema.</li>
+        <li><strong>Impostazioni</strong> — sorgenti dati (JSON Lines), informazioni di rete mostrate in sidebar, tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
       </ul>
     </div>

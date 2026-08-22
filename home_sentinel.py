@@ -3,10 +3,10 @@
 
 Due moduli indipendenti, ciascuno in un proprio thread:
   - LanDiscoveryService: ARP scan periodico della subnet, con hostname,
-    vendor (da MAC OUI) e port scan; scrive ogni evento su CSV.
+    vendor (da MAC OUI) e port scan; scrive ogni evento su JSON Lines.
   - WifiProbeMonitor (opzionale): sniffing passivo dei probe request 802.11
     su un'interfaccia in monitor mode, con channel hopping; scrive ogni
-    probe catturato su un secondo CSV.
+    probe catturato su un secondo file JSON Lines.
 
 Richiede privilegi di root (ARP scan e sniffing 802.11 usano socket raw).
 Pensato per girare sotto systemd (vedi systemd/home-sentinel.service)
@@ -14,7 +14,7 @@ piuttosto che auto-demonizzarsi con un doppio fork.
 """
 
 import argparse
-import csv
+import json
 import logging
 import os
 import signal
@@ -88,24 +88,25 @@ def arp_scan(subnet: str, iface: str | None, timeout: float = 2.0) -> list[tuple
     return [(received.psrc, received.hwsrc) for _, received in answered]
 
 
-class CsvLogger:
-    """Writer CSV thread-safe, append-only, con flush ad ogni riga."""
+class JsonlLogger:
+    """Writer JSON Lines thread-safe, append-only, con flush ad ogni riga.
 
-    def __init__(self, path: Path, fieldnames: list[str]):
+    Un oggetto JSON per riga, senza header: ogni riga è autodescrittiva e
+    una riga troncata da una scrittura interrotta (crash, spegnimento
+    improvviso) viene semplicemente ignorata da un parser JSONL a valle,
+    esattamente come un CSV con l'ultima riga incompleta.
+    """
+
+    def __init__(self, path: Path):
         self.path = path
-        self.fieldnames = fieldnames
         self._lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        is_new = not self.path.exists() or self.path.stat().st_size == 0
-        self._file = open(self.path, "a", newline="", encoding="utf-8")
-        self._writer = csv.DictWriter(self._file, fieldnames=fieldnames)
-        if is_new:
-            self._writer.writeheader()
-            self._file.flush()
+        self._file = open(self.path, "a", encoding="utf-8")
 
     def write(self, row: dict) -> None:
         with self._lock:
-            self._writer.writerow(row)
+            self._file.write(json.dumps(row, ensure_ascii=False))
+            self._file.write("\n")
             self._file.flush()
 
     def close(self) -> None:
@@ -138,7 +139,7 @@ class LanDiscoveryService:
         interval: float,
         ports: list[int],
         port_scan_interval: float,
-        csv_logger: CsvLogger,
+        log: JsonlLogger,
         stop_event: threading.Event,
     ):
         self.subnet = subnet
@@ -146,7 +147,7 @@ class LanDiscoveryService:
         self.interval = interval
         self.ports = ports
         self.port_scan_interval = port_scan_interval
-        self.csv_logger = csv_logger
+        self.log = log
         self.stop_event = stop_event
         self.devices: dict[str, DeviceState] = {}
         self._last_port_scan: dict[str, float] = {}
@@ -202,9 +203,9 @@ class LanDiscoveryService:
             "mac": mac,
             "hostname": hostname,
             "vendor": vendor,
-            "open_ports": ";".join(str(p) for p in open_ports),
+            "open_ports": open_ports,
         }
-        self.csv_logger.write(row)
+        self.log.write(row)
         LOG.debug("LAN %s ip=%s mac=%s host=%s", status, ip, mac, hostname)
 
 
@@ -218,14 +219,14 @@ class WifiProbeMonitor:
         iface: str,
         channels: list[int],
         hop_interval: float,
-        csv_logger: CsvLogger,
+        log: JsonlLogger,
         stop_event: threading.Event,
         auto_monitor: bool = False,
     ):
         self.iface = iface
         self.channels = channels
         self.hop_interval = hop_interval
-        self.csv_logger = csv_logger
+        self.log = log
         self.stop_event = stop_event
         self.auto_monitor = auto_monitor
         self._current_channel = channels[0]
@@ -274,7 +275,7 @@ class WifiProbeMonitor:
             except Exception:
                 ssid = ""
 
-        rssi = pkt.dBm_AntSignal if hasattr(pkt, "dBm_AntSignal") else ""
+        rssi = pkt.dBm_AntSignal if hasattr(pkt, "dBm_AntSignal") else None
 
         row = {
             "timestamp": now_iso(),
@@ -284,7 +285,7 @@ class WifiProbeMonitor:
             "rssi": rssi,
             "channel": self._current_channel,
         }
-        self.csv_logger.write(row)
+        self.log.write(row)
         LOG.debug("WiFi probe mac=%s ssid=%r rssi=%s ch=%s", mac, ssid, rssi, self._current_channel)
 
     def run(self) -> None:
@@ -332,14 +333,14 @@ def parse_args() -> argparse.Namespace:
         default=3600.0,
         help="Intervallo minimo tra due port-scan dello stesso device (s)",
     )
-    p.add_argument("--lan-csv", default="lan_discovery.csv", help="Percorso CSV output LAN discovery")
+    p.add_argument("--lan-log", default="lan_discovery.jsonl", help="Percorso file JSON Lines output LAN discovery")
 
     p.add_argument(
         "--wifi-iface",
         default=None,
         help="Interfaccia WiFi in monitor mode per il probe sniffing (omettere per disabilitare)",
     )
-    p.add_argument("--wifi-csv", default="wifi_probes.csv", help="Percorso CSV output probe WiFi")
+    p.add_argument("--wifi-log", default="wifi_probes.jsonl", help="Percorso file JSON Lines output probe WiFi")
     p.add_argument(
         "--wifi-channels",
         default="1,2,3,4,5,6,7,8,9,10,11,12,13",
@@ -371,9 +372,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    lan_csv = CsvLogger(
-        Path(args.lan_csv), ["timestamp", "status", "ip", "mac", "hostname", "vendor", "open_ports"]
-    )
+    lan_log = JsonlLogger(Path(args.lan_log))
     ports = [int(port) for port in args.ports.split(",") if port.strip()]
     lan_service = LanDiscoveryService(
         subnet=args.subnet,
@@ -381,20 +380,20 @@ def main() -> None:
         interval=args.interval,
         ports=ports,
         port_scan_interval=args.port_scan_interval,
-        csv_logger=lan_csv,
+        log=lan_log,
         stop_event=stop_event,
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
 
-    wifi_csv = None
+    wifi_log = None
     if args.wifi_iface:
-        wifi_csv = CsvLogger(Path(args.wifi_csv), ["timestamp", "mac", "vendor", "ssid", "rssi", "channel"])
+        wifi_log = JsonlLogger(Path(args.wifi_log))
         channels = [int(ch) for ch in args.wifi_channels.split(",") if ch.strip()]
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
             hop_interval=args.wifi_hop_interval,
-            csv_logger=wifi_csv,
+            log=wifi_log,
             stop_event=stop_event,
             auto_monitor=args.auto_monitor,
         )
@@ -412,9 +411,9 @@ def main() -> None:
         stop_event.set()
         for t in threads:
             t.join(timeout=5)
-        lan_csv.close()
-        if wifi_csv:
-            wifi_csv.close()
+        lan_log.close()
+        if wifi_log:
+            wifi_log.close()
         LOG.info("Home Sentinel arrestato")
 
 

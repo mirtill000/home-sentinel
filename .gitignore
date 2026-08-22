@@ -1,3 +1,5 @@
+*.jsonl
+*.ndjson
 *.csv
 __pycache__/
 *.pyc
