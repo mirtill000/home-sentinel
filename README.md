@@ -72,7 +72,7 @@ più una riga `status=offline` la prima volta che un device smette di
 rispondere. `open_ports` è un array di interi (es. `[22, 80]`), non una
 stringa.
 
-**`probe_discovery.jsonl`**: `{timestamp, mac, vendor, ssid, rssi, channel}`
+**`wifi_probes.jsonl`**: `{timestamp, mac, vendor, ssid, rssi, channel}`
 Una riga per ogni probe request 802.11 catturato durante il channel
 hopping. `rssi` è un numero, oppure `null` se il radiotap non lo riporta.
 
@@ -189,7 +189,7 @@ In alternativa apri `dashboard/index.html` direttamente come file locale e
 carica i log dai campi "carica file locale" in Impostazioni (il fetch via
 URL richiede invece un server, per via delle restrizioni CORS su `file://`).
 I percorsi sono configurabili anche via query string, es.
-`?lan=/log/lan_discovery.jsonl&wifi=/log/probe_discovery.jsonl`.
+`?lan=/log/lan_discovery.jsonl&wifi=/log/wifi_probes.jsonl`.
 
 Il daemon attuale misura solo presenza e porte aperte, non traffico di rete:
 la dashboard non mostra quindi metriche di banda.

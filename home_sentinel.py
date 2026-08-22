@@ -516,7 +516,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--probe-log",
-        default="/var/log/home-sentinel/probe_discovery.jsonl",
+        default="/var/log/home-sentinel/wifi_probes.jsonl",
         help="Percorso file JSON Lines output probe WiFi",
     )
     p.add_argument(
