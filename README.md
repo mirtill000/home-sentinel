@@ -102,14 +102,23 @@ LAN, WiFi e BLE:
   o avvisi in CSV o JSON.
 - **Aiuto** — guida rapida e limiti noti.
 
-Per usarla, servi la cartella `dashboard/` (o copia/linka i file `.jsonl` al
-suo interno) con un server statico qualsiasi:
+Per usarla, servi la cartella `dashboard/` con un server statico qualsiasi.
+Dato che il daemon scrive i log in `/var/log/home-sentinel/` (fuori dalla
+cartella servita), il modo più semplice è linkarli dentro `dashboard/` con
+lo script incluso, così i percorsi di default funzionano subito senza
+toccare Impostazioni né passare parametri via URL:
 
 ```bash
 cd dashboard
+./link-logs.sh              # crea i symlink da /var/log/home-sentinel/
 python3 -m http.server 8080
 # poi apri http://<ip-del-pi>:8080/
 ```
+
+Rilancia `./link-logs.sh` in futuro se serve (es. dopo aver abilitato un
+modulo che prima non scriveva ancora); è idempotente, sovrascrive solo i
+symlink che gestisce lui. Accetta anche una directory sorgente diversa da
+`/var/log/home-sentinel` come primo argomento.
 
 In alternativa apri `dashboard/index.html` direttamente come file locale e
 carica i log dai campi "carica file locale" in Impostazioni (il fetch via
