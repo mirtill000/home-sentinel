@@ -246,7 +246,7 @@ class WifiProbeMonitor:
             ["iw", "dev", self.iface, "set", "type", "monitor"],
             ["ip", "link", "set", self.iface, "up"],
         ):
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
 
     def _set_channel(self, channel: int) -> None:
         subprocess.run(
@@ -301,11 +301,16 @@ class WifiProbeMonitor:
         if self.auto_monitor:
             try:
                 self._setup_monitor_mode()
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as exc:
                 LOG.error(
-                    "Impostazione automatica della monitor mode fallita su %s: "
-                    "verifica manualmente l'interfaccia (iw dev %s set type monitor)",
+                    "Impostazione automatica della monitor mode fallita su %s "
+                    "(comando: %s): %s. Un errore comune è NetworkManager/"
+                    "wpa_supplicant che gestisce ancora l'interfaccia: verifica con "
+                    "'nmcli device status' e imposta l'interfaccia come unmanaged, "
+                    "oppure esegui manualmente 'iw dev %s set type monitor'.",
                     self.iface,
+                    " ".join(exc.cmd),
+                    (exc.stderr or "").strip() or "nessun output su stderr",
                     self.iface,
                 )
 
