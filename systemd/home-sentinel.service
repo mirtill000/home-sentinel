@@ -5,10 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adatta subnet e percorso del repo al proprio ambiente. I tre moduli
-# scrivono di default in /var/log/home-sentinel/ (lan_discovery.jsonl,
-# probe_discovery.jsonl, ble_discovery.jsonl) — sovrascrivibile con
-# --lan-log/--probe-log/--ble-log se serve un percorso diverso.
+# Adatta subnet e percorso del repo al proprio ambiente. I moduli di
+# discovery scrivono di default in /var/log/home-sentinel/
+# (lan_discovery.jsonl, probe_discovery.jsonl, ble_discovery.jsonl) —
+# sovrascrivibile con --lan-log/--probe-log/--ble-log se serve un percorso
+# diverso. Lo specchio SQLite (home-sentinel.db) e gli alert di detection
+# (alerts_detection.jsonl) sono attivi di default, vedi --no-db/--db e
+# --alerts-log nel README per personalizzarli.
 #
 # Aggiungi "--wifi-iface wlan1 \" solo quando è disponibile un adattatore
 # WiFi esterno dedicato in monitor mode: il WiFi onboard del Raspberry Pi 3
@@ -16,6 +19,12 @@ Type=simple
 #
 # Aggiungi "--ble \" per abilitare lo scan BLE: qui invece basta il
 # Bluetooth onboard del Pi 3, nessun adattatore esterno necessario.
+#
+# Moduli di detection opzionali (vedi README, sezione "Moduli di
+# detection"): "--fingerprint \" per classificare il tipo di device,
+# "--detect-rogue-dhcp \" per il rilevamento rogue DHCP,
+# "--home-ssid CasaWiFi \" per il rilevamento evil twin WiFi (richiede
+# --wifi-iface).
 ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
     --subnet 192.168.1.0/24
 WorkingDirectory=/opt/home-sentinel

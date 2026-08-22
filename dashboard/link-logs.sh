@@ -2,9 +2,9 @@
 # Crea, in questa cartella, symlink verso i log JSON Lines scritti dal
 # daemon (di default in /var/log/home-sentinel/), così i percorsi di
 # default della dashboard (lan_discovery.jsonl, probe_discovery.jsonl,
-# ble_discovery.jsonl) funzionano subito quando la si serve da qui
-# (es. python3 -m http.server), senza toccare Impostazioni né passare
-# parametri via URL.
+# ble_discovery.jsonl, fingerprint_discovery.jsonl, alerts_detection.jsonl)
+# funzionano subito quando la si serve da qui (es. python3 -m http.server),
+# senza toccare Impostazioni né passare parametri via URL.
 #
 # Uso:
 #   ./link-logs.sh [directory log sorgente]
@@ -18,7 +18,7 @@ set -euo pipefail
 SRC_DIR="${1:-/var/log/home-sentinel}"
 DEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-FILES=(lan_discovery.jsonl probe_discovery.jsonl ble_discovery.jsonl)
+FILES=(lan_discovery.jsonl probe_discovery.jsonl ble_discovery.jsonl fingerprint_discovery.jsonl alerts_detection.jsonl)
 
 for f in "${FILES[@]}"; do
   src="$SRC_DIR/$f"
