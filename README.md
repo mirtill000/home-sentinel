@@ -54,7 +54,7 @@ improvviso) viene semplicemente ignorata da un parser JSONL a valle, con la
 stessa resilienza di un CSV con l'ultima riga incompleta.
 
 Di default scrivono tutti in **`/var/log/home-sentinel/`**
-(`--lan-log`/`--wifi-log`/`--ble-log` per un percorso diverso); la directory
+(`--lan-log`/`--probe-log`/`--ble-log` per un percorso diverso); la directory
 viene creata automaticamente al primo avvio se non esiste già (il daemon
 gira come root).
 
@@ -64,7 +64,7 @@ più una riga `status=offline` la prima volta che un device smette di
 rispondere. `open_ports` è un array di interi (es. `[22, 80]`), non una
 stringa.
 
-**`wifi_probes.jsonl`**: `{timestamp, mac, vendor, ssid, rssi, channel}`
+**`probe_discovery.jsonl`**: `{timestamp, mac, vendor, ssid, rssi, channel}`
 Una riga per ogni probe request 802.11 catturato durante il channel
 hopping. `rssi` è un numero, oppure `null` se il radiotap non lo riporta.
 
@@ -125,7 +125,7 @@ In alternativa apri `dashboard/index.html` direttamente come file locale e
 carica i log dai campi "carica file locale" in Impostazioni (il fetch via
 URL richiede invece un server, per via delle restrizioni CORS su `file://`).
 I percorsi sono configurabili anche via query string, es.
-`?lan=/log/lan_discovery.jsonl&wifi=/log/wifi_probes.jsonl`.
+`?lan=/log/lan_discovery.jsonl&wifi=/log/probe_discovery.jsonl`.
 
 Il daemon attuale misura solo presenza e porte aperte, non traffico di rete:
 la dashboard non mostra quindi metriche di banda.

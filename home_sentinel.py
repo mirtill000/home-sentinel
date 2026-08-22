@@ -414,8 +414,8 @@ def parse_args() -> argparse.Namespace:
         help="Interfaccia WiFi in monitor mode per il probe sniffing (omettere per disabilitare)",
     )
     p.add_argument(
-        "--wifi-log",
-        default="/var/log/home-sentinel/wifi_probes.jsonl",
+        "--probe-log",
+        default="/var/log/home-sentinel/probe_discovery.jsonl",
         help="Percorso file JSON Lines output probe WiFi",
     )
     p.add_argument(
@@ -479,15 +479,15 @@ def main() -> None:
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
 
-    wifi_log = None
+    probe_log = None
     if args.wifi_iface:
-        wifi_log = JsonlLogger(Path(args.wifi_log))
+        probe_log = JsonlLogger(Path(args.probe_log))
         channels = [int(ch) for ch in args.wifi_channels.split(",") if ch.strip()]
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
             hop_interval=args.wifi_hop_interval,
-            log=wifi_log,
+            log=probe_log,
             stop_event=stop_event,
             auto_monitor=args.auto_monitor,
         )
@@ -514,8 +514,8 @@ def main() -> None:
         for t in threads:
             t.join(timeout=5)
         lan_log.close()
-        if wifi_log:
-            wifi_log.close()
+        if probe_log:
+            probe_log.close()
         if ble_log:
             ble_log.close()
         LOG.info("Home Sentinel arrestato")

@@ -40,7 +40,7 @@ const SETTINGS_KEYS = {
   netLabel: "hs.net.label", netGateway: "hs.net.gateway",
 };
 const SETTINGS_DEFAULTS = {
-  lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
+  lanUrl: "lan_discovery.jsonl", wifiUrl: "probe_discovery.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
   netLabel: "", netGateway: "",
 };
 
@@ -1219,7 +1219,7 @@ function doExport(key, format) {
   let rows, filename;
   if (key === "lan-current") { rows = latestLanByMac(state.lanRows).map(stripInternal); filename = "lan_devices_current"; }
   else if (key === "lan-log") { rows = state.lanRows; filename = "lan_discovery_log"; }
-  else if (key === "wifi") { rows = state.wifiRows; filename = "wifi_probes"; }
+  else if (key === "wifi") { rows = state.wifiRows; filename = "probe_discovery"; }
   else if (key === "ble") { rows = state.bleRows; filename = "ble_discovery"; }
   else if (key === "alerts") {
     rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
@@ -1232,7 +1232,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>Come funziona</h3>
-      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>wifi_probes.jsonl</code> per i probe request WiFi e <code>ble_discovery.jsonl</code> per lo scan BLE (un oggetto JSON per riga, moduli WiFi e BLE opzionali; tutti e tre scrivono di default in <code>/var/log/home-sentinel/</code>) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
+      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>probe_discovery.jsonl</code> per i probe request WiFi e <code>ble_discovery.jsonl</code> per lo scan BLE (un oggetto JSON per riga, moduli WiFi e BLE opzionali; tutti e tre scrivono di default in <code>/var/log/home-sentinel/</code>) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Stato dei dispositivi</h3>
