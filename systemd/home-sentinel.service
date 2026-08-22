@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=simple
 # Adatta subnet e percorso del repo al proprio ambiente. I tre moduli
 # scrivono di default in /var/log/home-sentinel/ (lan_discovery.jsonl,
-# wifi_probes.jsonl, ble_discovery.jsonl) — sovrascrivibile con
-# --lan-log/--wifi-log/--ble-log se serve un percorso diverso.
+# probe_discovery.jsonl, ble_discovery.jsonl) — sovrascrivibile con
+# --lan-log/--probe-log/--ble-log se serve un percorso diverso.
 #
 # Aggiungi "--wifi-iface wlan1 \" solo quando è disponibile un adattatore
 # WiFi esterno dedicato in monitor mode: il WiFi onboard del Raspberry Pi 3
