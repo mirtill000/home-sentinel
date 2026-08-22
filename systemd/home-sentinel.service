@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 # Adatta subnet e percorso del repo al proprio ambiente. I moduli di
 # discovery scrivono di default in /var/log/home-sentinel/
-# (lan_discovery.jsonl, probe_discovery.jsonl, ble_discovery.jsonl) —
+# (lan_discovery.jsonl, wifi_probes.jsonl, ble_discovery.jsonl) —
 # sovrascrivibile con --lan-log/--probe-log/--ble-log se serve un percorso
 # diverso. Lo specchio SQLite (home-sentinel.db) e gli alert di detection
 # (alerts_detection.jsonl) sono attivi di default, vedi --no-db/--db e
