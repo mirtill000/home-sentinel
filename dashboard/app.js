@@ -99,6 +99,7 @@ const state = {
   openMenuMac: null,
   expandedMac: null,
   alertsFilter: "active",
+  alertsTypeFilter: "all",
   dismissedAlerts: new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]")),
 };
 
@@ -591,13 +592,15 @@ function renderNearbySection(container) {
 /** Severity dei rilevatori server-side (low/medium/high) -> classi CSS esistenti (info/serious/critical). */
 const DETECTION_SEVERITY_MAP = { low: "info", medium: "serious", high: "critical" };
 
-/** Etichetta e icona per tipo di alert generato dai moduli di detection del daemon (sentinel_detection.py). */
-const DETECTION_TYPE_META = {
+/** Etichetta e icona per ogni tipo di alert: quelli del daemon (sentinel_detection.py) più i due calcolati lato client. */
+const ALERT_TYPE_META = {
   possibile_arp_spoofing: { label: "Possibile ARP spoofing", icon: "shield" },
   possibile_rogue_dhcp: { label: "Possibile rogue DHCP", icon: "server" },
   possibile_evil_twin: { label: "Possibile evil twin WiFi", icon: "wifi" },
   orario_insolito: { label: "Presenza in orario insolito", icon: "radar" },
   nuova_porta: { label: "Nuova porta aperta su device noto", icon: "alert-triangle" },
+  nuovo_dispositivo: { label: "Nuovo dispositivo rilevato", icon: "monitor" },
+  porta_rischio: { label: "Porta a rischio aperta", icon: "alert-triangle" },
 };
 
 function computeAlerts() {
@@ -607,9 +610,11 @@ function computeAlerts() {
   for (const row of state.alertsRows) {
     const ts = parseTs(row.timestamp);
     if (ts === null) continue;
-    const meta = DETECTION_TYPE_META[row.type] || { label: row.type ? row.type.replace(/_/g, " ") : "Alert", icon: "shield" };
+    const type = row.type || "";
+    const meta = ALERT_TYPE_META[type] || { label: type ? type.replace(/_/g, " ") : "Alert", icon: "shield" };
     alerts.push({
-      id: `detect:${row.type}:${row.mac || row.ip || ""}:${row.timestamp}`,
+      id: `detect:${type}:${row.mac || row.ip || ""}:${row.timestamp}`,
+      type,
       severity: DETECTION_SEVERITY_MAP[row.severity] || "serious",
       title: meta.label,
       icon: meta.icon,
@@ -627,9 +632,10 @@ function computeAlerts() {
     if (!within24h(ts)) continue;
     alerts.push({
       id: `new:${row.mac}:${row.timestamp}`,
+      type: "nuovo_dispositivo",
       severity: "info",
-      title: "Nuovo dispositivo rilevato",
-      icon: "monitor",
+      title: ALERT_TYPE_META.nuovo_dispositivo.label,
+      icon: ALERT_TYPE_META.nuovo_dispositivo.icon,
       desc: `${row.hostname || row.mac} (${row.ip}) visto per la prima volta sulla rete.`,
       mac: row.mac,
       ts,
@@ -644,9 +650,10 @@ function computeAlerts() {
     const isCritical = risky.some((p) => p === 23 || p === 3389 || p === 5900);
     alerts.push({
       id: `port:${dev.mac}`,
+      type: "porta_rischio",
       severity: isCritical ? "critical" : "serious",
-      title: "Porta a rischio aperta",
-      icon: "alert-triangle",
+      title: ALERT_TYPE_META.porta_rischio.label,
+      icon: ALERT_TYPE_META.porta_rischio.icon,
       desc: `${dev.hostname || dev.mac} (${dev.ip}) espone ${risky.map((p) => `${p}/${RISK_PORTS[p]}`).join(", ")}.`,
       mac: dev.mac,
       ts: dev._ts,
@@ -1275,15 +1282,29 @@ function alertItemHtml(a) {
 
 function renderAvvisi(container) {
   const all = computeAlerts();
+
+  const typesPresent = [...new Set(all.map((a) => a.type).filter(Boolean))]
+    .map((type) => ({ type, label: ALERT_TYPE_META[type]?.label || type.replace(/_/g, " ") }))
+    .sort((a, b) => a.label.localeCompare(b.label, "it"));
+  if (!typesPresent.some((t) => t.type === state.alertsTypeFilter) && state.alertsTypeFilter !== "all") {
+    state.alertsTypeFilter = "all"; // il tipo selezionato non compare più tra gli alert correnti
+  }
+
   container.innerHTML = `
     <div class="card">
       <div class="card-head">
         <h2>Avvisi</h2>
-        <select class="select-control" id="alerts-filter">
-          <option value="active">Attivi</option>
-          <option value="all">Tutti</option>
-          <option value="dismissed">Ignorati</option>
-        </select>
+        <div class="filter-row" style="margin:0;">
+          <select class="select-control" id="alerts-type-filter">
+            <option value="all">Tutte le tipologie</option>
+            ${typesPresent.map((t) => `<option value="${escapeHtml(t.type)}">${escapeHtml(t.label)}</option>`).join("")}
+          </select>
+          <select class="select-control" id="alerts-filter">
+            <option value="active">Attivi</option>
+            <option value="all">Tutti</option>
+            <option value="dismissed">Ignorati</option>
+          </select>
+        </div>
       </div>
       <div class="alert-list" id="alert-list"></div>
     </div>`;
@@ -1293,12 +1314,18 @@ function renderAvvisi(container) {
     state.alertsFilter = e.target.value;
     renderAlertList();
   });
+  document.getElementById("alerts-type-filter").value = state.alertsTypeFilter;
+  document.getElementById("alerts-type-filter").addEventListener("change", (e) => {
+    state.alertsTypeFilter = e.target.value;
+    renderAlertList();
+  });
   renderAlertList();
 
   function renderAlertList() {
     let list = all;
-    if (state.alertsFilter === "active") list = all.filter((a) => !isDismissed(a.id));
-    if (state.alertsFilter === "dismissed") list = all.filter((a) => isDismissed(a.id));
+    if (state.alertsFilter === "active") list = list.filter((a) => !isDismissed(a.id));
+    if (state.alertsFilter === "dismissed") list = list.filter((a) => isDismissed(a.id));
+    if (state.alertsTypeFilter !== "all") list = list.filter((a) => a.type === state.alertsTypeFilter);
     const el = document.getElementById("alert-list");
     if (!list.length) { el.innerHTML = '<p class="empty-state">Nessun avviso in questa categoria.</p>'; return; }
     el.innerHTML = list.map(alertItemHtml).join("");
