@@ -371,9 +371,21 @@ class BleScanMonitor:
             kwargs["bluez"] = {"adapter": self.adapter}
 
         LOG.info("BLE scan monitor avviato%s", f" su {self.adapter}" if self.adapter else "")
-        async with BleakScanner(detection_callback=self._handle_detection, **kwargs):
+        scanner = BleakScanner(detection_callback=self._handle_detection, **kwargs)
+        await scanner.start()
+        try:
             while not self.stop_event.is_set():
                 await asyncio.sleep(1)
+        finally:
+            try:
+                await scanner.stop()
+            except Exception:
+                # BlueZ a volte risponde "Operation already in progress" allo
+                # stop se uno scan/discovery era già in corso su un altro
+                # client D-Bus sullo stesso adattatore: non è un errore del
+                # daemon, quindi lo logghiamo a debug invece che come ERROR
+                # con traceback ad ogni spegnimento pulito.
+                LOG.debug("Errore (ignorato) durante lo stop dello scanner BLE", exc_info=True)
 
     def run(self) -> None:
         try:
