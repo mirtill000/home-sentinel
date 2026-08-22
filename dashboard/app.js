@@ -25,6 +25,8 @@ const ICON_PATHS = {
   copy: `<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>`,
   eye: `<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>`,
   bluetooth: `<path d="M8 8l8 8-4 4V4l4 4-8 8"/>`,
+  shield: `<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4.5"/>`,
+  server: `<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r="0.9" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="0.9" fill="currentColor" stroke="none"/>`,
 };
 
 function ICON(name) {
@@ -589,6 +591,15 @@ function renderNearbySection(container) {
 /** Severity dei rilevatori server-side (low/medium/high) -> classi CSS esistenti (info/serious/critical). */
 const DETECTION_SEVERITY_MAP = { low: "info", medium: "serious", high: "critical" };
 
+/** Etichetta e icona per tipo di alert generato dai moduli di detection del daemon (sentinel_detection.py). */
+const DETECTION_TYPE_META = {
+  possibile_arp_spoofing: { label: "Possibile ARP spoofing", icon: "shield" },
+  possibile_rogue_dhcp: { label: "Possibile rogue DHCP", icon: "server" },
+  possibile_evil_twin: { label: "Possibile evil twin WiFi", icon: "wifi" },
+  orario_insolito: { label: "Presenza in orario insolito", icon: "radar" },
+  nuova_porta: { label: "Nuova porta aperta su device noto", icon: "alert-triangle" },
+};
+
 function computeAlerts() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const alerts = [];
@@ -596,12 +607,16 @@ function computeAlerts() {
   for (const row of state.alertsRows) {
     const ts = parseTs(row.timestamp);
     if (ts === null) continue;
+    const meta = DETECTION_TYPE_META[row.type] || { label: row.type ? row.type.replace(/_/g, " ") : "Alert", icon: "shield" };
     alerts.push({
       id: `detect:${row.type}:${row.mac || row.ip || ""}:${row.timestamp}`,
       severity: DETECTION_SEVERITY_MAP[row.severity] || "serious",
-      title: row.type ? row.type.replace(/_/g, " ") : "Alert",
+      title: meta.label,
+      icon: meta.icon,
+      source: "detect",
       desc: row.message || "",
       mac: row.mac,
+      ip: row.ip,
       ts,
     });
   }
@@ -614,6 +629,7 @@ function computeAlerts() {
       id: `new:${row.mac}:${row.timestamp}`,
       severity: "info",
       title: "Nuovo dispositivo rilevato",
+      icon: "monitor",
       desc: `${row.hostname || row.mac} (${row.ip}) visto per la prima volta sulla rete.`,
       mac: row.mac,
       ts,
@@ -630,6 +646,7 @@ function computeAlerts() {
       id: `port:${dev.mac}`,
       severity: isCritical ? "critical" : "serious",
       title: "Porta a rischio aperta",
+      icon: "alert-triangle",
       desc: `${dev.hostname || dev.mac} (${dev.ip}) espone ${risky.map((p) => `${p}/${RISK_PORTS[p]}`).join(", ")}.`,
       mac: dev.mac,
       ts: dev._ts,
@@ -1242,12 +1259,13 @@ function renderScansioni(container) {
 
 function alertItemHtml(a) {
   const dismissed = isDismissed(a.id);
+  const identifier = a.mac ? `MAC ${escapeHtml(a.mac)}` : a.ip ? `IP ${escapeHtml(a.ip)}` : null;
   return `<div class="alert-item ${dismissed ? "is-dismissed" : ""}">
-    <span class="alert-icon sev-${a.severity}">${ICON("alert-triangle")}</span>
+    <span class="alert-icon sev-${a.severity}">${ICON(a.icon || "alert-triangle")}</span>
     <div class="alert-body">
-      <div class="alert-title">${escapeHtml(a.title)}</div>
+      <div class="alert-title">${escapeHtml(a.title)}${a.source === "detect" ? `<span class="source-tag">${ICON("shield")}Rilevato dal daemon</span>` : ""}</div>
       <div class="alert-desc">${escapeHtml(a.desc)}</div>
-      <div class="alert-meta"><span>${formatTs(a.ts ? new Date(a.ts).toISOString() : "")}</span><span>MAC ${escapeHtml(a.mac || "—")}</span></div>
+      <div class="alert-meta"><span>${formatTs(a.ts ? new Date(a.ts).toISOString() : "")}</span>${identifier ? `<span>${identifier}</span>` : ""}</div>
     </div>
     <div class="alert-actions">
       <button class="btn btn-icon" data-dismiss="${escapeHtml(a.id)}" title="${dismissed ? "Ripristina" : "Ignora"}">${ICON(dismissed ? "refresh" : "x")}</button>

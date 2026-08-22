@@ -571,7 +571,9 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .alert-icon.sev-warning { background: var(--status-warning-wash); color: var(--status-warning); }
 .alert-icon.sev-info { background: rgba(57, 135, 229, 0.15); color: var(--series-blue); }
 .alert-body { flex: 1; min-width: 0; }
-.alert-title { font-weight: 650; font-size: 0.86rem; margin-bottom: 2px; }
+.alert-title { font-weight: 650; font-size: 0.86rem; margin-bottom: 2px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.alert-title .source-tag { font-weight: 500; font-size: 0.68rem; padding: 1px 7px; border-radius: 999px; background: var(--brand-wash); color: var(--brand); }
+.alert-title .source-tag svg { color: var(--brand); }
 .alert-desc { font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 4px; }
 .alert-meta { font-size: 0.7rem; color: var(--text-muted); display: flex; gap: 10px; flex-wrap: wrap; }
 .alert-actions { flex-shrink: 0; display: flex; align-items: flex-start; }
