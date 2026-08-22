@@ -13,6 +13,8 @@ Pensato per girare sotto systemd (vedi systemd/home-sentinel.service)
 piuttosto che auto-demonizzarsi con un doppio fork.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
