@@ -1,1 +1,3 @@
 scapy>=2.5.0
+# Necessario solo per il modulo di scan BLE (--ble); omissibile se non lo usi.
+bleak>=0.21.0

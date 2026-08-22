@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Home Sentinel: discovery continua della LAN + monitor dei probe request WiFi.
+"""Home Sentinel: discovery continua della LAN + monitor dei probe request WiFi/BLE.
 
-Due moduli indipendenti, ciascuno in un proprio thread:
+Tre moduli indipendenti, ciascuno in un proprio thread:
   - LanDiscoveryService: ARP scan periodico della subnet, con hostname,
     vendor (da MAC OUI) e port scan; scrive ogni evento su JSON Lines.
   - WifiProbeMonitor (opzionale): sniffing passivo dei probe request 802.11
     su un'interfaccia in monitor mode, con channel hopping; scrive ogni
     probe catturato su un secondo file JSON Lines.
+  - BleScanMonitor (opzionale): scan passivo degli advertisement BLE nei
+    dintorni via l'adattatore Bluetooth locale (BlueZ) — a differenza del
+    probe WiFi non serve un adattatore esterno: il Bluetooth 4.1 LE onboard
+    del Raspberry Pi 3 basta; scrive su un terzo file JSON Lines.
 
-Richiede privilegi di root (ARP scan e sniffing 802.11 usano socket raw).
+Richiede privilegi di root (ARP scan e sniffing 802.11 usano socket raw;
+lo scan BLE via BlueZ tipicamente richiede root o la capability
+cap_net_admin sull'adattatore).
 Pensato per girare sotto systemd (vedi systemd/home-sentinel.service)
 piuttosto che auto-demonizzarsi con un doppio fork.
 """
@@ -16,6 +22,7 @@ piuttosto che auto-demonizzarsi con un doppio fork.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -316,6 +323,61 @@ class WifiProbeMonitor:
 
 
 # --------------------------------------------------------------------------
+# BLE scan monitor
+# --------------------------------------------------------------------------
+
+class BleScanMonitor:
+    """Scan passivo degli advertisement BLE nei dintorni via BlueZ.
+
+    A differenza del probe monitor WiFi non serve un adattatore esterno né
+    una modalità speciale: il Bluetooth 4.1 LE onboard del Raspberry Pi 3
+    è sufficiente. Usa bleak (import posticipato, così il resto del daemon
+    funziona anche senza bleak installato se BLE non è abilitato).
+    """
+
+    def __init__(self, log: JsonlLogger, stop_event: threading.Event, adapter: str | None = None):
+        self.log = log
+        self.stop_event = stop_event
+        self.adapter = adapter
+
+    def _handle_detection(self, device, advertisement_data) -> None:
+        row = {
+            "timestamp": now_iso(),
+            "mac": device.address.lower(),
+            "name": advertisement_data.local_name or device.name or "",
+            "rssi": advertisement_data.rssi,
+            "tx_power": advertisement_data.tx_power,
+            "manufacturer_ids": sorted(advertisement_data.manufacturer_data.keys()),
+            "service_uuids": list(advertisement_data.service_uuids),
+        }
+        self.log.write(row)
+        LOG.debug("BLE device mac=%s name=%r rssi=%s", row["mac"], row["name"], row["rssi"])
+
+    async def _run_async(self) -> None:
+        try:
+            from bleak import BleakScanner
+        except ImportError as exc:
+            raise SystemExit(
+                "bleak non è installato. Installa le dipendenze con: pip install -r requirements.txt"
+            ) from exc
+
+        kwargs = {}
+        if self.adapter:
+            kwargs["bluez"] = {"adapter": self.adapter}
+
+        LOG.info("BLE scan monitor avviato%s", f" su {self.adapter}" if self.adapter else "")
+        async with BleakScanner(detection_callback=self._handle_detection, **kwargs):
+            while not self.stop_event.is_set():
+                await asyncio.sleep(1)
+
+    def run(self) -> None:
+        try:
+            asyncio.run(self._run_async())
+        except Exception:
+            LOG.exception("BLE scan monitor terminato con errore")
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
@@ -354,6 +416,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Prova a impostare automaticamente --wifi-iface in monitor mode",
     )
+
+    p.add_argument(
+        "--ble",
+        action="store_true",
+        help="Abilita lo scan passivo dei device BLE nei dintorni via l'adattatore Bluetooth locale",
+    )
+    p.add_argument(
+        "--ble-adapter",
+        default=None,
+        help="Adattatore Bluetooth da usare per lo scan BLE, es. hci0 (default: adattatore di sistema)",
+    )
+    p.add_argument("--ble-log", default="ble_devices.jsonl", help="Percorso file JSON Lines output scan BLE")
+
     p.add_argument("--log-level", default="INFO")
     return p.parse_args()
 
@@ -403,6 +478,14 @@ def main() -> None:
     else:
         LOG.info("Nessuna --wifi-iface indicata: modulo probe monitor disabilitato")
 
+    ble_log = None
+    if args.ble:
+        ble_log = JsonlLogger(Path(args.ble_log))
+        ble_service = BleScanMonitor(log=ble_log, stop_event=stop_event, adapter=args.ble_adapter)
+        threads.append(threading.Thread(target=ble_service.run, name="ble-scan", daemon=True))
+    else:
+        LOG.info("Nessun --ble indicato: modulo scan BLE disabilitato")
+
     for t in threads:
         t.start()
 
@@ -416,6 +499,8 @@ def main() -> None:
         lan_log.close()
         if wifi_log:
             wifi_log.close()
+        if ble_log:
+            ble_log.close()
         LOG.info("Home Sentinel arrestato")
 
 

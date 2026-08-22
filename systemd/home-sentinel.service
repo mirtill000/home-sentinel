@@ -1,15 +1,19 @@
 [Unit]
-Description=Home Sentinel - LAN discovery + WiFi probe monitor
-After=network-online.target
+Description=Home Sentinel - LAN discovery + WiFi/BLE probe monitor
+After=network-online.target bluetooth.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 # Adatta subnet, percorso del repo e percorsi dei log al proprio ambiente.
-# Aggiungi "--wifi-iface wlan1 \" (interfaccia in monitor mode) e
-# "--wifi-log /var/log/home-sentinel/wifi_probes.jsonl \" solo quando è
-# disponibile un adattatore WiFi esterno dedicato: il WiFi onboard del
-# Raspberry Pi 3 non supporta bene la monitor mode.
+#
+# Aggiungi "--wifi-iface wlan1 \" e "--wifi-log .../wifi_probes.jsonl \"
+# solo quando è disponibile un adattatore WiFi esterno dedicato in monitor
+# mode: il WiFi onboard del Raspberry Pi 3 non lo supporta bene.
+#
+# Aggiungi "--ble \" (e opzionalmente "--ble-log .../ble_devices.jsonl \")
+# per abilitare lo scan BLE: qui invece basta il Bluetooth onboard del
+# Pi 3, nessun adattatore esterno necessario.
 ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
     --subnet 192.168.1.0/24 \
     --lan-log /var/log/home-sentinel/lan_discovery.jsonl
