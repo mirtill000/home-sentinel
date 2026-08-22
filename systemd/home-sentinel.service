@@ -5,12 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adatta subnet, interfacce e percorsi dei log al proprio ambiente.
+# Adatta subnet, percorso del repo e percorsi dei log al proprio ambiente.
+# Aggiungi "--wifi-iface wlan1 \" (interfaccia in monitor mode) e
+# "--wifi-log /var/log/home-sentinel/wifi_probes.jsonl \" solo quando è
+# disponibile un adattatore WiFi esterno dedicato: il WiFi onboard del
+# Raspberry Pi 3 non supporta bene la monitor mode.
 ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
     --subnet 192.168.1.0/24 \
-    --lan-log /var/log/home-sentinel/lan_discovery.jsonl \
-    --wifi-iface wlan1 \
-    --wifi-log /var/log/home-sentinel/wifi_probes.jsonl
+    --lan-log /var/log/home-sentinel/lan_discovery.jsonl
 WorkingDirectory=/opt/home-sentinel
 Restart=on-failure
 RestartSec=5
