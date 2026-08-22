@@ -481,6 +481,79 @@ function wifiVendorSegments(rows) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
 }
 
+/* ---------------------------------------------------------------------- *
+ * Dispositivi nei dintorni (euristica: segnale forte + presenza ripetuta,
+ * incrociando probe WiFi e advertisement BLE. Non è una localizzazione
+ * reale: è solo un'indicazione di possibile prossimità fisica.)
+ * ---------------------------------------------------------------------- */
+
+const NEARBY_RSSI_THRESHOLD = -70; // dBm, più vicino a 0 = segnale più forte
+const NEARBY_MIN_SIGHTINGS = 3;
+const NEARBY_LOOKBACK_MS = 24 * 3600 * 1000;
+
+function computeNearbyDevices() {
+  const cutoff = Date.now() - NEARBY_LOOKBACK_MS;
+  const knownLanMacs = new Set(latestLanByMac(state.lanRows).map((d) => d.mac));
+  const groups = new Map(); // `${source}:${mac}` -> { source, mac, name, vendor, rssiSum, rssiCount, sightings, lastTs }
+
+  function addRow(source, mac, name, vendor, rssi, ts) {
+    if (ts === null || ts < cutoff) return;
+    const key = `${source}:${mac}`;
+    if (!groups.has(key)) groups.set(key, { source, mac, name: "", vendor: "", rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
+    const g = groups.get(key);
+    g.sightings += 1;
+    if (typeof rssi === "number") { g.rssiSum += rssi; g.rssiCount += 1; }
+    if (ts > g.lastTs) g.lastTs = ts;
+    if (!g.name && name) g.name = name;
+    if (!g.vendor && vendor) g.vendor = vendor;
+  }
+
+  for (const r of state.wifiRows) {
+    if (knownLanMacs.has(r.mac)) continue; // è un tuo dispositivo, non un "esterno"
+    addRow("wifi", r.mac, "", r.vendor || "", typeof r.rssi === "number" ? r.rssi : null, parseTs(r.timestamp));
+  }
+  for (const r of state.bleRows) {
+    const ids = Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : [];
+    const vendor = ids.length ? bleCompanyLabel(ids[0]) : "";
+    addRow("ble", r.mac, r.name || "", vendor, typeof r.rssi === "number" ? r.rssi : null, parseTs(r.timestamp));
+  }
+
+  return [...groups.values()]
+    .filter((g) => g.rssiCount > 0 && g.sightings >= NEARBY_MIN_SIGHTINGS && g.rssiSum / g.rssiCount >= NEARBY_RSSI_THRESHOLD)
+    .map((g) => ({ ...g, avgRssi: Math.round(g.rssiSum / g.rssiCount) }))
+    .sort((a, b) => b.avgRssi - a.avgRssi);
+}
+
+function renderNearbySection(container) {
+  const all = computeNearbyDevices();
+  const shown = all.slice(0, 10);
+
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Dispositivi nei dintorni</h2>
+      <span class="card-sub">RSSI ≥ ${NEARBY_RSSI_THRESHOLD} dBm, ≥ ${NEARBY_MIN_SIGHTINGS} avvistamenti nelle ultime 24h${all.length > shown.length ? ` — mostrati i ${shown.length} più vicini su ${all.length}` : ""}</span>
+    </div>
+    ${shown.length ? `
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Origine</th><th>MAC</th><th>Vendor/Nome</th><th>RSSI medio</th><th>Avvistamenti</th><th>Ultimo avvistamento</th></tr></thead>
+          <tbody>
+            ${shown.map((d) => `<tr>
+              <td><span class="source-tag">${ICON(d.source === "ble" ? "bluetooth" : "wifi")}${d.source === "ble" ? "BLE" : "WiFi"}</span></td>
+              <td class="mono">${escapeHtml(d.mac)}</td>
+              <td>${escapeHtml(d.name || d.vendor) || '<span class="muted">—</span>'}</td>
+              <td>${d.avgRssi} dBm</td>
+              <td>${d.sightings}</td>
+              <td>${formatTs(new Date(d.lastTs).toISOString())}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    ` : `<p class="empty-state">Nessun dispositivo esterno rilevato in prossimità nelle ultime 24h.</p>`}
+    <p class="field-hint">Stima euristica su segnale forte e presenza ripetuta nei probe WiFi/BLE, non una vera localizzazione; esclude i dispositivi già noti sulla LAN. I MAC sono spesso randomizzati dai device moderni, quindi la persistenza nel tempo non è sempre affidabile al 100%.</p>
+  `;
+}
+
 function computeAlerts() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const alerts = [];
@@ -686,6 +759,67 @@ function hostRowHtml(d) {
  * WiFi page (KPI + grafici + tabella grezza)
  * ---------------------------------------------------------------------- */
 
+/** Per ogni MAC, i SSID specifici cercati (probe con SSID non vuoto) con relativo conteggio. */
+function computeWifiSsidCorrelation(rows) {
+  const byMac = new Map();
+  for (const r of rows) {
+    if (!r.ssid || !r.ssid.trim()) continue;
+    if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, vendor: r.vendor || "", ssids: new Map(), total: 0, lastTs: 0 });
+    const entry = byMac.get(r.mac);
+    if (!entry.vendor && r.vendor) entry.vendor = r.vendor;
+    entry.ssids.set(r.ssid, (entry.ssids.get(r.ssid) || 0) + 1);
+    entry.total += 1;
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts > entry.lastTs) entry.lastTs = ts;
+  }
+  return [...byMac.values()]
+    .map((e) => ({ ...e, ssidList: [...e.ssids.entries()].sort((a, b) => b[1] - a[1]) }))
+    .sort((a, b) => b.lastTs - a.lastTs);
+}
+
+function renderWifiCorrelation(container) {
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Correlazione MAC / Vendor / SSID cercato</h2>
+      <div class="filter-row" style="margin:0;">
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-corr-search" placeholder="Cerca per MAC, vendor, SSID…"></div>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr><th>MAC</th><th>Vendor</th><th>SSID cercati</th><th>Probe totali</th><th>Ultimo avvistamento</th></tr></thead>
+        <tbody id="wifi-corr-body"></tbody>
+      </table>
+      <p class="empty-state hidden" id="wifi-corr-empty">Nessun probe con SSID specifico nel log caricato: molti device moderni non lo trasmettono più per privacy, quindi è normale che questa lista sia corta o vuota.</p>
+    </div>`;
+
+  document.getElementById("wifi-corr-search").addEventListener("input", renderWifiCorrelationBody);
+  renderWifiCorrelationBody();
+}
+
+function renderWifiCorrelationBody() {
+  const searchEl = document.getElementById("wifi-corr-search");
+  const body = document.getElementById("wifi-corr-body");
+  if (!searchEl || !body) return;
+
+  const search = searchEl.value.trim().toLowerCase();
+  const all = computeWifiSsidCorrelation(state.wifiRows);
+  const rows = all.filter((e) => {
+    if (!search) return true;
+    const ssidText = e.ssidList.map(([s]) => s).join(" ");
+    return `${e.mac} ${e.vendor} ${ssidText}`.toLowerCase().includes(search);
+  });
+
+  body.innerHTML = rows.map((e) => `<tr>
+    <td class="mono">${escapeHtml(e.mac)}</td>
+    <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
+    <td>${e.ssidList.map(([ssid, count]) => `${escapeHtml(ssid)} (${count})`).join(", ")}</td>
+    <td>${e.total}</td>
+    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+  </tr>`).join("");
+  document.getElementById("wifi-corr-empty").classList.toggle("hidden", rows.length > 0);
+}
+
 function renderWifiSection(container) {
   container.innerHTML = `
     <div class="card-head">
@@ -784,11 +918,14 @@ function renderWifiPage(container) {
       </div>
     </div>
 
+    <div class="page-section card" id="wifi-corr-mount"></div>
+
     <div class="page-section card" id="wifi-section-mount"></div>
   `;
 
   renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
   renderHBarChart(document.getElementById("chart-wifi-vendor"), wifiVendorSegments(wifiLast24h), "var(--series-blue)");
+  renderWifiCorrelation(document.getElementById("wifi-corr-mount"));
   renderWifiSection(document.getElementById("wifi-section-mount"));
 }
 
@@ -965,7 +1102,6 @@ function renderDashboard(container) {
   const total = lanCurrent.length;
   const newLast24h = state.lanRows.filter((r) => r.status === "new" && within24h(parseTs(r.timestamp))).length;
   const wifiLast24h = state.wifiRows.filter((r) => within24h(parseTs(r.timestamp)));
-  const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id));
 
   container.innerHTML = `
     <div class="page-section kpi-row">
@@ -986,13 +1122,9 @@ function renderDashboard(container) {
         value: newLast24h, sub: "Nelle ultime 24h",
         sparkValues: hourlyCounts(state.lanRows.filter((r) => r.status === "new")), sparkColor: "var(--series-violet)",
       })}
-      ${kpiTile({
-        label: "Avvisi attivi", icon: "alert-triangle", tone: "critical",
-        value: activeAlerts.length,
-        sub: activeAlerts.length ? "Richiede attenzione" : "Nessun avviso",
-        subTone: activeAlerts.length ? "critical" : undefined,
-      })}
     </div>
+
+    <div class="page-section card" id="nearby-section-mount"></div>
 
     <div class="page-section grid-3">
       <div class="card">
@@ -1012,6 +1144,7 @@ function renderDashboard(container) {
     <div class="page-section card" id="host-section-mount"></div>
   `;
 
+  renderNearbySection(document.getElementById("nearby-section-mount"));
   renderDonut(document.getElementById("donut-vendor"), vendorSegments(lanCurrent), "Totale");
   renderDonut(document.getElementById("donut-status"), statusSegments(lanCurrent), "Totale");
   renderBarChart(document.getElementById("chart-lan-activity"), hourlyCounts(state.lanRows));

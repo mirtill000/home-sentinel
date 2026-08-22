@@ -304,7 +304,7 @@ svg { display: block; }
  * KPI tiles
  * ------------------------------------------------------------------ */
 
-.kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 .kpi-tile {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -483,6 +483,9 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .data-table tbody tr:last-child td { border-bottom: none; }
 .data-table tbody tr:hover { background: var(--surface-2); }
 .mono { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+
+.source-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--text-secondary); font-weight: 600; }
+.source-tag svg { width: 13px; height: 13px; color: var(--text-muted); flex-shrink: 0; }
 
 .badge {
   display: inline-flex;
