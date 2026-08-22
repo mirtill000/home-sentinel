@@ -127,7 +127,19 @@ function readCsvFile(file) {
   });
 }
 
+let loadInFlight = false;
+
 async function loadAll() {
+  if (loadInFlight) return; // avoid overlapping fetches when the refresh interval is shorter than a load cycle
+  loadInFlight = true;
+  try {
+    await loadAllOnce();
+  } finally {
+    loadInFlight = false;
+  }
+}
+
+async function loadAllOnce() {
   hideError();
   const errors = [];
 
@@ -851,7 +863,7 @@ function renderAvvisi(container) {
 }
 
 function renderImpostazioni(container) {
-  const theme = currentTheme();
+  const themeMode = getSetting("theme");
   container.innerHTML = `
     <div class="page-section card">
       <div class="card-head"><h2>Sorgenti dati</h2></div>
@@ -864,13 +876,15 @@ function renderImpostazioni(container) {
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
             <option value="0">Disattivato</option>
-            <option value="10000">Ogni 10s</option>
+            <option value="1000">Ogni 1s</option>
+            <option value="5000">Ogni 5s</option>
+            <option value="15000">Ogni 15s</option>
             <option value="30000">Ogni 30s</option>
             <option value="60000">Ogni 60s</option>
           </select>
         </div>
       </div>
-      <p class="field-hint">Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di sicurezza del browser: usa i campi "carica file locale", oppure servi questa cartella con <code>python3 -m http.server</code>.</p>
+      <p class="field-hint">Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di sicurezza del browser: usa i campi "carica file locale", oppure servi questa cartella con <code>python3 -m http.server</code>. Con CSV di log molto grandi, intervalli di 1-5s rileggono l'intero file ad ogni ciclo: se noti rallentamenti, alza l'intervallo.</p>
     </div>
 
     <div class="page-section card">
@@ -885,10 +899,11 @@ function renderImpostazioni(container) {
     </div>
 
     <div class="page-section card">
-      <div class="card-head"><h2>Aspetto</h2></div>
+      <div class="card-head"><h2>Aspetto</h2><span class="card-sub">"Sistema" segue il tema del sistema operativo</span></div>
       <div class="theme-choice">
-        <button type="button" data-theme-choice="dark" class="${theme === "dark" ? "active" : ""}">Scuro</button>
-        <button type="button" data-theme-choice="light" class="${theme === "light" ? "active" : ""}">Chiaro</button>
+        <button type="button" data-theme-choice="light" class="${themeMode === "light" ? "active" : ""}">${ICON("sun")}Chiaro</button>
+        <button type="button" data-theme-choice="dark" class="${themeMode === "dark" ? "active" : ""}">${ICON("moon")}Scuro</button>
+        <button type="button" data-theme-choice="system" class="${themeMode === "system" ? "active" : ""}">${ICON("monitor")}Sistema</button>
       </div>
     </div>
   `;
@@ -904,7 +919,7 @@ function renderImpostazioni(container) {
     document.getElementById(id).addEventListener("change", (e) => { setSetting(key, e.target.value.trim()); updateNetworkCard(); });
   });
   container.querySelectorAll("[data-theme-choice]").forEach((btn) => {
-    btn.addEventListener("click", () => setTheme(btn.dataset.themeChoice));
+    btn.addEventListener("click", () => setThemeMode(btn.dataset.themeChoice));
   });
 }
 
@@ -1075,8 +1090,12 @@ function setupTopbar() {
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".status-pill-wrap")) document.getElementById("status-dropdown").classList.add("hidden");
   });
-  document.getElementById("theme-toggle").addEventListener("click", () => {
-    setTheme(currentTheme() === "dark" ? "light" : "dark");
+  document.getElementById("theme-toggle").addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.getElementById("theme-menu").classList.toggle("hidden");
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".theme-toggle-wrap")) document.getElementById("theme-menu").classList.add("hidden");
   });
 }
 
@@ -1094,17 +1113,42 @@ function updateStatusPill() {
   `;
 }
 
-function currentTheme() { return document.documentElement.dataset.theme === "light" ? "light" : "dark"; }
-function setTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  setSetting("theme", theme);
-  document.getElementById("theme-toggle").innerHTML = ICON(theme === "dark" ? "sun" : "moon");
+const THEME_OPTIONS = [
+  { key: "light", label: "Chiaro", icon: "sun" },
+  { key: "dark", label: "Scuro", icon: "moon" },
+  { key: "system", label: "Sistema", icon: "monitor" },
+];
+
+function resolveSystemTheme() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+function currentResolvedTheme() {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+function applyThemeMode(mode) {
+  document.documentElement.dataset.theme = mode === "system" ? resolveSystemTheme() : mode;
+  updateThemeControls(mode);
+}
+function setThemeMode(mode) {
+  setSetting("theme", mode);
+  applyThemeMode(mode);
   if (state.route === "impostazioni") renderCurrentRoute();
 }
+function updateThemeControls(mode) {
+  document.getElementById("theme-toggle").innerHTML = ICON(currentResolvedTheme() === "dark" ? "moon" : "sun");
+  const menu = document.getElementById("theme-menu");
+  menu.innerHTML = THEME_OPTIONS.map((o) => `<button type="button" data-theme-mode="${o.key}" class="${mode === o.key ? "active" : ""}">${ICON(o.icon)}<span>${o.label}</span>${mode === o.key ? '<span class="check">✓</span>' : ""}</button>`).join("");
+  menu.querySelectorAll("[data-theme-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => { setThemeMode(btn.dataset.themeMode); menu.classList.add("hidden"); });
+  });
+}
 function initTheme() {
-  const stored = getSetting("theme");
-  document.documentElement.dataset.theme = stored;
-  document.getElementById("theme-toggle").innerHTML = ICON(stored === "dark" ? "sun" : "moon");
+  applyThemeMode(getSetting("theme"));
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+      if (getSetting("theme") === "system") applyThemeMode("system");
+    });
+  }
 }
 
 function updateNetworkCard() {

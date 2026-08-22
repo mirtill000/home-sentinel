@@ -289,6 +289,39 @@ svg { display: block; }
 }
 .status-dropdown strong { color: var(--text-primary); }
 
+.theme-toggle-wrap { position: relative; }
+.theme-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 4px;
+  min-width: 170px;
+  z-index: 40;
+}
+.theme-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.theme-menu button svg { width: 15px; height: 15px; color: var(--text-muted); flex-shrink: 0; }
+.theme-menu button:hover { background: var(--surface-2); }
+.theme-menu button.active { color: var(--brand); background: var(--brand-wash); }
+.theme-menu button.active svg { color: var(--brand); }
+.theme-menu button .check { margin-left: auto; color: var(--brand); font-weight: 700; }
+
 .page { padding: 22px 24px 48px; max-width: 1320px; }
 .page-section { margin-bottom: 20px; }
 .page-section:last-child { margin-bottom: 0; }
@@ -579,9 +612,11 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .field-hint code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 .theme-choice { display: flex; gap: 8px; }
 .theme-choice button {
-  flex: 1; padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--border);
   background: var(--surface-2); color: var(--text-secondary); font-size: 0.8rem; font-weight: 600; cursor: pointer;
 }
+.theme-choice button svg { width: 15px; height: 15px; }
 .theme-choice button.active { border-color: var(--brand); color: var(--brand); background: var(--brand-wash); }
 
 .export-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
