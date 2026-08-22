@@ -7,8 +7,16 @@ il WiFi onboard del Raspberry Pi 3 non lo supporta bene) e lo scan passivo
 dei device BLE nei dintorni (qui invece basta il Bluetooth 4.1 LE onboard
 del Pi 3, nessun adattatore esterno necessario).
 
+Oltre alla discovery, include moduli opzionali di detection: fingerprinting
+del *tipo* di device (mDNS/SSDP/NetBIOS/banner, non solo vendor da MAC OUI),
+una baseline comportamentale per device con rilevamento anomalie (orari
+insoliti, nuove porte aperte), e rilevamento di possibili attacchi di rete
+(ARP spoofing, rogue DHCP, evil twin WiFi). Vedi "Moduli di detection" sotto.
+
 Ogni evento viene appeso in tempo reale a file **JSON Lines** separati
-(un oggetto JSON per riga, uno per modulo), senza bisogno di un database.
+(un oggetto JSON per riga, uno per modulo). Non serve un database per far
+girare il daemon, ma è disponibile uno specchio **SQLite** opzionale (attivo
+di default) per query storiche/aggregate senza dover riparsare i JSONL.
 
 ## Installazione
 
@@ -75,18 +83,68 @@ Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
 `service_uuids` un array di UUID dei servizi GATT annunciati. `tx_power`
 è `null` se il device non lo include nell'advertisement.
 
+**`fingerprint_discovery.jsonl`** (con `--fingerprint`):
+`{timestamp, mac, ip, device_type, services, ssdp, netbios_name, banners}`
+Una riga per ogni fingerprint eseguito su un device LAN (alla prima
+rilevazione e ad ogni port scan periodico). `device_type` è una
+classificazione euristica (es. "Stampante", "Google Cast / Chromecast",
+"PC/Server Windows (SMB)"); `services` i tipi di servizio mDNS trovati,
+`ssdp` gli header SSDP/UPnP di risposta, `banners` i banner raccolti sulle
+porte aperte (chiave = porta).
+
+**`alerts_detection.jsonl`**:
+`{timestamp, severity, type, mac, ip, message, details}`
+Una riga per ogni alert generato dai moduli di detection (vedi sotto).
+`severity` è `low`/`medium`/`high`, `type` un codice macchina (es.
+`possibile_arp_spoofing`, `nuova_porta`, `orario_insolito`,
+`possibile_rogue_dhcp`, `possibile_evil_twin`).
+
+## Moduli di detection
+
+Tutti scrivono su `alerts_detection.jsonl` (e, se attivo, sullo specchio
+SQLite) invece che sulla console soltanto, così restano consultabili anche
+a posteriori:
+
+- **Anomaly detection** (attivo di default, `--no-anomaly-detection` per
+  disabilitarlo): costruisce per ogni MAC una baseline di orari di
+  attività tipici e porte normalmente aperte; segnala presenza in un
+  orario mai osservato prima (dopo un periodo minimo di apprendimento) e
+  nuove porte aperte su un device già noto. La baseline è persistita su
+  SQLite e sopravvive ai riavvii del daemon.
+- **Rilevamento conflitti ARP/IP** (attivo di default,
+  `--no-arp-detection` per disabilitarlo): segnala quando due MAC diversi,
+  entrambi risultanti online, rivendicano lo stesso IP nello stesso ciclo
+  di scan — indicatore tipico di ARP spoofing/poisoning. Una normale
+  riassegnazione DHCP (il vecchio device va offline prima che l'IP venga
+  riassegnato) non genera alert.
+- **Rogue DHCP** (`--detect-rogue-dhcp`, opzionale): sniffing passivo di
+  DHCPOFFER/DHCPACK sull'interfaccia LAN; se non si specifica
+  `--dhcp-trusted-servers` impara il primo server osservato come fidato e
+  segnala ogni server diverso visto in seguito.
+- **Evil twin WiFi** (`--home-ssid`, richiede `--wifi-iface` già attivo):
+  osserva i beacon 802.11 catturati durante il channel hopping e segnala
+  un SSID monitorato trasmesso da un BSSID mai visto prima.
+- **Fingerprinting device** (`--fingerprint`, opzionale): esegue mDNS,
+  SSDP/UPnP, query NetBIOS e banner grabbing sulle porte aperte di ogni
+  device LAN per classificarne il tipo, oltre al solo vendor da MAC OUI.
+  Genera traffico di rete aggiuntivo (sonde attive), per questo è opt-in;
+  gira solo alla prima rilevazione di un device e ad ogni port scan
+  periodico, non ad ogni ciclo.
+
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
 utilizzabile offline) con 10 sezioni, tutte basate sui dati reali dei log
-LAN, WiFi e BLE:
+LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
+e alert di detection:
 
 - **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi),
   widget "Dispositivi nei dintorni" (euristica su segnale forte + presenza
   ripetuta, incrociando probe WiFi e BLE), distribuzione per vendor e per
   stato, attività di rete 24h, tabella host.
-- **Host** — elenco completo dei dispositivi LAN con dettaglio e cronologia
-  delle rilevazioni per singolo MAC.
+- **Host** — elenco completo dei dispositivi LAN, con tipo di device (se
+  `--fingerprint` è attivo sul daemon), dettaglio e cronologia delle
+  rilevazioni per singolo MAC.
 - **Mappa rete** — topologia schematica (a stella) attorno al gateway
   configurato in Impostazioni.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
@@ -97,12 +155,16 @@ LAN, WiFi e BLE:
   manufacturer noti), attività oraria, top manufacturer (da company ID
   Bluetooth SIG), elenco advertisement grezzi.
 - **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
-  RDP, SMB, VNC, FTP) aperte sui device correnti; nessun dato è inventato.
-- **Impostazioni** — sorgenti dati JSON Lines (URL o file locale), tema
+  RDP, SMB, VNC, FTP) aperte sui device correnti, calcolati dalla dashboard
+  stessa; più gli alert generati dai moduli di detection del daemon
+  (`alerts_detection.jsonl`, se presente) — ARP spoofing, rogue DHCP, evil
+  twin WiFi, anomalie comportamentali. Nessun dato è inventato.
+- **Impostazioni** — sorgenti dati JSON Lines (URL o file locale, incluse
+  quelle di alert/fingerprint se i moduli corrispondenti sono attivi), tema
   (Chiaro/Scuro/Sistema), intervallo di auto-refresh (1/5/15/30/60s o
   disattivato), etichetta del gateway usata in Mappa rete.
-- **Esporta** — scarica dispositivi LAN, log completo, probe WiFi, scan BLE
-  o avvisi in CSV o JSON.
+- **Esporta** — scarica dispositivi LAN, log completo, probe WiFi, scan
+  BLE, fingerprint device o avvisi in CSV o JSON.
 - **Aiuto** — guida rapida e limiti noti.
 
 Per usarla, servi la cartella `dashboard/` con un server statico qualsiasi.

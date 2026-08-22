@@ -38,11 +38,15 @@ from pathlib import Path
 
 try:
     from scapy.all import ARP, Ether, conf, sniff, srp
-    from scapy.layers.dot11 import Dot11Elt, Dot11ProbeReq
+    from scapy.layers.dot11 import Dot11Beacon, Dot11Elt, Dot11ProbeReq
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "scapy non è installato. Installa le dipendenze con: pip install -r requirements.txt"
     ) from exc
+
+from sentinel_detection import AlertManager, AnomalyDetector, EvilTwinDetector, RogueDhcpDetector
+from sentinel_fingerprint import fingerprint_device
+from sentinel_storage import SqliteStore
 
 LOG = logging.getLogger("home_sentinel")
 
@@ -150,6 +154,11 @@ class LanDiscoveryService:
         port_scan_interval: float,
         log: JsonlLogger,
         stop_event: threading.Event,
+        sqlite_store: SqliteStore | None = None,
+        anomaly_detector: AnomalyDetector | None = None,
+        alert_manager: AlertManager | None = None,
+        arp_detection_enabled: bool = True,
+        fingerprint_log: JsonlLogger | None = None,
     ):
         self.subnet = subnet
         self.iface = iface
@@ -158,8 +167,14 @@ class LanDiscoveryService:
         self.port_scan_interval = port_scan_interval
         self.log = log
         self.stop_event = stop_event
+        self.sqlite_store = sqlite_store
+        self.anomaly_detector = anomaly_detector
+        self.alert_manager = alert_manager
+        self.arp_detection_enabled = arp_detection_enabled
+        self.fingerprint_log = fingerprint_log
         self.devices: dict[str, DeviceState] = {}
         self._last_port_scan: dict[str, float] = {}
+        self._ip_owner: dict[str, str] = {}
 
     def run(self) -> None:
         LOG.info("LAN discovery avviato su %s (intervallo=%ss)", self.subnet, self.interval)
@@ -180,6 +195,11 @@ class LanDiscoveryService:
         for ip, mac in found:
             mac = mac.lower()
             seen_macs.add(mac)
+
+            if self.arp_detection_enabled:
+                self._check_arp_conflict(ip, mac)
+            self._ip_owner[ip] = mac
+
             state = self.devices.get(mac)
             is_new = state is None
 
@@ -195,14 +215,52 @@ class LanDiscoveryService:
             if do_port_scan:
                 open_ports = scan_ports(ip, self.ports)
                 self._last_port_scan[mac] = now
+                if self.fingerprint_log is not None:
+                    self._fingerprint_and_log(ip, mac, open_ports, vendor)
 
             self.devices[mac] = DeviceState(ip=ip, hostname=hostname, vendor=vendor, last_seen=now, online=True)
             self._write("new" if is_new else "online", ip, mac, hostname, vendor, open_ports)
+
+            if self.anomaly_detector is not None:
+                self.anomaly_detector.observe(mac, ip, hostname, vendor, open_ports)
 
         for mac, state in list(self.devices.items()):
             if mac not in seen_macs and state.online:
                 state.online = False
                 self._write("offline", state.ip, mac, state.hostname, state.vendor, [])
+
+    def _check_arp_conflict(self, ip: str, mac: str) -> None:
+        """Segnala solo un conflitto reale: due MAC diversi, entrambi online, che rivendicano lo stesso IP.
+
+        Una semplice riassegnazione DHCP (il vecchio device va offline, poi
+        un altro device prende quell'IP) non genera alert: qui si controlla
+        esplicitamente che il MAC precedente risulti *ancora* online,
+        condizione tipica di ARP spoofing/poisoning, non di normale
+        turnover DHCP.
+        """
+        prev_mac = self._ip_owner.get(ip)
+        if not prev_mac or prev_mac == mac:
+            return
+        prev_state = self.devices.get(prev_mac)
+        if prev_state and prev_state.online and self.alert_manager is not None:
+            self.alert_manager.emit(
+                "high", "possibile_arp_spoofing",
+                f"L'IP {ip} è rivendicato sia da {prev_mac} che da {mac} mentre entrambi risultano online: "
+                "possibile ARP spoofing/poisoning",
+                ip=ip, mac=mac, details={"mac_precedente": prev_mac, "mac_nuovo": mac},
+            )
+
+    def _fingerprint_and_log(self, ip: str, mac: str, open_ports: list[int], vendor: str) -> None:
+        try:
+            result = fingerprint_device(ip, open_ports, vendor)
+        except Exception:
+            LOG.exception("Fingerprint fallito per %s", ip)
+            return
+        row = {"timestamp": now_iso(), "mac": mac, "ip": ip, **result}
+        self.fingerprint_log.write(row)
+        if self.sqlite_store:
+            self.sqlite_store.insert_fingerprint(row)
+        LOG.debug("Fingerprint ip=%s mac=%s type=%s services=%s", ip, mac, result["device_type"], result["services"])
 
     def _write(self, status: str, ip: str, mac: str, hostname: str, vendor: str, open_ports: list[int]) -> None:
         row = {
@@ -215,6 +273,8 @@ class LanDiscoveryService:
             "open_ports": open_ports,
         }
         self.log.write(row)
+        if self.sqlite_store:
+            self.sqlite_store.insert_lan_event(row)
         LOG.debug("LAN %s ip=%s mac=%s host=%s", status, ip, mac, hostname)
 
 
@@ -231,6 +291,8 @@ class WifiProbeMonitor:
         log: JsonlLogger,
         stop_event: threading.Event,
         auto_monitor: bool = False,
+        sqlite_store: SqliteStore | None = None,
+        evil_twin_detector: EvilTwinDetector | None = None,
     ):
         self.iface = iface
         self.channels = channels
@@ -238,6 +300,8 @@ class WifiProbeMonitor:
         self.log = log
         self.stop_event = stop_event
         self.auto_monitor = auto_monitor
+        self.sqlite_store = sqlite_store
+        self.evil_twin_detector = evil_twin_detector
         self._current_channel = channels[0]
 
     def _setup_monitor_mode(self) -> None:
@@ -269,6 +333,9 @@ class WifiProbeMonitor:
             self.stop_event.wait(self.hop_interval)
 
     def _handle_packet(self, pkt) -> None:
+        if self.evil_twin_detector is not None and pkt.haslayer(Dot11Beacon):
+            self._handle_beacon(pkt)
+
         if not pkt.haslayer(Dot11ProbeReq):
             return
         mac = pkt.addr2
@@ -295,7 +362,20 @@ class WifiProbeMonitor:
             "channel": self._current_channel,
         }
         self.log.write(row)
+        if self.sqlite_store:
+            self.sqlite_store.insert_probe_event(row)
         LOG.debug("WiFi probe mac=%s ssid=%r rssi=%s ch=%s", mac, ssid, rssi, self._current_channel)
+
+    def _handle_beacon(self, pkt) -> None:
+        bssid = pkt.addr2
+        elt = pkt.getlayer(Dot11Elt)
+        if elt is None or elt.ID != 0:
+            return
+        try:
+            ssid = elt.info.decode(errors="ignore")
+        except Exception:
+            return
+        self.evil_twin_detector.observe_beacon(ssid, bssid or "")
 
     def run(self) -> None:
         if self.auto_monitor:
@@ -340,10 +420,17 @@ class BleScanMonitor:
     funziona anche senza bleak installato se BLE non è abilitato).
     """
 
-    def __init__(self, log: JsonlLogger, stop_event: threading.Event, adapter: str | None = None):
+    def __init__(
+        self,
+        log: JsonlLogger,
+        stop_event: threading.Event,
+        adapter: str | None = None,
+        sqlite_store: SqliteStore | None = None,
+    ):
         self.log = log
         self.stop_event = stop_event
         self.adapter = adapter
+        self.sqlite_store = sqlite_store
 
     def _handle_detection(self, device, advertisement_data) -> None:
         row = {
@@ -356,6 +443,8 @@ class BleScanMonitor:
             "service_uuids": list(advertisement_data.service_uuids),
         }
         self.log.write(row)
+        if self.sqlite_store:
+            self.sqlite_store.insert_ble_event(row)
         LOG.debug("BLE device mac=%s name=%r rssi=%s", row["mac"], row["name"], row["rssi"])
 
     async def _run_async(self) -> None:
@@ -458,6 +547,63 @@ def parse_args() -> argparse.Namespace:
         help="Percorso file JSON Lines output scan BLE",
     )
 
+    p.add_argument(
+        "--db",
+        default="/var/log/home-sentinel/home-sentinel.db",
+        help="Percorso database SQLite (specchio indicizzato dei log JSON Lines, per query storiche)",
+    )
+    p.add_argument("--no-db", action="store_true", help="Disabilita lo specchio SQLite")
+
+    p.add_argument(
+        "--fingerprint",
+        action="store_true",
+        help="Abilita il fingerprinting dei device LAN (mDNS/SSDP/NetBIOS/banner) su ogni port scan",
+    )
+    p.add_argument(
+        "--fingerprint-log",
+        default="/var/log/home-sentinel/fingerprint_discovery.jsonl",
+        help="Percorso file JSON Lines output fingerprint device",
+    )
+
+    p.add_argument(
+        "--alerts-log",
+        default="/var/log/home-sentinel/alerts_detection.jsonl",
+        help="Percorso file JSON Lines degli alert generati dai rilevatori (anomalie, ARP, DHCP, evil twin)",
+    )
+    p.add_argument(
+        "--no-anomaly-detection",
+        action="store_true",
+        help="Disabilita la baseline comportamentale per device (orari tipici, porte note)",
+    )
+    p.add_argument(
+        "--no-arp-detection",
+        action="store_true",
+        help="Disabilita il rilevamento di conflitti IP/MAC (possibile ARP spoofing) durante lo scan LAN",
+    )
+
+    p.add_argument(
+        "--detect-rogue-dhcp",
+        action="store_true",
+        help="Abilita lo sniffing passivo DHCP per rilevare server DHCP non attesi (possibile rogue DHCP)",
+    )
+    p.add_argument(
+        "--dhcp-trusted-servers",
+        default="",
+        help="IP dei server DHCP fidati, separati da virgola (default: impara il primo osservato)",
+    )
+    p.add_argument(
+        "--dhcp-iface",
+        default=None,
+        help="Interfaccia su cui sniffare il traffico DHCP (default: stessa di --lan-iface)",
+    )
+
+    p.add_argument(
+        "--home-ssid",
+        default="",
+        help="SSID di casa da monitorare per possibili evil twin, separati da virgola "
+        "(richiede --wifi-iface; ogni BSSID nuovo per un SSID monitorato genera un alert)",
+    )
+
     p.add_argument("--log-level", default="INFO")
     return p.parse_args()
 
@@ -478,6 +624,17 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    sqlite_store = None if args.no_db else SqliteStore(Path(args.db))
+
+    alerts_log = JsonlLogger(Path(args.alerts_log))
+    alert_manager = AlertManager(alerts_log, sqlite_store)
+
+    anomaly_detector = None if args.no_anomaly_detection else AnomalyDetector(alert_manager, sqlite_store)
+
+    fingerprint_log = None
+    if args.fingerprint:
+        fingerprint_log = JsonlLogger(Path(args.fingerprint_log))
+
     lan_log = JsonlLogger(Path(args.lan_log))
     ports = [int(port) for port in args.ports.split(",") if port.strip()]
     lan_service = LanDiscoveryService(
@@ -488,13 +645,21 @@ def main() -> None:
         port_scan_interval=args.port_scan_interval,
         log=lan_log,
         stop_event=stop_event,
+        sqlite_store=sqlite_store,
+        anomaly_detector=anomaly_detector,
+        alert_manager=alert_manager,
+        arp_detection_enabled=not args.no_arp_detection,
+        fingerprint_log=fingerprint_log,
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
+
+    home_ssids = {s.strip() for s in args.home_ssid.split(",") if s.strip()}
 
     probe_log = None
     if args.wifi_iface:
         probe_log = JsonlLogger(Path(args.probe_log))
         channels = [int(ch) for ch in args.wifi_channels.split(",") if ch.strip()]
+        evil_twin_detector = EvilTwinDetector(home_ssids, alert_manager) if home_ssids else None
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
@@ -502,18 +667,34 @@ def main() -> None:
             log=probe_log,
             stop_event=stop_event,
             auto_monitor=args.auto_monitor,
+            sqlite_store=sqlite_store,
+            evil_twin_detector=evil_twin_detector,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
     else:
         LOG.info("Nessuna --wifi-iface indicata: modulo probe monitor disabilitato")
+        if home_ssids:
+            LOG.warning("--home-ssid richiede --wifi-iface: rilevamento evil twin disabilitato")
 
     ble_log = None
     if args.ble:
         ble_log = JsonlLogger(Path(args.ble_log))
-        ble_service = BleScanMonitor(log=ble_log, stop_event=stop_event, adapter=args.ble_adapter)
+        ble_service = BleScanMonitor(
+            log=ble_log, stop_event=stop_event, adapter=args.ble_adapter, sqlite_store=sqlite_store,
+        )
         threads.append(threading.Thread(target=ble_service.run, name="ble-scan", daemon=True))
     else:
         LOG.info("Nessun --ble indicato: modulo scan BLE disabilitato")
+
+    if args.detect_rogue_dhcp:
+        trusted_servers = {s.strip() for s in args.dhcp_trusted_servers.split(",") if s.strip()}
+        dhcp_detector = RogueDhcpDetector(
+            iface=args.dhcp_iface or args.lan_iface,
+            trusted_servers=trusted_servers,
+            alert_manager=alert_manager,
+            stop_event=stop_event,
+        )
+        threads.append(threading.Thread(target=dhcp_detector.run, name="rogue-dhcp-detector", daemon=True))
 
     for t in threads:
         t.start()
@@ -530,6 +711,11 @@ def main() -> None:
             probe_log.close()
         if ble_log:
             ble_log.close()
+        if fingerprint_log:
+            fingerprint_log.close()
+        alerts_log.close()
+        if sqlite_store:
+            sqlite_store.close()
         LOG.info("Home Sentinel arrestato")
 
 

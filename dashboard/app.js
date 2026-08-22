@@ -38,10 +38,12 @@ function ICON(name) {
 const SETTINGS_KEYS = {
   lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", bleUrl: "hs.bleUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
   netLabel: "hs.net.label", netGateway: "hs.net.gateway",
+  alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "probe_discovery.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
   netLabel: "", netGateway: "",
+  alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl",
 };
 
 function getSetting(key) {
@@ -81,6 +83,8 @@ const state = {
   lanRows: [],
   wifiRows: [],
   bleRows: [],
+  alertsRows: [],
+  fingerprintRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -169,6 +173,22 @@ async function loadAllOnce() {
   } catch (err) {
     errors.push(`BLE: ${err.message}`);
     state.bleRows = state.bleRows || [];
+  }
+
+  // Alert/fingerprint sono generati dai moduli di detection opzionali del
+  // daemon: possono legittimamente non esistere ancora (feature non
+  // abilitata, o versione del daemon precedente alla loro introduzione),
+  // quindi un fallimento qui resta silenzioso invece di comparire come
+  // errore di caricamento.
+  try {
+    state.alertsRows = await fetchJsonl(getSetting("alertsUrl"));
+  } catch {
+    state.alertsRows = state.alertsRows || [];
+  }
+  try {
+    state.fingerprintRows = await fetchJsonl(getSetting("fingerprintUrl"));
+  } catch {
+    state.fingerprintRows = state.fingerprintRows || [];
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -266,6 +286,18 @@ function latestLanByMac(rows) {
     if (!prev || ts >= prev._ts) byMac.set(row.mac, { ...row, _ts: ts });
   }
   return [...byMac.values()];
+}
+
+/** Mappa mac -> fingerprint più recente (da fingerprint_discovery.jsonl, se il modulo --fingerprint è attivo). */
+function latestFingerprintByMac(rows) {
+  const byMac = new Map();
+  for (const row of rows) {
+    const ts = parseTs(row.timestamp);
+    if (ts === null) continue;
+    const prev = byMac.get(row.mac);
+    if (!prev || ts >= prev._ts) byMac.set(row.mac, { ...row, _ts: ts });
+  }
+  return byMac;
 }
 
 function sightingsForMac(mac) {
@@ -554,9 +586,25 @@ function renderNearbySection(container) {
   `;
 }
 
+/** Severity dei rilevatori server-side (low/medium/high) -> classi CSS esistenti (info/serious/critical). */
+const DETECTION_SEVERITY_MAP = { low: "info", medium: "serious", high: "critical" };
+
 function computeAlerts() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const alerts = [];
+
+  for (const row of state.alertsRows) {
+    const ts = parseTs(row.timestamp);
+    if (ts === null) continue;
+    alerts.push({
+      id: `detect:${row.type}:${row.mac || row.ip || ""}:${row.timestamp}`,
+      severity: DETECTION_SEVERITY_MAP[row.severity] || "serious",
+      title: row.type ? row.type.replace(/_/g, " ") : "Alert",
+      desc: row.message || "",
+      mac: row.mac,
+      ts,
+    });
+  }
 
   for (const row of state.lanRows) {
     if (row.status !== "new") continue;
@@ -650,6 +698,7 @@ function renderHostSection(container) {
           <th data-sort="hostname">Nome host</th>
           <th data-sort="mac">Indirizzo MAC</th>
           <th data-sort="vendor">Produttore</th>
+          <th>Tipo</th>
           <th data-sort="open_ports">Porte aperte</th>
           <th data-sort="last_seen">Ultima attività</th>
           <th></th>
@@ -687,8 +736,9 @@ function renderHostTableBody() {
     return `${d.ip} ${d.mac} ${d.hostname} ${d.vendor}`.toLowerCase().includes(search);
   });
   rows = sortRows(rows, state.lanSort.key, state.lanSort.dir);
+  const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
 
-  body.innerHTML = rows.map(hostRowHtml).join("");
+  body.innerHTML = rows.map((d) => hostRowHtml(d, fingerprintByMac.get(d.mac))).join("");
   document.getElementById("host-empty").classList.toggle("hidden", rows.length > 0);
 
   body.querySelectorAll(".kebab-btn").forEach((btn) => {
@@ -716,15 +766,17 @@ function renderHostTableBody() {
   });
 }
 
-function hostRowHtml(d) {
+function hostRowHtml(d, fingerprint) {
   const menuOpen = state.openMenuMac === d.mac;
   const expanded = state.expandedMac === d.mac;
+  const deviceType = fingerprint?.device_type || "";
   let html = `<tr>
     <td>${statusBadge(d.status)}</td>
     <td class="mono">${escapeHtml(d.ip)}</td>
     <td>${escapeHtml(d.hostname) || '<span class="muted">—</span>'}</td>
     <td class="mono">${escapeHtml(d.mac)}</td>
     <td>${escapeHtml(d.vendor) || '<span class="muted">—</span>'}</td>
+    <td>${escapeHtml(deviceType) || '<span class="muted">—</span>'}</td>
     <td>${formatPorts(d.open_ports) || '<span class="muted">—</span>'}</td>
     <td>${formatTs(d.timestamp)}</td>
     <td>
@@ -740,10 +792,11 @@ function hostRowHtml(d) {
 
   if (expanded) {
     const history = sightingsForMac(d.mac).slice(-15).reverse();
-    html += `<tr class="detail-row"><td colspan="8">
+    html += `<tr class="detail-row"><td colspan="9">
       <div class="detail-grid">
         <div><span>Hostname</span>${escapeHtml(d.hostname) || "—"}</div>
         <div><span>Vendor</span>${escapeHtml(d.vendor) || "—"}</div>
+        <div><span>Tipo dispositivo</span>${escapeHtml(deviceType) || "—"}</div>
         <div><span>Porte aperte</span>${formatPorts(d.open_ports) || "—"}</div>
         <div><span>Prima rilevazione</span>${formatTs(firstSeenTs(d.mac))}</div>
       </div>
@@ -1249,6 +1302,8 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-wifi-file">Oppure carica file locale</label><input type="file" id="set-wifi-file" accept=".jsonl,.ndjson,.json,.txt"></div>
         <div class="field"><label for="set-ble-url">Log scan BLE (.jsonl)</label><input type="text" id="set-ble-url" value="${escapeHtml(getSetting("bleUrl"))}"></div>
         <div class="field"><label for="set-ble-file">Oppure carica file locale</label><input type="file" id="set-ble-file" accept=".jsonl,.ndjson,.json,.txt"></div>
+        <div class="field"><label for="set-alerts-url">Log alert di detection (.jsonl)</label><input type="text" id="set-alerts-url" value="${escapeHtml(getSetting("alertsUrl"))}"></div>
+        <div class="field"><label for="set-fingerprint-url">Log fingerprint device (.jsonl)</label><input type="text" id="set-fingerprint-url" value="${escapeHtml(getSetting("fingerprintUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -1261,7 +1316,7 @@ function renderImpostazioni(container) {
           </select>
         </div>
       </div>
-      <p class="field-hint">Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di sicurezza del browser: usa i campi "carica file locale", oppure servi questa cartella con <code>python3 -m http.server</code>. Con log molto grandi, intervalli di 1-5s rileggono l'intero file ad ogni ciclo: se noti rallentamenti, alza l'intervallo.</p>
+      <p class="field-hint">Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di sicurezza del browser: usa i campi "carica file locale", oppure servi questa cartella con <code>python3 -m http.server</code>. Con log molto grandi, intervalli di 1-5s rileggono l'intero file ad ogni ciclo: se noti rallentamenti, alza l'intervallo. I log di alert/fingerprint sono opzionali: se i moduli di detection corrispondenti non sono attivi sul daemon, l'assenza del file non genera errori.</p>
     </div>
 
     <div class="page-section card">
@@ -1290,6 +1345,8 @@ function renderImpostazioni(container) {
   document.getElementById("set-wifi-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.wifiFile = e.target.files[0]; loadAll(); } });
   document.getElementById("set-ble-url").addEventListener("change", (e) => { setSetting("bleUrl", e.target.value.trim() || SETTINGS_DEFAULTS.bleUrl); state.bleFile = null; loadAll(); });
   document.getElementById("set-ble-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.bleFile = e.target.files[0]; loadAll(); } });
+  document.getElementById("set-alerts-url").addEventListener("change", (e) => { setSetting("alertsUrl", e.target.value.trim() || SETTINGS_DEFAULTS.alertsUrl); loadAll(); });
+  document.getElementById("set-fingerprint-url").addEventListener("change", (e) => { setSetting("fingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.fingerprintUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -1318,6 +1375,7 @@ function renderEsporta(container) {
     ${exportCardHtml("Log completo discovery LAN", `${state.lanRows.length} righe`, "lan-log")}
     ${exportCardHtml("Probe WiFi", `${state.wifiRows.length} righe`, "wifi")}
     ${exportCardHtml("Scan BLE", `${state.bleRows.length} righe`, "ble")}
+    ${exportCardHtml("Fingerprint device", `${state.fingerprintRows.length} righe`, "fingerprint")}
     ${exportCardHtml("Avvisi", `${alerts.length} avvisi`, "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
@@ -1354,6 +1412,7 @@ function doExport(key, format) {
   else if (key === "lan-log") { rows = state.lanRows; filename = "lan_discovery_log"; }
   else if (key === "wifi") { rows = state.wifiRows; filename = "probe_discovery"; }
   else if (key === "ble") { rows = state.bleRows; filename = "ble_discovery"; }
+  else if (key === "fingerprint") { rows = state.fingerprintRows; filename = "fingerprint_discovery"; }
   else if (key === "alerts") {
     rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
     filename = "alerts";
@@ -1365,7 +1424,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>Come funziona</h3>
-      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>probe_discovery.jsonl</code> per i probe request WiFi e <code>ble_discovery.jsonl</code> per lo scan BLE (un oggetto JSON per riga, moduli WiFi e BLE opzionali; tutti e tre scrivono di default in <code>/var/log/home-sentinel/</code>) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
+      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>probe_discovery.jsonl</code> per i probe request WiFi, <code>ble_discovery.jsonl</code> per lo scan BLE, <code>fingerprint_discovery.jsonl</code> per il tipo di device rilevato e <code>alerts_detection.jsonl</code> per gli alert dei moduli di detection (un oggetto JSON per riga, tutti opzionali tranne LAN; scrivono di default in <code>/var/log/home-sentinel/</code>) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Stato dei dispositivi</h3>
@@ -1379,12 +1438,12 @@ function renderAiuto(container) {
       <h3>Pagine</h3>
       <ul>
         <li><strong>Dashboard</strong> — panoramica: host attivi, probe WiFi, dispositivi nuovi, avvisi, distribuzione per vendor e stato, attività 24h.</li>
-        <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con dettaglio e cronologia per singolo MAC.</li>
+        <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device (se il modulo <code>--fingerprint</code> è attivo sul daemon), dettaglio e cronologia per singolo MAC.</li>
         <li><strong>Mappa rete</strong> — rappresentazione schematica della rete attorno al gateway configurato.</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, top vendor, elenco probe grezzi.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
-        <li><strong>Avvisi</strong> — nuovi dispositivi e porte potenzialmente a rischio aperte, generati dai dati reali.</li>
+        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, orari insoliti, nuove porte su device noti).</li>
         <li><strong>Impostazioni</strong> — sorgenti dati (JSON Lines), etichetta del gateway per la Mappa rete, tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
       </ul>
@@ -1498,7 +1557,7 @@ function updateStatusPill() {
     <div><strong>Sorgente LAN</strong><br>${escapeHtml(state.lanFile ? `${state.lanFile.name} (file locale)` : getSetting("lanUrl"))}</div>
     <div><strong>Sorgente WiFi</strong><br>${escapeHtml(state.wifiFile ? `${state.wifiFile.name} (file locale)` : getSetting("wifiUrl"))}</div>
     <div><strong>Sorgente BLE</strong><br>${escapeHtml(state.bleFile ? `${state.bleFile.name} (file locale)` : getSetting("bleUrl"))}</div>
-    <div><strong>Righe caricate</strong><br>${state.lanRows.length} LAN · ${state.wifiRows.length} WiFi · ${state.bleRows.length} BLE</div>
+    <div><strong>Righe caricate</strong><br>${state.lanRows.length} LAN · ${state.wifiRows.length} WiFi · ${state.bleRows.length} BLE · ${state.alertsRows.length} alert · ${state.fingerprintRows.length} fingerprint</div>
   `;
 }
 
