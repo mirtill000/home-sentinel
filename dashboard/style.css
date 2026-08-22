@@ -363,6 +363,7 @@ svg { display: block; }
 .kpi-icon.tone-blue { background: rgba(57, 135, 229, 0.15); color: var(--series-blue); }
 .kpi-icon.tone-violet { background: rgba(144, 133, 233, 0.16); color: var(--series-violet); }
 .kpi-icon.tone-critical { background: var(--status-critical-wash); color: var(--status-critical); }
+.kpi-icon.tone-orange { background: rgba(217, 89, 38, 0.16); color: var(--cat-2); }
 
 .kpi-value { font-size: 1.9rem; font-weight: 700; line-height: 1; }
 .kpi-value small { font-size: 1rem; color: var(--text-muted); font-weight: 600; }

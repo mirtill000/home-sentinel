@@ -24,6 +24,7 @@ const ICON_PATHS = {
   "alert-triangle": `<path d="M12 4 2.5 20h19L12 4z"/><line x1="12" y1="10" x2="12" y2="15"/><circle cx="12" cy="17.7" r="0.9" fill="currentColor" stroke="none"/>`,
   copy: `<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>`,
   eye: `<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>`,
+  bluetooth: `<path d="M8 8l8 8-4 4V4l4 4-8 8"/>`,
 };
 
 function ICON(name) {
@@ -35,11 +36,11 @@ function ICON(name) {
  * ---------------------------------------------------------------------- */
 
 const SETTINGS_KEYS = {
-  lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
+  lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", bleUrl: "hs.bleUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
   netLabel: "hs.net.label", netSubnet: "hs.net.subnet", netGateway: "hs.net.gateway", netDns: "hs.net.dns",
 };
 const SETTINGS_DEFAULTS = {
-  lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", refreshMs: "30000", theme: "dark",
+  lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_devices.jsonl", refreshMs: "30000", theme: "dark",
   netLabel: "", netSubnet: "", netGateway: "", netDns: "",
 };
 
@@ -55,6 +56,22 @@ const DISMISSED_KEY = "hs.alerts.dismissed";
 const RISK_PORTS = { 21: "FTP", 23: "Telnet", 445: "SMB", 3389: "RDP", 5900: "VNC" };
 const CAT_COLORS = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--cat-4)", "var(--cat-5)", "var(--cat-6)", "var(--cat-7)", "var(--cat-8)"];
 const WIFI_TABLE_LIMIT = 300;
+const BLE_TABLE_LIMIT = 300;
+
+/** Company ID Bluetooth SIG più comuni (elenco parziale e curato, non il
+ * registro completo — vedi bluetooth.com/specifications/assigned-numbers).
+ * Un ID non presente qui viene mostrato come "ID 0x...". */
+const BLE_COMPANY_IDS = {
+  6: "Microsoft",
+  15: "Broadcom",
+  76: "Apple",
+  89: "Nordic Semiconductor",
+  117: "Samsung Electronics",
+  224: "Google",
+};
+function bleCompanyLabel(id) {
+  return BLE_COMPANY_IDS[id] || `ID 0x${Number(id).toString(16).padStart(4, "0")}`;
+}
 
 /* ---------------------------------------------------------------------- *
  * State
@@ -63,10 +80,13 @@ const WIFI_TABLE_LIMIT = 300;
 const state = {
   lanRows: [],
   wifiRows: [],
+  bleRows: [],
   lanFile: null,
   wifiFile: null,
+  bleFile: null,
   lanSort: { key: "last_seen", dir: -1 },
   wifiSort: { key: "timestamp", dir: -1 },
+  bleSort: { key: "timestamp", dir: -1 },
   route: "dashboard",
   refreshTimer: null,
   lastFetchOk: null,
@@ -144,6 +164,13 @@ async function loadAllOnce() {
     state.wifiRows = state.wifiRows || [];
   }
 
+  try {
+    state.bleRows = state.bleFile ? await readJsonlFile(state.bleFile) : await fetchJsonl(getSetting("bleUrl"));
+  } catch (err) {
+    errors.push(`BLE: ${err.message}`);
+    state.bleRows = state.bleRows || [];
+  }
+
   state.lastFetchOk = errors.length === 0;
   if (errors.length) showError(errors.join(" — "));
   document.getElementById("last-updated").textContent = new Date().toLocaleTimeString("it-IT");
@@ -192,6 +219,12 @@ function formatPorts(ports) {
 
 function within24h(ts) {
   return ts !== null && ts >= Date.now() - 24 * 3600 * 1000;
+}
+
+function avgRssi(rows) {
+  const values = rows.map((r) => r.rssi).filter((v) => typeof v === "number");
+  if (!values.length) return null;
+  return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
 }
 
 function statusBadge(status) {
@@ -365,6 +398,39 @@ function renderBarChart(container, buckets) {
   container.append(plot, ticks);
 }
 
+/** Grafico a barre orizzontali per una classifica label -> valore (già ordinata/limitata dal chiamante). */
+function renderHBarChart(container, entries, color) {
+  container.innerHTML = "";
+  if (!entries.length) return; // CSS :empty mostra il placeholder
+
+  const max = Math.max(...entries.map(([, value]) => value), 1);
+  for (const [label, value] of entries) {
+    const row = document.createElement("div");
+    row.className = "hbar-row";
+
+    const name = document.createElement("span");
+    name.className = "hbar-name";
+    name.textContent = label;
+    name.title = label;
+
+    const track = document.createElement("div");
+    track.className = "hbar-track";
+    const fill = document.createElement("div");
+    fill.className = "hbar-fill";
+    fill.style.width = `${Math.max((value / max) * 100, 4)}%`;
+    fill.style.background = color;
+    attachTooltip(fill, `${label}: ${value}`);
+    track.appendChild(fill);
+
+    const val = document.createElement("span");
+    val.className = "hbar-value";
+    val.textContent = value;
+
+    row.append(name, track, val);
+    container.appendChild(row);
+  }
+}
+
 /* ---------------------------------------------------------------------- *
  * Derived views: vendor / status distribution, alerts, scan cycles
  * ---------------------------------------------------------------------- */
@@ -389,6 +455,22 @@ function statusSegments(devices) {
     { label: "Nuovo", value: devices.filter((d) => d.status === "new").length, color: "var(--status-warning)" },
     { label: "Offline", value: devices.filter((d) => d.status === "offline").length, color: "var(--status-muted)" },
   ];
+}
+
+function bleManufacturerSegments(rows) {
+  const counts = new Map();
+  for (const r of rows) {
+    const ids = Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : [];
+    if (!ids.length) {
+      counts.set("Sconosciuto", (counts.get("Sconosciuto") || 0) + 1);
+      continue;
+    }
+    for (const id of ids) {
+      const label = bleCompanyLabel(id);
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
 }
 
 function computeAlerts() {
@@ -654,6 +736,120 @@ function renderWifiTableBody() {
 }
 
 /* ---------------------------------------------------------------------- *
+ * BLE page
+ * ---------------------------------------------------------------------- */
+
+function renderBlePage(container) {
+  const bleLast24h = state.bleRows.filter((r) => within24h(parseTs(r.timestamp)));
+  const distinctMacs = new Set(bleLast24h.map((r) => r.mac));
+  const named = bleLast24h.filter((r) => r.name && r.name.trim());
+  const avg = avgRssi(bleLast24h);
+
+  container.innerHTML = `
+    <div class="page-section kpi-row">
+      ${kpiTile({
+        label: "Advertisement BLE (24h)", icon: "bluetooth", tone: "orange",
+        value: bleLast24h.length, sub: `${distinctMacs.size} MAC distinti`,
+        sparkValues: hourlyCounts(state.bleRows), sparkColor: "var(--cat-2)",
+      })}
+      ${kpiTile({
+        label: "Con nome pubblicizzato", icon: "eye", tone: "orange",
+        value: named.length,
+        sub: bleLast24h.length ? `${Math.round((named.length / bleLast24h.length) * 100)}% del totale (24h)` : "Nessun dato",
+      })}
+      ${kpiTile({
+        label: "RSSI medio (24h)", icon: "wifi", tone: "orange",
+        value: avg === null ? "—" : avg, valueSuffix: avg === null ? "" : "dBm",
+        sub: "Più vicino a 0 = segnale più forte",
+      })}
+      ${kpiTile({
+        label: "Manufacturer noti", icon: "users", tone: "orange",
+        value: new Set(bleLast24h.flatMap((r) => (Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : []).filter((id) => BLE_COMPANY_IDS[id]))).size,
+        sub: "Su company ID Bluetooth SIG riconosciuti",
+      })}
+    </div>
+
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Attività BLE <span class="card-sub">ultime 24h</span></h2></div>
+        <div class="bar-chart" id="chart-ble-activity" data-empty="Nessun dato"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Top manufacturer</h2><span class="card-sub">da company ID annunciati</span></div>
+        <div class="hbar-chart" id="chart-ble-manufacturer" data-empty="Nessun dato"></div>
+      </div>
+    </div>
+
+    <div class="page-section card" id="ble-section-mount"></div>
+  `;
+
+  renderBarChart(document.getElementById("chart-ble-activity"), hourlyCounts(state.bleRows));
+  renderHBarChart(document.getElementById("chart-ble-manufacturer"), bleManufacturerSegments(bleLast24h), "var(--cat-2)");
+  renderBleSection(document.getElementById("ble-section-mount"));
+}
+
+function renderBleSection(container) {
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Advertisement BLE recenti</h2>
+      <div class="filter-row" style="margin:0;">
+        <div class="search-input">${ICON("search")}<input type="text" id="ble-search" placeholder="Cerca per MAC, nome, manufacturer…"></div>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table" id="ble-table">
+        <thead><tr>
+          <th data-sort="timestamp">Timestamp</th>
+          <th data-sort="mac">MAC</th>
+          <th data-sort="name">Nome</th>
+          <th>Manufacturer</th>
+          <th data-sort="rssi">RSSI</th>
+          <th>Servizi</th>
+        </tr></thead>
+        <tbody id="ble-table-body"></tbody>
+      </table>
+      <p class="empty-state hidden" id="ble-empty">Nessun advertisement — abilita <code>--ble</code> sul daemon e controlla la sorgente dati in Impostazioni.</p>
+    </div>`;
+
+  document.getElementById("ble-search").addEventListener("input", renderBleTableBody);
+  container.querySelectorAll("#ble-table thead th[data-sort]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (state.bleSort.key === key) state.bleSort.dir *= -1;
+      else { state.bleSort.key = key; state.bleSort.dir = 1; }
+      renderBleTableBody();
+    });
+  });
+  renderBleTableBody();
+}
+
+function renderBleTableBody() {
+  const searchEl = document.getElementById("ble-search");
+  const body = document.getElementById("ble-table-body");
+  if (!searchEl || !body) return;
+
+  const search = searchEl.value.trim().toLowerCase();
+  let rows = state.bleRows
+    .map((r) => ({
+      ...r,
+      _ts: parseTs(r.timestamp) || 0,
+      _manufacturers: (Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : []).map(bleCompanyLabel),
+    }))
+    .filter((r) => !search || `${r.mac} ${r.name} ${r._manufacturers.join(" ")}`.toLowerCase().includes(search));
+  rows = sortRows(rows, state.bleSort.key, state.bleSort.dir).slice(0, BLE_TABLE_LIMIT);
+
+  body.innerHTML = rows.map((r) => `<tr>
+    <td>${formatTs(r.timestamp)}</td>
+    <td class="mono">${escapeHtml(r.mac)}</td>
+    <td>${escapeHtml(r.name) || '<span class="muted">—</span>'}</td>
+    <td>${escapeHtml(r._manufacturers.join(", ")) || '<span class="muted">—</span>'}</td>
+    <td>${r.rssi ?? '<span class="muted">—</span>'}</td>
+    <td>${Array.isArray(r.service_uuids) && r.service_uuids.length ? r.service_uuids.length : '<span class="muted">—</span>'}</td>
+  </tr>`).join("");
+  document.getElementById("ble-empty").classList.toggle("hidden", rows.length > 0);
+}
+
+/* ---------------------------------------------------------------------- *
  * Network map
  * ---------------------------------------------------------------------- */
 
@@ -863,6 +1059,8 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-lan-file">Oppure carica file locale</label><input type="file" id="set-lan-file" accept=".jsonl,.ndjson,.json,.txt"></div>
         <div class="field"><label for="set-wifi-url">Log probe WiFi (.jsonl)</label><input type="text" id="set-wifi-url" value="${escapeHtml(getSetting("wifiUrl"))}"></div>
         <div class="field"><label for="set-wifi-file">Oppure carica file locale</label><input type="file" id="set-wifi-file" accept=".jsonl,.ndjson,.json,.txt"></div>
+        <div class="field"><label for="set-ble-url">Log scan BLE (.jsonl)</label><input type="text" id="set-ble-url" value="${escapeHtml(getSetting("bleUrl"))}"></div>
+        <div class="field"><label for="set-ble-file">Oppure carica file locale</label><input type="file" id="set-ble-file" accept=".jsonl,.ndjson,.json,.txt"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -904,6 +1102,8 @@ function renderImpostazioni(container) {
   document.getElementById("set-wifi-url").addEventListener("change", (e) => { setSetting("wifiUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiUrl); state.wifiFile = null; loadAll(); });
   document.getElementById("set-lan-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.lanFile = e.target.files[0]; loadAll(); } });
   document.getElementById("set-wifi-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.wifiFile = e.target.files[0]; loadAll(); } });
+  document.getElementById("set-ble-url").addEventListener("change", (e) => { setSetting("bleUrl", e.target.value.trim() || SETTINGS_DEFAULTS.bleUrl); state.bleFile = null; loadAll(); });
+  document.getElementById("set-ble-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.bleFile = e.target.files[0]; loadAll(); } });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-subnet", "netSubnet"], ["set-net-gateway", "netGateway"], ["set-net-dns", "netDns"]].forEach(([id, key]) => {
@@ -931,6 +1131,7 @@ function renderEsporta(container) {
     ${exportCardHtml("Dispositivi LAN (stato attuale)", `${lanCurrent.length} dispositivi`, "lan-current")}
     ${exportCardHtml("Log completo discovery LAN", `${state.lanRows.length} righe`, "lan-log")}
     ${exportCardHtml("Probe WiFi", `${state.wifiRows.length} righe`, "wifi")}
+    ${exportCardHtml("Scan BLE", `${state.bleRows.length} righe`, "ble")}
     ${exportCardHtml("Avvisi", `${alerts.length} avvisi`, "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
@@ -966,6 +1167,7 @@ function doExport(key, format) {
   if (key === "lan-current") { rows = latestLanByMac(state.lanRows).map(stripInternal); filename = "lan_devices_current"; }
   else if (key === "lan-log") { rows = state.lanRows; filename = "lan_discovery_log"; }
   else if (key === "wifi") { rows = state.wifiRows; filename = "wifi_probes"; }
+  else if (key === "ble") { rows = state.bleRows; filename = "ble_devices"; }
   else if (key === "alerts") {
     rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
     filename = "alerts";
@@ -977,7 +1179,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>Come funziona</h3>
-      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive due file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN e <code>wifi_probes.jsonl</code> per i probe request WiFi (un oggetto JSON per riga) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
+      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>wifi_probes.jsonl</code> per i probe request WiFi e <code>ble_devices.jsonl</code> per lo scan BLE (un oggetto JSON per riga, moduli WiFi e BLE opzionali) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Stato dei dispositivi</h3>
@@ -994,6 +1196,7 @@ function renderAiuto(container) {
         <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con dettaglio e cronologia per singolo MAC.</li>
         <li><strong>Mappa rete</strong> — rappresentazione schematica della rete attorno al gateway configurato.</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN e dei probe WiFi grezzi.</li>
+        <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte potenzialmente a rischio aperte, generati dai dati reali.</li>
         <li><strong>Impostazioni</strong> — sorgenti dati (JSON Lines), informazioni di rete mostrate in sidebar, tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
@@ -1003,7 +1206,8 @@ function renderAiuto(container) {
       <h3>Limiti da conoscere</h3>
       <ul>
         <li>Nessun dato di traffico (Mbps): il daemon attuale misura solo presenza e porte aperte, non banda.</li>
-        <li>I MAC dei probe WiFi sono spesso randomizzati dai dispositivi moderni: vanno letti come indicatore di attività nei dintorni, non come identificativo univoco.</li>
+        <li>I MAC dei probe WiFi e gli indirizzi BLE sono spesso randomizzati dai dispositivi moderni: vanno letti come indicatore di attività nei dintorni, non come identificativo univoco nel tempo.</li>
+        <li>I nomi dei manufacturer BLE derivano da un elenco parziale e curato dei company ID Bluetooth SIG più comuni: un ID non riconosciuto viene mostrato come "ID 0x...".</li>
         <li>"Mappa rete" è una rappresentazione schematica (a stella attorno al gateway), non una topologia rilevata automaticamente.</li>
       </ul>
     </div>
@@ -1019,6 +1223,7 @@ const ROUTES = [
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Elenco completo dei dispositivi LAN", render: renderHost },
   { id: "mappa", label: "Mappa rete", icon: "network", title: "Mappa rete", subtitle: "Topologia schematica della rete", render: renderMappa },
   { id: "scansioni", label: "Scansioni", icon: "radar", title: "Scansioni", subtitle: "Cronologia dei cicli di discovery", render: renderScansioni },
+  { id: "ble", label: "BLE", icon: "bluetooth", title: "Dispositivi BLE", subtitle: "Scan passivo Bluetooth Low Energy nei dintorni", render: renderBlePage },
   { id: "avvisi", label: "Avvisi", icon: "bell", title: "Avvisi", subtitle: "Eventi che richiedono attenzione", render: renderAvvisi },
   { id: "impostazioni", label: "Impostazioni", icon: "sliders", title: "Impostazioni", subtitle: "Sorgenti dati, rete e aspetto", render: renderImpostazioni },
   { id: "esporta", label: "Esporta", icon: "download", title: "Esporta", subtitle: "Scarica i dati raccolti", render: renderEsporta },
@@ -1104,7 +1309,8 @@ function updateStatusPill() {
   dropdown.innerHTML = `
     <div><strong>Sorgente LAN</strong><br>${escapeHtml(state.lanFile ? `${state.lanFile.name} (file locale)` : getSetting("lanUrl"))}</div>
     <div><strong>Sorgente WiFi</strong><br>${escapeHtml(state.wifiFile ? `${state.wifiFile.name} (file locale)` : getSetting("wifiUrl"))}</div>
-    <div><strong>Righe caricate</strong><br>${state.lanRows.length} LAN · ${state.wifiRows.length} WiFi</div>
+    <div><strong>Sorgente BLE</strong><br>${escapeHtml(state.bleFile ? `${state.bleFile.name} (file locale)` : getSetting("bleUrl"))}</div>
+    <div><strong>Righe caricate</strong><br>${state.lanRows.length} LAN · ${state.wifiRows.length} WiFi · ${state.bleRows.length} BLE</div>
   `;
 }
 
