@@ -37,11 +37,11 @@ function ICON(name) {
 
 const SETTINGS_KEYS = {
   lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", bleUrl: "hs.bleUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
-  netLabel: "hs.net.label", netSubnet: "hs.net.subnet", netGateway: "hs.net.gateway", netDns: "hs.net.dns",
+  netLabel: "hs.net.label", netGateway: "hs.net.gateway",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
-  netLabel: "", netSubnet: "", netGateway: "", netDns: "",
+  netLabel: "", netGateway: "",
 };
 
 function getSetting(key) {
@@ -176,7 +176,6 @@ async function loadAllOnce() {
   document.getElementById("last-updated").textContent = new Date().toLocaleTimeString("it-IT");
 
   updateStatusPill();
-  updateNetworkCard();
   renderCurrentRoute();
 }
 
@@ -473,6 +472,15 @@ function bleManufacturerSegments(rows) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
 }
 
+function wifiVendorSegments(rows) {
+  const counts = new Map();
+  for (const r of rows) {
+    const v = (r.vendor || "").trim() || "Sconosciuto";
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+}
+
 function computeAlerts() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const alerts = [];
@@ -675,7 +683,7 @@ function hostRowHtml(d) {
 }
 
 /* ---------------------------------------------------------------------- *
- * WiFi probes table (Scansioni page)
+ * WiFi page (KPI + grafici + tabella grezza)
  * ---------------------------------------------------------------------- */
 
 function renderWifiSection(container) {
@@ -733,6 +741,55 @@ function renderWifiTableBody() {
     <td>${escapeHtml(r.channel)}</td>
   </tr>`).join("");
   document.getElementById("wifi-empty").classList.toggle("hidden", rows.length > 0);
+}
+
+function renderWifiPage(container) {
+  const wifiLast24h = state.wifiRows.filter((r) => within24h(parseTs(r.timestamp)));
+  const distinctMacs = new Set(wifiLast24h.map((r) => r.mac));
+  const withSsid = wifiLast24h.filter((r) => r.ssid && r.ssid.trim());
+  const avg = avgRssi(wifiLast24h);
+  const knownVendors = new Set(wifiLast24h.map((r) => r.vendor).filter((v) => v && v.trim()));
+
+  container.innerHTML = `
+    <div class="page-section kpi-row">
+      ${kpiTile({
+        label: "Probe WiFi (24h)", icon: "wifi", tone: "blue",
+        value: wifiLast24h.length, sub: `${distinctMacs.size} MAC distinti`,
+        sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
+      })}
+      ${kpiTile({
+        label: "SSID pubblicizzati", icon: "search", tone: "blue",
+        value: withSsid.length,
+        sub: wifiLast24h.length ? `${Math.round((withSsid.length / wifiLast24h.length) * 100)}% del totale (24h)` : "Nessun dato",
+      })}
+      ${kpiTile({
+        label: "RSSI medio (24h)", icon: "radar", tone: "blue",
+        value: avg === null ? "—" : avg, valueSuffix: avg === null ? "" : "dBm",
+        sub: "Più vicino a 0 = segnale più forte",
+      })}
+      ${kpiTile({
+        label: "Vendor noti", icon: "users", tone: "blue",
+        value: knownVendors.size, sub: "Da OUI del MAC (24h)",
+      })}
+    </div>
+
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Attività probe <span class="card-sub">ultime 24h</span></h2></div>
+        <div class="bar-chart" id="chart-wifi-activity" data-empty="Nessun dato"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Top vendor</h2><span class="card-sub">da OUI del MAC</span></div>
+        <div class="hbar-chart" id="chart-wifi-vendor" data-empty="Nessun dato"></div>
+      </div>
+    </div>
+
+    <div class="page-section card" id="wifi-section-mount"></div>
+  `;
+
+  renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
+  renderHBarChart(document.getElementById("chart-wifi-vendor"), wifiVendorSegments(wifiLast24h), "var(--series-blue)");
+  renderWifiSection(document.getElementById("wifi-section-mount"));
 }
 
 /* ---------------------------------------------------------------------- *
@@ -994,9 +1051,7 @@ function renderScansioni(container) {
         ${cycles.length ? "" : '<p class="empty-state">Nessun ciclo di scansione nel log caricato.</p>'}
       </div>
     </div>
-    <div class="card" id="wifi-section-mount"></div>
   `;
-  renderWifiSection(document.getElementById("wifi-section-mount"));
 }
 
 function alertItemHtml(a) {
@@ -1077,14 +1132,12 @@ function renderImpostazioni(container) {
     </div>
 
     <div class="page-section card">
-      <div class="card-head"><h2>Informazioni rete</h2><span class="card-sub">mostrate nella sidebar, inserite manualmente</span></div>
+      <div class="card-head"><h2>Informazioni rete</h2><span class="card-sub">usate come etichetta del gateway in Mappa rete</span></div>
       <div class="settings-grid">
         <div class="field"><label for="set-net-label">Nome rete</label><input type="text" id="set-net-label" value="${escapeHtml(getSetting("netLabel"))}" placeholder="Casa_Network"></div>
-        <div class="field"><label for="set-net-subnet">Subnet</label><input type="text" id="set-net-subnet" value="${escapeHtml(getSetting("netSubnet"))}" placeholder="192.168.1.0/24"></div>
         <div class="field"><label for="set-net-gateway">Gateway</label><input type="text" id="set-net-gateway" value="${escapeHtml(getSetting("netGateway"))}" placeholder="192.168.1.1"></div>
-        <div class="field"><label for="set-net-dns">DNS</label><input type="text" id="set-net-dns" value="${escapeHtml(getSetting("netDns"))}" placeholder="1.1.1.1"></div>
       </div>
-      <p class="field-hint">Home Sentinel non rileva automaticamente questi valori: usa la stessa subnet passata a <code>home_sentinel.py --subnet</code>.</p>
+      <p class="field-hint">Home Sentinel non rileva automaticamente questi valori: inseriscili manualmente (es. l'IP del router). Il gateway ha priorità sul nome rete se sono entrambi impostati.</p>
     </div>
 
     <div class="page-section card">
@@ -1106,8 +1159,8 @@ function renderImpostazioni(container) {
   document.getElementById("set-ble-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.bleFile = e.target.files[0]; loadAll(); } });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
-  [["set-net-label", "netLabel"], ["set-net-subnet", "netSubnet"], ["set-net-gateway", "netGateway"], ["set-net-dns", "netDns"]].forEach(([id, key]) => {
-    document.getElementById(id).addEventListener("change", (e) => { setSetting(key, e.target.value.trim()); updateNetworkCard(); });
+  [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
+    document.getElementById(id).addEventListener("change", (e) => { setSetting(key, e.target.value.trim()); });
   });
   container.querySelectorAll("[data-theme-choice]").forEach((btn) => {
     btn.addEventListener("click", () => setThemeMode(btn.dataset.themeChoice));
@@ -1195,10 +1248,11 @@ function renderAiuto(container) {
         <li><strong>Dashboard</strong> — panoramica: host attivi, probe WiFi, dispositivi nuovi, avvisi, distribuzione per vendor e stato, attività 24h.</li>
         <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con dettaglio e cronologia per singolo MAC.</li>
         <li><strong>Mappa rete</strong> — rappresentazione schematica della rete attorno al gateway configurato.</li>
-        <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN e dei probe WiFi grezzi.</li>
+        <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
+        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, top vendor, elenco probe grezzi.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte potenzialmente a rischio aperte, generati dai dati reali.</li>
-        <li><strong>Impostazioni</strong> — sorgenti dati (JSON Lines), informazioni di rete mostrate in sidebar, tema.</li>
+        <li><strong>Impostazioni</strong> — sorgenti dati (JSON Lines), etichetta del gateway per la Mappa rete, tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
       </ul>
     </div>
@@ -1222,7 +1276,8 @@ const ROUTES = [
   { id: "dashboard", label: "Dashboard", icon: "grid", title: "Dashboard", subtitle: "Panoramica della rete locale", render: renderDashboard },
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Elenco completo dei dispositivi LAN", render: renderHost },
   { id: "mappa", label: "Mappa rete", icon: "network", title: "Mappa rete", subtitle: "Topologia schematica della rete", render: renderMappa },
-  { id: "scansioni", label: "Scansioni", icon: "radar", title: "Scansioni", subtitle: "Cronologia dei cicli di discovery", render: renderScansioni },
+  { id: "scansioni", label: "Scansioni", icon: "radar", title: "Scansioni", subtitle: "Cronologia dei cicli di discovery LAN", render: renderScansioni },
+  { id: "wifi", label: "WiFi", icon: "wifi", title: "Probe WiFi", subtitle: "Probe request 802.11 rilevati nei dintorni", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "Dispositivi BLE", subtitle: "Scan passivo Bluetooth Low Energy nei dintorni", render: renderBlePage },
   { id: "avvisi", label: "Avvisi", icon: "bell", title: "Avvisi", subtitle: "Eventi che richiedono attenzione", render: renderAvvisi },
   { id: "impostazioni", label: "Impostazioni", icon: "sliders", title: "Impostazioni", subtitle: "Sorgenti dati, rete e aspetto", render: renderImpostazioni },
@@ -1352,13 +1407,6 @@ function initTheme() {
   }
 }
 
-function updateNetworkCard() {
-  document.getElementById("net-label").textContent = getSetting("netLabel") || "—";
-  document.getElementById("net-subnet").textContent = getSetting("netSubnet") || "—";
-  document.getElementById("net-gateway").textContent = getSetting("netGateway") || "—";
-  document.getElementById("net-dns").textContent = getSetting("netDns") || "—";
-}
-
 function setupRefreshTimer() {
   if (state.refreshTimer) clearInterval(state.refreshTimer);
   const ms = Number(getSetting("refreshMs"));
@@ -1381,13 +1429,11 @@ function init() {
   readUrlParams();
   initTheme();
   document.getElementById("icon-brand").innerHTML = ICON("wifi");
-  document.getElementById("icon-wifi-small").innerHTML = ICON("wifi");
   document.getElementById("icon-refresh").innerHTML = ICON("refresh");
 
   renderSidebarNav();
   setupTopbar();
   updateStatusPill();
-  updateNetworkCard();
 
   document.addEventListener("click", (e) => {
     if (state.openMenuMac && !e.target.closest(".row-menu")) { state.openMenuMac = null; renderHostTableBody(); }
