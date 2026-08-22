@@ -49,6 +49,28 @@ rispondere. `open_ports` è una lista separata da `;`.
 Una riga per ogni probe request 802.11 catturato durante il channel
 hopping.
 
+## Dashboard
+
+`dashboard/` contiene una dashboard statica (HTML/CSS/JS, senza dipendenze
+esterne) per visualizzare i due CSV: stato attuale dei dispositivi LAN,
+tabella dei probe WiFi recenti, grafici di attività nelle ultime 24h e
+top vendor WiFi. Auto-refresh configurabile e tema chiaro/scuro.
+
+Per usarla, servi la cartella `dashboard/` (o copia/linka i CSV al suo
+interno) con un server statico qualsiasi:
+
+```bash
+cd dashboard
+python3 -m http.server 8080
+# poi apri http://<ip-del-pi>:8080/
+```
+
+In alternativa puoi aprire `dashboard/index.html` direttamente come file
+locale e caricare i CSV con i pulsanti "Choose File" (il fetch via URL
+richiede invece un server, per via delle restrizioni CORS su `file://`).
+I percorsi dei CSV sono configurabili anche via query string, es.
+`?lan=/log/lan_discovery.csv&wifi=/log/wifi_probes.csv`.
+
 ## Note
 
 - I MAC nei probe request sono spesso randomizzati dai dispositivi moderni
