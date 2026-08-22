@@ -51,10 +51,25 @@ hopping.
 
 ## Dashboard
 
-`dashboard/` contiene una dashboard statica (HTML/CSS/JS, senza dipendenze
-esterne) per visualizzare i due CSV: stato attuale dei dispositivi LAN,
-tabella dei probe WiFi recenti, grafici di attività nelle ultime 24h e
-top vendor WiFi. Auto-refresh configurabile e tema chiaro/scuro.
+`dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
+utilizzabile offline) con 8 sezioni, tutte basate sui dati reali dei due CSV:
+
+- **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi, avvisi
+  attivi), distribuzione per vendor e per stato, attività di rete 24h, tabella
+  host.
+- **Host** — elenco completo dei dispositivi LAN con dettaglio e cronologia
+  delle rilevazioni per singolo MAC.
+- **Mappa rete** — topologia schematica (a stella) attorno al gateway
+  configurato in Impostazioni.
+- **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal CSV,
+  più il log grezzo dei probe WiFi.
+- **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
+  RDP, SMB, VNC, FTP) aperte sui device correnti; nessun dato è inventato.
+- **Impostazioni** — sorgenti CSV (URL o file locale), informazioni di rete
+  mostrate in sidebar, tema.
+- **Esporta** — scarica dispositivi LAN, log completo, probe WiFi o avvisi
+  in CSV/JSON.
+- **Aiuto** — guida rapida e limiti noti.
 
 Per usarla, servi la cartella `dashboard/` (o copia/linka i CSV al suo
 interno) con un server statico qualsiasi:
@@ -65,11 +80,14 @@ python3 -m http.server 8080
 # poi apri http://<ip-del-pi>:8080/
 ```
 
-In alternativa puoi aprire `dashboard/index.html` direttamente come file
-locale e caricare i CSV con i pulsanti "Choose File" (il fetch via URL
-richiede invece un server, per via delle restrizioni CORS su `file://`).
+In alternativa apri `dashboard/index.html` direttamente come file locale e
+carica i CSV dai campi "carica file locale" in Impostazioni (il fetch via
+URL richiede invece un server, per via delle restrizioni CORS su `file://`).
 I percorsi dei CSV sono configurabili anche via query string, es.
 `?lan=/log/lan_discovery.csv&wifi=/log/wifi_probes.csv`.
+
+Il daemon attuale misura solo presenza e porte aperte, non traffico di rete:
+la dashboard non mostra quindi metriche di banda.
 
 ## Note
 

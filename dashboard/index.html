@@ -7,150 +7,68 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="topbar-title">
-    <h1>Home Sentinel</h1>
-    <p class="subtitle">Discovery LAN &amp; probe WiFi</p>
-  </div>
-  <div class="topbar-actions">
-    <span id="last-updated" class="muted">Mai aggiornato</span>
-    <button id="refresh-now" class="btn">Aggiorna ora</button>
-    <button id="theme-toggle" class="btn btn-icon" title="Cambia tema" aria-label="Cambia tema">◐</button>
-  </div>
-</header>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon" id="icon-brand"></span>
+      <span class="brand-text">
+        <span class="brand-name">HOME SENTINEL</span>
+        <span class="brand-sub">LAN MONITOR</span>
+      </span>
+    </div>
 
-<div id="error-banner" class="error-banner hidden"></div>
+    <nav class="nav" id="sidebar-nav"></nav>
 
-<main>
-  <section class="card controls-card">
-    <h2>Sorgenti dati</h2>
-    <div class="controls-grid">
-      <div class="source-row">
-        <label for="lan-url">CSV discovery LAN</label>
-        <div class="source-inputs">
-          <input id="lan-url" type="text" value="lan_discovery.csv" spellcheck="false">
-          <input id="lan-file" type="file" accept=".csv" class="file-input">
+    <div class="sidebar-spacer"></div>
+
+    <div class="network-card">
+      <div class="network-card-label">RETE CORRENTE</div>
+      <div class="network-card-name"><span id="icon-wifi-small"></span><span id="net-label">—</span></div>
+      <dl>
+        <div><span>Subnet</span><span id="net-subnet">—</span></div>
+        <div><span>Gateway</span><span id="net-gateway">—</span></div>
+        <div><span>DNS</span><span id="net-dns">—</span></div>
+      </dl>
+    </div>
+
+    <div class="sidebar-footer">
+      <span>Home Sentinel v1.0.0</span>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <header class="topbar">
+      <div class="topbar-title">
+        <span class="topbar-title-icon" id="page-icon"></span>
+        <div>
+          <h1 id="page-title">Dashboard</h1>
+          <p id="page-subtitle">Panoramica della rete locale</p>
         </div>
       </div>
-      <div class="source-row">
-        <label for="wifi-url">CSV probe WiFi</label>
-        <div class="source-inputs">
-          <input id="wifi-url" type="text" value="wifi_probes.csv" spellcheck="false">
-          <input id="wifi-file" type="file" accept=".csv" class="file-input">
+      <div class="topbar-actions">
+        <button id="refresh-now" class="btn btn-primary">
+          <span id="icon-refresh"></span>Aggiorna dati
+        </button>
+        <div class="topbar-updated">
+          <strong id="last-updated">Mai aggiornato</strong>
+          <span>ultimo aggiornamento</span>
         </div>
+        <div class="status-pill-wrap">
+          <button class="status-pill" id="status-pill">
+            <span class="dot"></span><span id="status-pill-text">In attesa</span>
+          </button>
+          <div class="status-dropdown hidden" id="status-dropdown"></div>
+        </div>
+        <button id="theme-toggle" class="btn btn-icon" title="Cambia tema" aria-label="Cambia tema"></button>
       </div>
-      <div class="source-row">
-        <label for="refresh-interval">Auto-refresh</label>
-        <select id="refresh-interval">
-          <option value="0">Disattivato</option>
-          <option value="10000">Ogni 10s</option>
-          <option value="30000" selected>Ogni 30s</option>
-          <option value="60000">Ogni 60s</option>
-        </select>
-      </div>
-    </div>
-    <p class="hint">
-      Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di
-      sicurezza del browser: usa i pulsanti di caricamento file, oppure servi questa cartella con
-      <code>python3 -m http.server</code> nella directory dei CSV.
-    </p>
-  </section>
+    </header>
 
-  <section class="stats" id="stats">
-    <div class="stat-tile">
-      <span class="stat-label">Dispositivi online ora</span>
-      <span class="stat-value" id="stat-online">–</span>
+    <div class="page">
+      <div id="error-banner" class="error-banner hidden"></div>
+      <main id="view-root"></main>
     </div>
-    <div class="stat-tile">
-      <span class="stat-label">Dispositivi noti totali</span>
-      <span class="stat-value" id="stat-total">–</span>
-    </div>
-    <div class="stat-tile">
-      <span class="stat-label">Nuovi (24h)</span>
-      <span class="stat-value" id="stat-new">–</span>
-    </div>
-    <div class="stat-tile">
-      <span class="stat-label">MAC WiFi distinti (24h)</span>
-      <span class="stat-value" id="stat-wifi-mac">–</span>
-    </div>
-    <div class="stat-tile">
-      <span class="stat-label">Probe WiFi (24h)</span>
-      <span class="stat-value" id="stat-wifi-probes">–</span>
-    </div>
-  </section>
-
-  <section class="charts">
-    <div class="card chart-card">
-      <h2>Attività LAN — ultime 24h</h2>
-      <div class="bar-chart" id="chart-lan" data-empty="Nessun dato"></div>
-    </div>
-    <div class="card chart-card">
-      <h2>Probe WiFi — ultime 24h</h2>
-      <div class="bar-chart" id="chart-wifi" data-empty="Nessun dato"></div>
-    </div>
-    <div class="card chart-card">
-      <h2>Top vendor dispositivi WiFi</h2>
-      <div class="hbar-chart" id="chart-vendor" data-empty="Nessun dato"></div>
-    </div>
-  </section>
-
-  <section class="card table-card">
-    <div class="table-card-head">
-      <h2>Dispositivi LAN</h2>
-      <div class="table-controls">
-        <input id="lan-search" type="search" placeholder="Cerca per IP, MAC, hostname, vendor…">
-        <select id="lan-status-filter">
-          <option value="all">Tutti gli stati</option>
-          <option value="online">Online</option>
-          <option value="new">Nuovi</option>
-          <option value="offline">Offline</option>
-        </select>
-      </div>
-    </div>
-    <div class="table-scroll">
-      <table id="lan-table">
-        <thead>
-          <tr>
-            <th data-sort="status">Stato</th>
-            <th data-sort="ip">IP</th>
-            <th data-sort="hostname">Hostname</th>
-            <th data-sort="mac">MAC</th>
-            <th data-sort="vendor">Vendor</th>
-            <th data-sort="open_ports">Porte aperte</th>
-            <th data-sort="last_seen">Ultimo avvistamento</th>
-          </tr>
-        </thead>
-        <tbody id="lan-table-body"></tbody>
-      </table>
-      <p class="empty-state hidden" id="lan-empty">Nessun dispositivo — carica il CSV di discovery LAN.</p>
-    </div>
-  </section>
-
-  <section class="card table-card">
-    <div class="table-card-head">
-      <h2>Probe WiFi recenti</h2>
-      <div class="table-controls">
-        <input id="wifi-search" type="search" placeholder="Cerca per MAC, SSID, vendor…">
-      </div>
-    </div>
-    <div class="table-scroll">
-      <table id="wifi-table">
-        <thead>
-          <tr>
-            <th data-sort="timestamp">Timestamp</th>
-            <th data-sort="mac">MAC</th>
-            <th data-sort="vendor">Vendor</th>
-            <th data-sort="ssid">SSID cercato</th>
-            <th data-sort="rssi">RSSI</th>
-            <th data-sort="channel">Canale</th>
-          </tr>
-        </thead>
-        <tbody id="wifi-table-body"></tbody>
-      </table>
-      <p class="empty-state hidden" id="wifi-empty">Nessun probe — carica il CSV dei probe WiFi.</p>
-    </div>
-  </section>
-</main>
+  </div>
+</div>
 
 <div id="tooltip" class="tooltip hidden" role="tooltip"></div>
 
