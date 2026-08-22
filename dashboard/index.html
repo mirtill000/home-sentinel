@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Sentinel — Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon" id="icon-brand"></span>
+      <span class="brand-text">
+        <span class="brand-name">HOME SENTINEL</span>
+        <span class="brand-sub">LAN MONITOR</span>
+      </span>
+    </div>
+
+    <nav class="nav" id="sidebar-nav"></nav>
+
+    <div class="sidebar-spacer"></div>
+
+    <div class="network-card">
+      <div class="network-card-label">RETE CORRENTE</div>
+      <div class="network-card-name"><span id="icon-wifi-small"></span><span id="net-label">—</span></div>
+      <dl>
+        <div><span>Subnet</span><span id="net-subnet">—</span></div>
+        <div><span>Gateway</span><span id="net-gateway">—</span></div>
+        <div><span>DNS</span><span id="net-dns">—</span></div>
+      </dl>
+    </div>
+
+    <div class="sidebar-footer">
+      <span>Home Sentinel v1.0.0</span>
+    </div>
+  </aside>
+
+  <div class="main-col">
+    <header class="topbar">
+      <div class="topbar-title">
+        <span class="topbar-title-icon" id="page-icon"></span>
+        <div>
+          <h1 id="page-title">Dashboard</h1>
+          <p id="page-subtitle">Panoramica della rete locale</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button id="refresh-now" class="btn btn-primary">
+          <span id="icon-refresh"></span>Aggiorna dati
+        </button>
+        <div class="topbar-updated">
+          <strong id="last-updated">Mai aggiornato</strong>
+          <span>ultimo aggiornamento</span>
+        </div>
+        <div class="status-pill-wrap">
+          <button class="status-pill" id="status-pill">
+            <span class="dot"></span><span id="status-pill-text">In attesa</span>
+          </button>
+          <div class="status-dropdown hidden" id="status-dropdown"></div>
+        </div>
+        <div class="theme-toggle-wrap">
+          <button id="theme-toggle" class="btn btn-icon" title="Tema" aria-label="Cambia tema"></button>
+          <div class="theme-menu hidden" id="theme-menu"></div>
+        </div>
+      </div>
+    </header>
+
+    <div class="page">
+      <div id="error-banner" class="error-banner hidden"></div>
+      <main id="view-root"></main>
+    </div>
+  </div>
+</div>
+
+<div id="tooltip" class="tooltip hidden" role="tooltip"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
