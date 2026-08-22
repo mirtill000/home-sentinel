@@ -81,16 +81,18 @@ Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
 utilizzabile offline) con 10 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi e BLE:
 
-- **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi, avvisi
-  attivi), distribuzione per vendor e per stato, attività di rete 24h, tabella
-  host.
+- **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi),
+  widget "Dispositivi nei dintorni" (euristica su segnale forte + presenza
+  ripetuta, incrociando probe WiFi e BLE), distribuzione per vendor e per
+  stato, attività di rete 24h, tabella host.
 - **Host** — elenco completo dei dispositivi LAN con dettaglio e cronologia
   delle rilevazioni per singolo MAC.
 - **Mappa rete** — topologia schematica (a stella) attorno al gateway
   configurato in Impostazioni.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
 - **WiFi** — KPI (probe 24h, MAC distinti, % con SSID, RSSI medio, vendor
-  noti), attività oraria, top vendor (da OUI del MAC), elenco probe grezzi.
+  noti), attività oraria, top vendor (da OUI del MAC), widget di
+  correlazione MAC/vendor/SSID cercati, elenco probe grezzi.
 - **BLE** — KPI (advertisement 24h, MAC distinti, % con nome, RSSI medio,
   manufacturer noti), attività oraria, top manufacturer (da company ID
   Bluetooth SIG), elenco advertisement grezzi.
