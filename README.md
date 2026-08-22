@@ -63,7 +63,9 @@ stringa.
 Una riga per ogni probe request 802.11 catturato durante il channel
 hopping. `rssi` è un numero, oppure `null` se il radiotap non lo riporta.
 
-**`ble_devices.jsonl`**: `{timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids}`
+**`ble_discovery.jsonl`** (default `/var/log/home-sentinel/ble_discovery.jsonl`,
+a differenza di LAN e WiFi che di default scrivono nella directory
+corrente — sovrascrivibile con `--ble-log`): `{timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids}`
 Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
 `name` è la stringa pubblicizzata dal device (vuota se non presente),
 `manufacturer_ids` un array di company ID Bluetooth SIG (es. `76` = Apple),
@@ -73,9 +75,8 @@ Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 8 sezioni, basate sui dati reali dei log LAN e
-WiFi. Il log BLE (`ble_devices.jsonl`) non è ancora integrato in dashboard:
-al momento è consultabile solo come JSON Lines grezzo.
+utilizzabile offline) con 9 sezioni, tutte basate sui dati reali dei log
+LAN, WiFi e BLE:
 
 - **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi, avvisi
   attivi), distribuzione per vendor e per stato, attività di rete 24h, tabella
@@ -86,13 +87,16 @@ al momento è consultabile solo come JSON Lines grezzo.
   configurato in Impostazioni.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log,
   più il log grezzo dei probe WiFi.
+- **BLE** — KPI (advertisement 24h, MAC distinti, % con nome, RSSI medio,
+  manufacturer noti), attività oraria, top manufacturer (da company ID
+  Bluetooth SIG), elenco advertisement grezzi.
 - **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
   RDP, SMB, VNC, FTP) aperte sui device correnti; nessun dato è inventato.
 - **Impostazioni** — sorgenti dati JSON Lines (URL o file locale), tema
   (Chiaro/Scuro/Sistema), intervallo di auto-refresh (1/5/15/30/60s o
   disattivato), informazioni di rete mostrate in sidebar.
-- **Esporta** — scarica dispositivi LAN, log completo, probe WiFi o avvisi
-  in CSV o JSON.
+- **Esporta** — scarica dispositivi LAN, log completo, probe WiFi, scan BLE
+  o avvisi in CSV o JSON.
 - **Aiuto** — guida rapida e limiti noti.
 
 Per usarla, servi la cartella `dashboard/` (o copia/linka i file `.jsonl` al

@@ -427,7 +427,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Adattatore Bluetooth da usare per lo scan BLE, es. hci0 (default: adattatore di sistema)",
     )
-    p.add_argument("--ble-log", default="ble_devices.jsonl", help="Percorso file JSON Lines output scan BLE")
+    p.add_argument(
+        "--ble-log",
+        default="/var/log/home-sentinel/ble_discovery.jsonl",
+        help="Percorso file JSON Lines output scan BLE",
+    )
 
     p.add_argument("--log-level", default="INFO")
     return p.parse_args()
