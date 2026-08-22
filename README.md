@@ -48,10 +48,15 @@ tipicamente, per lo scan BLE via BlueZ).
 
 ## Output
 
-Entrambi i file sono **JSON Lines**: un oggetto JSON per riga, senza header.
-Una riga troncata da una scrittura interrotta (crash, spegnimento improvviso)
-viene semplicemente ignorata da un parser JSONL a valle, con la stessa
-resilienza di un CSV con l'ultima riga incompleta.
+Tutti e tre i file sono **JSON Lines**: un oggetto JSON per riga, senza
+header. Una riga troncata da una scrittura interrotta (crash, spegnimento
+improvviso) viene semplicemente ignorata da un parser JSONL a valle, con la
+stessa resilienza di un CSV con l'ultima riga incompleta.
+
+Di default scrivono tutti in **`/var/log/home-sentinel/`**
+(`--lan-log`/`--wifi-log`/`--ble-log` per un percorso diverso); la directory
+viene creata automaticamente al primo avvio se non esiste già (il daemon
+gira come root).
 
 **`lan_discovery.jsonl`**: `{timestamp, status, ip, mac, hostname, vendor, open_ports}`
 Una riga per ogni device visto ad ogni ciclo di scan (`status=new|online`),
@@ -63,9 +68,7 @@ stringa.
 Una riga per ogni probe request 802.11 catturato durante il channel
 hopping. `rssi` è un numero, oppure `null` se il radiotap non lo riporta.
 
-**`ble_discovery.jsonl`** (default `/var/log/home-sentinel/ble_discovery.jsonl`,
-a differenza di LAN e WiFi che di default scrivono nella directory
-corrente — sovrascrivibile con `--ble-log`): `{timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids}`
+**`ble_discovery.jsonl`**: `{timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids}`
 Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
 `name` è la stringa pubblicizzata dal device (vuota se non presente),
 `manufacturer_ids` un array di company ID Bluetooth SIG (es. `76` = Apple),
