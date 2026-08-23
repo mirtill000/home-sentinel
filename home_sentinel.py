@@ -2,8 +2,9 @@
 """Home Sentinel: discovery continua della LAN + monitor dei probe request WiFi/BLE.
 
 Tre moduli indipendenti, ciascuno in un proprio thread:
-  - LanDiscoveryService: ARP scan periodico della subnet, con hostname,
-    vendor (da MAC OUI) e port scan; scrive ogni evento su JSON Lines.
+  - LanDiscoveryService: ARP scan periodico della subnet, con hostname
+    (reverse DNS, con fallback a NetBIOS quando manca il PTR), vendor (da
+    MAC OUI) e port scan; scrive ogni evento su JSON Lines.
   - WifiProbeMonitor (opzionale): sniffing passivo dei probe request 802.11
     su un'interfaccia in monitor mode, con channel hopping; scrive ogni
     probe catturato su un secondo file JSON Lines.
@@ -45,7 +46,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 from sentinel_detection import AlertManager, AnomalyDetector, EvilTwinDetector, RogueDhcpDetector
-from sentinel_fingerprint import fingerprint_device
+from sentinel_fingerprint import fingerprint_device, netbios_probe
 from sentinel_storage import SqliteStore
 
 LOG = logging.getLogger("home_sentinel")
@@ -207,6 +208,12 @@ class LanDiscoveryService:
             vendor = state.vendor if state else ""
             if is_new or not hostname:
                 hostname = resolve_hostname(ip)
+                if not hostname:
+                    # Molti device (specie IoT/stampanti) non hanno un PTR DNS ma
+                    # rispondono comunque a una query NetBIOS: un secondo metodo di
+                    # discovery a costo contenuto (un pacchetto UDP, timeout breve)
+                    # per popolare l'hostname quando il primo fallisce.
+                    hostname = netbios_probe(ip)
             if is_new or not vendor:
                 vendor = get_vendor(mac)
 

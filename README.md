@@ -70,7 +70,10 @@ gira come root).
 Una riga per ogni device visto ad ogni ciclo di scan (`status=new|online`),
 più una riga `status=offline` la prima volta che un device smette di
 rispondere. `open_ports` è un array di interi (es. `[22, 80]`), non una
-stringa.
+stringa. `hostname` viene risolto via reverse DNS e, se il device non ha un
+PTR (comune per molti IoT/stampanti), con un secondo tentativo via query
+NetBIOS diretta al device — resta comunque vuoto se nessuno dei due
+risponde.
 
 **`wifi_probes.jsonl`**: `{timestamp, mac, vendor, ssid, rssi, channel}`
 Una riga per ogni probe request 802.11 catturato durante il channel
@@ -132,32 +135,34 @@ a posteriori:
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
+utilizzabile offline) con 11 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
 e alert di detection. In qualsiasi punto della dashboard, **Ctrl+K** (⌘K su
-Mac) apre una ricerca globale su pagine, dispositivi e avvisi:
+Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni tabella
+ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno scorrimento
+pagine:
 
-- **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi),
-  widget "Dispositivi nei dintorni" (euristica su segnale forte + presenza
-  ripetuta, incrociando probe WiFi e BLE), distribuzione per vendor e per
-  stato, attività di rete 24h, tabella host.
+- **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi,
+  alert attivi), distribuzione per rischio e ultimi avvisi, widget
+  "Dispositivi nei dintorni" (card compatte con segnale a barre e presenza
+  ripetuta, incrociando probe WiFi e BLE — niente più MAC in primo piano,
+  poco utile per un device esterno), tabella host, distribuzione per
+  vendor/stato, attività di rete 24h.
 - **Host** — elenco completo dei dispositivi LAN, con tipo di device (se
   `--fingerprint` è attivo) e punteggio di rischio 0-100 (euristica su porte
   esposte e alert collegati); il nome host apre il **profilo completo** del
   dispositivo (cronologia LAN, probe WiFi, advertisement BLE, alert e
   fingerprint riuniti in un'unica vista).
-- **Mappa rete** — topologia schematica (a stella) attorno al gateway
-  configurato in Impostazioni; i nodi sono cliccabili (aprono il profilo
-  device) e mostrano un anello colorato per il rischio medio/alto.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
 - **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
   device, offline, alert, fingerprint), filtrabile per categoria.
 - **WiFi** — KPI (probe 24h, MAC distinti, % con SSID, RSSI medio, vendor
-  noti), attività oraria, top vendor (da OUI del MAC), widget di
-  correlazione MAC/vendor/SSID cercati, elenco probe grezzi.
+  noti), attività oraria, distribuzione per canale, top vendor, dispositivi
+  che cercano una rete specifica (aggregato), log probe grezzo.
 - **BLE** — KPI (advertisement 24h, MAC distinti, % con nome, RSSI medio,
-  manufacturer noti), attività oraria, top manufacturer (da company ID
-  Bluetooth SIG), elenco advertisement grezzi.
+  manufacturer noti), attività oraria, top manufacturer, **top 10
+  dispositivi più ricorrenti** (per numero di avvistamenti), log
+  advertisement grezzo.
 - **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
   RDP, SMB, VNC, FTP) aperte sui device correnti, calcolati dalla dashboard
   stessa; più gli alert generati dai moduli di detection del daemon
@@ -170,11 +175,16 @@ Mac) apre una ricerca globale su pagine, dispositivi e avvisi:
 - **Impostazioni** — pannello di stato dei moduli daemon (dedotto dai dati
   effettivamente caricati: attivo / nessun dato / non rilevato), sorgenti
   dati JSON Lines (URL o file locale), tema (Chiaro/Scuro/Sistema),
-  intervallo di auto-refresh (1/5/15/30/60s o disattivato), etichetta del
-  gateway usata in Mappa rete.
+  intervallo di auto-refresh (1/5/15/30/60s o disattivato).
 - **Esporta** — scarica dispositivi LAN, log completo, probe WiFi, scan
   BLE, fingerprint device o avvisi in CSV o JSON.
 - **Aiuto** — guida rapida e limiti noti.
+
+**"Mappa rete" è momentaneamente nascosta dalla navigazione**: su una rete
+piatta a singolo segmento la topologia a stella non aggiunge informazione
+reale rispetto alla tabella Host. Il codice resta nel repository (non è
+stato cancellato) — va reinserita nell'array `ROUTES` di `dashboard/app.js`
+per riabilitarla quando avrà senso (subnet/VLAN multiple).
 
 Per usarla, servi la cartella `dashboard/` con un server statico qualsiasi.
 Dato che il daemon scrive i log in `/var/log/home-sentinel/` (fuori dalla

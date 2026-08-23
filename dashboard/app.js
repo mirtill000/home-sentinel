@@ -30,6 +30,9 @@ const ICON_PATHS = {
   "arrow-left": `<path d="M19 12H5"/><path d="M11 6l-6 6 6 6"/>`,
   "trending-up": `<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>`,
   clock: `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>`,
+  "chevron-left": `<path d="M15 6l-6 6 6 6"/>`,
+  "chevron-right": `<path d="M9 6l6 6-6 6"/>`,
+  layers: `<path d="M12 3 2.5 8 12 13l9.5-5L12 3z"/><path d="M2.5 13 12 18l9.5-5"/><path d="M2.5 18 12 23l9.5-5"/>`,
 };
 
 function ICON(name) {
@@ -62,8 +65,6 @@ function setSetting(key, value) {
 const DISMISSED_KEY = "hs.alerts.dismissed";
 const RISK_PORTS = { 21: "FTP", 23: "Telnet", 445: "SMB", 3389: "RDP", 5900: "VNC" };
 const CAT_COLORS = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--cat-4)", "var(--cat-5)", "var(--cat-6)", "var(--cat-7)", "var(--cat-8)"];
-const WIFI_TABLE_LIMIT = 300;
-const BLE_TABLE_LIMIT = 300;
 
 /** Company ID Bluetooth SIG più comuni (elenco parziale e curato, non il
  * registro completo — vedi bluetooth.com/specifications/assigned-numbers).
@@ -109,6 +110,7 @@ const state = {
   trendRangeDays: 7,
   deviceProfileMac: null,
   timelineKindFilter: "all",
+  pagination: {},
 };
 
 /* ---------------------------------------------------------------------- *
@@ -266,6 +268,88 @@ function avgRssi(rows) {
   const values = rows.map((r) => r.rssi).filter((v) => typeof v === "number");
   if (!values.length) return null;
   return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+}
+
+/** Livello di segnale a 4 barre, più leggibile di un dBm negativo per un widget rapido. */
+function signalLevel(rssi) {
+  if (typeof rssi !== "number") return { bars: 0, label: "N/D" };
+  if (rssi >= -50) return { bars: 4, label: "Ottimo" };
+  if (rssi >= -65) return { bars: 3, label: "Buono" };
+  if (rssi >= -75) return { bars: 2, label: "Discreto" };
+  return { bars: 1, label: "Debole" };
+}
+function signalBarsHtml(rssi) {
+  const { bars, label } = signalLevel(rssi);
+  const cells = [1, 2, 3, 4].map((i) => `<span class="signal-bar ${i <= bars ? "on" : ""}" style="height:${i * 3 + 3}px"></span>`).join("");
+  const title = typeof rssi === "number" ? `${label} (${rssi} dBm)` : "Segnale non disponibile";
+  return `<span class="signal-bars" title="${escapeHtml(title)}">${cells}</span>`;
+}
+
+function formatRelativeTime(ts) {
+  if (ts === null || Number.isNaN(ts)) return "—";
+  const minutes = Math.round((Date.now() - ts) / 60000);
+  if (minutes < 1) return "adesso";
+  if (minutes < 60) return `${minutes} min fa`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h fa`;
+  return `${Math.round(hours / 24)} g fa`;
+}
+
+/* ---------------------------------------------------------------------- *
+ * Paginazione generica per le tabelle: selettore righe per pagina +
+ * scorrimento precedente/successiva. Lo stato (pagina, dimensione) vive in
+ * state.pagination, chiave per chiave (una per tabella).
+ * ---------------------------------------------------------------------- */
+
+const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
+
+function getPagination(key) {
+  if (!state.pagination[key]) state.pagination[key] = { page: 1, pageSize: 50 };
+  return state.pagination[key];
+}
+
+function paginate(rows, key) {
+  const p = getPagination(key);
+  const total = rows.length;
+  const totalPages = p.pageSize === "all" ? 1 : Math.max(1, Math.ceil(total / p.pageSize));
+  if (p.page > totalPages) p.page = totalPages;
+  if (p.page < 1) p.page = 1;
+  const pageRows = p.pageSize === "all" ? rows : rows.slice((p.page - 1) * p.pageSize, (p.page - 1) * p.pageSize + p.pageSize);
+  return { pageRows, total, totalPages, page: p.page, pageSize: p.pageSize };
+}
+
+function paginationHtml(key, info) {
+  return `<div class="pagination-row">
+    <div class="pagination-size">
+      <label for="page-size-${key}">Righe per pagina</label>
+      <select class="select-control" id="page-size-${key}" data-page-size="${key}">
+        ${PAGE_SIZE_OPTIONS.map((n) => `<option value="${n}" ${info.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}
+        <option value="all" ${info.pageSize === "all" ? "selected" : ""}>Tutte</option>
+      </select>
+    </div>
+    <div class="pagination-nav">
+      <button class="btn btn-icon" data-page-nav="${key}" data-dir="prev" ${info.page <= 1 ? "disabled" : ""} aria-label="Pagina precedente">${ICON("chevron-left")}</button>
+      <span class="pagination-info">Pagina ${info.page} di ${info.totalPages} · ${info.total} righe</span>
+      <button class="btn btn-icon" data-page-nav="${key}" data-dir="next" ${info.page >= info.totalPages ? "disabled" : ""} aria-label="Pagina successiva">${ICON("chevron-right")}</button>
+    </div>
+  </div>`;
+}
+
+function wirePagination(scope, key, onChange) {
+  scope.querySelectorAll(`[data-page-size="${key}"]`).forEach((sel) => {
+    sel.addEventListener("change", (e) => {
+      const p = getPagination(key);
+      p.pageSize = e.target.value === "all" ? "all" : Number(e.target.value);
+      p.page = 1;
+      onChange();
+    });
+  });
+  scope.querySelectorAll(`[data-page-nav="${key}"]`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      getPagination(key).page += btn.dataset.dir === "next" ? 1 : -1;
+      onChange();
+    });
+  });
 }
 
 function statusBadge(status) {
@@ -693,6 +777,22 @@ function statusSegments(devices) {
   ];
 }
 
+function riskSegments(devices) {
+  const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
+  const alertsByMac = groupAlertsByMac(computeAlerts());
+  const counts = { Basso: 0, Medio: 0, Alto: 0, Critico: 0 };
+  for (const d of devices) {
+    const score = computeRiskScore(d, fingerprintByMac.get(d.mac), alertsByMac.get(d.mac));
+    counts[riskLevel(score).label] += 1;
+  }
+  return [
+    { label: "Basso", value: counts.Basso, color: "var(--status-good)" },
+    { label: "Medio", value: counts.Medio, color: "var(--status-warning)" },
+    { label: "Alto", value: counts.Alto, color: "var(--status-serious)" },
+    { label: "Critico", value: counts.Critico, color: "var(--status-critical)" },
+  ];
+}
+
 function bleManufacturerSegments(rows) {
   const counts = new Map();
   for (const r of rows) {
@@ -716,6 +816,17 @@ function wifiVendorSegments(rows) {
     counts.set(v, (counts.get(v) || 0) + 1);
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+}
+
+/** Probe per canale WiFi, ordinati per numero di canale (non per frequenza): si legge come uno spettro. */
+function wifiChannelSegments(rows) {
+  const counts = new Map();
+  for (const r of rows) {
+    if (r.channel === null || r.channel === undefined || r.channel === "") continue;
+    const key = String(r.channel);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => Number(a[0]) - Number(b[0]));
 }
 
 /* ---------------------------------------------------------------------- *
@@ -761,6 +872,20 @@ function computeNearbyDevices() {
     .sort((a, b) => b.avgRssi - a.avgRssi);
 }
 
+function nearbyCardHtml(d) {
+  return `<div class="nearby-card">
+    <span class="nearby-icon">${ICON(d.source === "ble" ? "bluetooth" : "wifi")}</span>
+    <div class="nearby-body">
+      <div class="nearby-title">${escapeHtml(d.name || d.vendor || "Dispositivo sconosciuto")}</div>
+      <div class="nearby-meta">
+        ${signalBarsHtml(d.avgRssi)}
+        <span>${d.sightings} avvistamenti</span>
+        <span>${formatRelativeTime(d.lastTs)}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderNearbySection(container) {
   const all = computeNearbyDevices();
   const shown = all.slice(0, 10);
@@ -768,26 +893,12 @@ function renderNearbySection(container) {
   container.innerHTML = `
     <div class="card-head">
       <h2>Dispositivi nei dintorni</h2>
-      <span class="card-sub">RSSI ≥ ${NEARBY_RSSI_THRESHOLD} dBm, ≥ ${NEARBY_MIN_SIGHTINGS} avvistamenti nelle ultime 24h${all.length > shown.length ? ` — mostrati i ${shown.length} più vicini su ${all.length}` : ""}</span>
+      <span class="card-sub">segnale forte e presenza ripetuta nelle ultime 24h${all.length > shown.length ? ` — mostrati i ${shown.length} più vicini su ${all.length}` : ""}</span>
     </div>
-    ${shown.length ? `
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead><tr><th>Origine</th><th>MAC</th><th>Vendor/Nome</th><th>RSSI medio</th><th>Avvistamenti</th><th>Ultimo avvistamento</th></tr></thead>
-          <tbody>
-            ${shown.map((d) => `<tr>
-              <td><span class="source-tag">${ICON(d.source === "ble" ? "bluetooth" : "wifi")}${d.source === "ble" ? "BLE" : "WiFi"}</span></td>
-              <td class="mono">${escapeHtml(d.mac)}</td>
-              <td>${escapeHtml(d.name || d.vendor) || '<span class="muted">—</span>'}</td>
-              <td>${d.avgRssi} dBm</td>
-              <td>${d.sightings}</td>
-              <td>${formatTs(new Date(d.lastTs).toISOString())}</td>
-            </tr>`).join("")}
-          </tbody>
-        </table>
-      </div>
-    ` : `<p class="empty-state">Nessun dispositivo esterno rilevato in prossimità nelle ultime 24h.</p>`}
-    <p class="field-hint">Stima euristica su segnale forte e presenza ripetuta nei probe WiFi/BLE, non una vera localizzazione; esclude i dispositivi già noti sulla LAN. I MAC sono spesso randomizzati dai device moderni, quindi la persistenza nel tempo non è sempre affidabile al 100%.</p>
+    ${shown.length
+      ? `<div class="nearby-grid">${shown.map(nearbyCardHtml).join("")}</div>`
+      : `<p class="empty-state">Nessun dispositivo esterno rilevato in prossimità nelle ultime 24h.</p>`}
+    <p class="field-hint">Stima euristica su segnale forte e presenza ripetuta nei probe WiFi/BLE, non una vera localizzazione; esclude i dispositivi già noti sulla LAN. I MAC sono spesso randomizzati dai device moderni e volutamente non mostrati qui: nome/vendor e persistenza nel tempo sono indicatori più utili, ma non sempre affidabili al 100%.</p>
   `;
 }
 
@@ -1021,10 +1132,11 @@ function renderHostSection(container) {
         <tbody id="host-table-body"></tbody>
       </table>
       <p class="empty-state hidden" id="host-empty">Nessun dispositivo — controlla le sorgenti dati in Impostazioni.</p>
+      <div id="host-pagination"></div>
     </div>`;
 
-  document.getElementById("host-search").addEventListener("input", renderHostTableBody);
-  document.getElementById("host-status-filter").addEventListener("change", renderHostTableBody);
+  document.getElementById("host-search").addEventListener("input", () => { getPagination("host").page = 1; renderHostTableBody(); });
+  document.getElementById("host-status-filter").addEventListener("change", () => { getPagination("host").page = 1; renderHostTableBody(); });
   container.querySelectorAll("#host-table thead th[data-sort]").forEach((th) => {
     th.addEventListener("click", () => {
       const key = th.dataset.sort;
@@ -1054,8 +1166,11 @@ function renderHostTableBody() {
   const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
   const alertsByMac = groupAlertsByMac(computeAlerts());
 
-  body.innerHTML = rows.map((d) => hostRowHtml(d, fingerprintByMac.get(d.mac), alertsByMac.get(d.mac))).join("");
+  const info = paginate(rows, "host");
+  body.innerHTML = info.pageRows.map((d) => hostRowHtml(d, fingerprintByMac.get(d.mac), alertsByMac.get(d.mac))).join("");
   document.getElementById("host-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("host-pagination").innerHTML = rows.length ? paginationHtml("host", info) : "";
+  wirePagination(document.getElementById("host-pagination"), "host", renderHostTableBody);
 
   body.querySelectorAll(".kebab-btn").forEach((btn) => {
     btn.addEventListener("click", (e) => {
@@ -1156,7 +1271,8 @@ function computeWifiSsidCorrelation(rows) {
 function renderWifiCorrelation(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>Correlazione MAC / Vendor / SSID cercato</h2>
+      <h2>Dispositivi che cercano una rete specifica</h2>
+      <span class="card-sub">MAC che hanno pubblicizzato l'SSID cercato nei probe (aggregato)</span>
       <div class="filter-row" style="margin:0;">
         <div class="search-input">${ICON("search")}<input type="text" id="wifi-corr-search" placeholder="Cerca per MAC, vendor, SSID…"></div>
       </div>
@@ -1167,9 +1283,10 @@ function renderWifiCorrelation(container) {
         <tbody id="wifi-corr-body"></tbody>
       </table>
       <p class="empty-state hidden" id="wifi-corr-empty">Nessun probe con SSID specifico nel log caricato: molti device moderni non lo trasmettono più per privacy, quindi è normale che questa lista sia corta o vuota.</p>
+      <div id="wifi-corr-pagination"></div>
     </div>`;
 
-  document.getElementById("wifi-corr-search").addEventListener("input", renderWifiCorrelationBody);
+  document.getElementById("wifi-corr-search").addEventListener("input", () => { getPagination("wifi-corr").page = 1; renderWifiCorrelationBody(); });
   renderWifiCorrelationBody();
 }
 
@@ -1186,7 +1303,8 @@ function renderWifiCorrelationBody() {
     return `${e.mac} ${e.vendor} ${ssidText}`.toLowerCase().includes(search);
   });
 
-  body.innerHTML = rows.map((e) => `<tr>
+  const info = paginate(rows, "wifi-corr");
+  body.innerHTML = info.pageRows.map((e) => `<tr>
     <td class="mono">${escapeHtml(e.mac)}</td>
     <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
     <td>${e.ssidList.map(([ssid, count]) => `${escapeHtml(ssid)} (${count})`).join(", ")}</td>
@@ -1194,12 +1312,15 @@ function renderWifiCorrelationBody() {
     <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
   </tr>`).join("");
   document.getElementById("wifi-corr-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("wifi-corr-pagination").innerHTML = rows.length ? paginationHtml("wifi-corr", info) : "";
+  wirePagination(document.getElementById("wifi-corr-pagination"), "wifi-corr", renderWifiCorrelationBody);
 }
 
 function renderWifiSection(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>Probe WiFi recenti</h2>
+      <h2>Log probe grezzo</h2>
+      <span class="card-sub">un probe request per riga — per approfondimento o export</span>
       <div class="filter-row" style="margin:0;">
         <div class="search-input">${ICON("search")}<input type="text" id="wifi-search" placeholder="Cerca per MAC, SSID, vendor…"></div>
       </div>
@@ -1211,15 +1332,16 @@ function renderWifiSection(container) {
           <th data-sort="mac">MAC</th>
           <th data-sort="vendor">Vendor</th>
           <th data-sort="ssid">SSID cercato</th>
-          <th data-sort="rssi">RSSI</th>
+          <th data-sort="rssi">Segnale</th>
           <th data-sort="channel">Canale</th>
         </tr></thead>
         <tbody id="wifi-table-body"></tbody>
       </table>
       <p class="empty-state hidden" id="wifi-empty">Nessun probe — controlla la sorgente dati in Impostazioni.</p>
+      <div id="wifi-pagination"></div>
     </div>`;
 
-  document.getElementById("wifi-search").addEventListener("input", renderWifiTableBody);
+  document.getElementById("wifi-search").addEventListener("input", () => { getPagination("wifi-raw").page = 1; renderWifiTableBody(); });
   container.querySelectorAll("#wifi-table thead th[data-sort]").forEach((th) => {
     th.addEventListener("click", () => {
       const key = th.dataset.sort;
@@ -1240,17 +1362,20 @@ function renderWifiTableBody() {
   let rows = state.wifiRows
     .filter((r) => !search || `${r.mac} ${r.ssid} ${r.vendor}`.toLowerCase().includes(search))
     .map((r) => ({ ...r, _ts: parseTs(r.timestamp) || 0 }));
-  rows = sortRows(rows, state.wifiSort.key, state.wifiSort.dir).slice(0, WIFI_TABLE_LIMIT);
+  rows = sortRows(rows, state.wifiSort.key, state.wifiSort.dir);
 
-  body.innerHTML = rows.map((r) => `<tr>
+  const info = paginate(rows, "wifi-raw");
+  body.innerHTML = info.pageRows.map((r) => `<tr>
     <td>${formatTs(r.timestamp)}</td>
     <td class="mono">${escapeHtml(r.mac)}</td>
     <td>${escapeHtml(r.vendor) || '<span class="muted">—</span>'}</td>
     <td>${escapeHtml(r.ssid) || '<span class="muted">nascosto/vuoto</span>'}</td>
-    <td>${escapeHtml(r.rssi) || '<span class="muted">—</span>'}</td>
+    <td>${signalBarsHtml(r.rssi)}</td>
     <td>${escapeHtml(r.channel)}</td>
   </tr>`).join("");
   document.getElementById("wifi-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("wifi-pagination").innerHTML = rows.length ? paginationHtml("wifi-raw", info) : "";
+  wirePagination(document.getElementById("wifi-pagination"), "wifi-raw", renderWifiTableBody);
 }
 
 function renderWifiPage(container) {
@@ -1283,10 +1408,14 @@ function renderWifiPage(container) {
       })}
     </div>
 
-    <div class="page-section grid-2">
+    <div class="page-section grid-3">
       <div class="card">
         <div class="card-head"><h2>Attività probe <span class="card-sub">ultime 24h</span></h2></div>
         <div class="bar-chart" id="chart-wifi-activity" data-empty="Nessun dato"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Canali WiFi</h2><span class="card-sub">probe per canale (24h)</span></div>
+        <div class="hbar-chart" id="chart-wifi-channel" data-empty="Nessun dato"></div>
       </div>
       <div class="card">
         <div class="card-head"><h2>Top vendor</h2><span class="card-sub">da OUI del MAC</span></div>
@@ -1300,6 +1429,7 @@ function renderWifiPage(container) {
   `;
 
   renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
+  renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Canale ${ch}`, n]), "var(--cat-3)");
   renderHBarChart(document.getElementById("chart-wifi-vendor"), wifiVendorSegments(wifiLast24h), "var(--series-blue)");
   renderWifiCorrelation(document.getElementById("wifi-corr-mount"));
   renderWifiSection(document.getElementById("wifi-section-mount"));
@@ -1350,18 +1480,63 @@ function renderBlePage(container) {
       </div>
     </div>
 
+    <div class="page-section card" id="ble-top-mount"></div>
+
     <div class="page-section card" id="ble-section-mount"></div>
   `;
 
   renderBarChart(document.getElementById("chart-ble-activity"), hourlyCounts(state.bleRows));
   renderHBarChart(document.getElementById("chart-ble-manufacturer"), bleManufacturerSegments(bleLast24h), "var(--cat-2)");
+  renderBleTopDevices(document.getElementById("ble-top-mount"));
   renderBleSection(document.getElementById("ble-section-mount"));
+}
+
+/** Top 10 device BLE per numero di avvistamenti, su tutto lo storico caricato. */
+function computeBleTopDevices(rows, limit = 10) {
+  const byMac = new Map();
+  for (const r of rows) {
+    if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, name: "", rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0, manufacturerIds: new Set() });
+    const e = byMac.get(r.mac);
+    e.sightings += 1;
+    if (!e.name && r.name) e.name = r.name;
+    if (typeof r.rssi === "number") { e.rssiSum += r.rssi; e.rssiCount += 1; }
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts > e.lastTs) e.lastTs = ts;
+    for (const id of (Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : [])) e.manufacturerIds.add(id);
+  }
+  return [...byMac.values()]
+    .map((e) => ({
+      ...e,
+      avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null,
+      manufacturer: e.manufacturerIds.size ? bleCompanyLabel([...e.manufacturerIds][0]) : "",
+    }))
+    .sort((a, b) => b.sightings - a.sightings)
+    .slice(0, limit);
+}
+
+function renderBleTopDevices(container) {
+  const top = computeBleTopDevices(state.bleRows, 10);
+  container.innerHTML = `
+    <div class="card-head"><h2>Dispositivi più ricorrenti</h2><span class="card-sub">top 10 per numero di avvistamenti, su tutto lo storico caricato</span></div>
+    ${top.length ? `<div class="table-scroll"><table class="data-table">
+      <thead><tr><th>#</th><th>Dispositivo</th><th>Manufacturer</th><th>Segnale medio</th><th>Avvistamenti</th><th>Ultimo avvistamento</th></tr></thead>
+      <tbody>${top.map((d, i) => `<tr>
+        <td class="mono">${i + 1}</td>
+        <td>${escapeHtml(d.name) || `<span class="mono muted">${escapeHtml(d.mac)}</span>`}</td>
+        <td>${escapeHtml(d.manufacturer) || '<span class="muted">—</span>'}</td>
+        <td>${signalBarsHtml(d.avgRssi)}</td>
+        <td>${d.sightings}</td>
+        <td>${formatTs(new Date(d.lastTs).toISOString())}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>` : '<p class="empty-state">Nessun advertisement BLE nel log caricato.</p>'}
+  `;
 }
 
 function renderBleSection(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>Advertisement BLE recenti</h2>
+      <h2>Log advertisement grezzo</h2>
+      <span class="card-sub">un advertisement per riga — per approfondimento o export</span>
       <div class="filter-row" style="margin:0;">
         <div class="search-input">${ICON("search")}<input type="text" id="ble-search" placeholder="Cerca per MAC, nome, manufacturer…"></div>
       </div>
@@ -1373,15 +1548,16 @@ function renderBleSection(container) {
           <th data-sort="mac">MAC</th>
           <th data-sort="name">Nome</th>
           <th>Manufacturer</th>
-          <th data-sort="rssi">RSSI</th>
+          <th data-sort="rssi">Segnale</th>
           <th>Servizi</th>
         </tr></thead>
         <tbody id="ble-table-body"></tbody>
       </table>
       <p class="empty-state hidden" id="ble-empty">Nessun advertisement — abilita <code>--ble</code> sul daemon e controlla la sorgente dati in Impostazioni.</p>
+      <div id="ble-pagination"></div>
     </div>`;
 
-  document.getElementById("ble-search").addEventListener("input", renderBleTableBody);
+  document.getElementById("ble-search").addEventListener("input", () => { getPagination("ble-raw").page = 1; renderBleTableBody(); });
   container.querySelectorAll("#ble-table thead th[data-sort]").forEach((th) => {
     th.addEventListener("click", () => {
       const key = th.dataset.sort;
@@ -1406,17 +1582,20 @@ function renderBleTableBody() {
       _manufacturers: (Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : []).map(bleCompanyLabel),
     }))
     .filter((r) => !search || `${r.mac} ${r.name} ${r._manufacturers.join(" ")}`.toLowerCase().includes(search));
-  rows = sortRows(rows, state.bleSort.key, state.bleSort.dir).slice(0, BLE_TABLE_LIMIT);
+  rows = sortRows(rows, state.bleSort.key, state.bleSort.dir);
 
-  body.innerHTML = rows.map((r) => `<tr>
+  const info = paginate(rows, "ble-raw");
+  body.innerHTML = info.pageRows.map((r) => `<tr>
     <td>${formatTs(r.timestamp)}</td>
     <td class="mono">${escapeHtml(r.mac)}</td>
     <td>${escapeHtml(r.name) || '<span class="muted">—</span>'}</td>
     <td>${escapeHtml(r._manufacturers.join(", ")) || '<span class="muted">—</span>'}</td>
-    <td>${r.rssi ?? '<span class="muted">—</span>'}</td>
+    <td>${signalBarsHtml(r.rssi)}</td>
     <td>${Array.isArray(r.service_uuids) && r.service_uuids.length ? r.service_uuids.length : '<span class="muted">—</span>'}</td>
   </tr>`).join("");
   document.getElementById("ble-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("ble-pagination").innerHTML = rows.length ? paginationHtml("ble-raw", info) : "";
+  wirePagination(document.getElementById("ble-pagination"), "ble-raw", renderBleTableBody);
 }
 
 /* ---------------------------------------------------------------------- *
@@ -1484,12 +1663,28 @@ function renderNetworkMap(container) {
  * Pages
  * ---------------------------------------------------------------------- */
 
+function renderRecentAlertsWidget(container) {
+  const alerts = computeAlerts().filter((a) => !isDismissed(a.id)).slice(0, 5);
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Ultimi avvisi</h2>
+      <button class="btn btn-icon" id="recent-alerts-all" title="Vedi tutti gli avvisi" aria-label="Vedi tutti gli avvisi">${ICON("bell")}</button>
+    </div>
+    <div class="alert-list">${alerts.length ? alerts.map(alertItemHtml).join("") : '<p class="empty-state">Nessun avviso attivo.</p>'}</div>
+  `;
+  document.getElementById("recent-alerts-all").addEventListener("click", () => { window.location.hash = "#/avvisi"; });
+  container.querySelectorAll("[data-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", () => { toggleDismiss(btn.dataset.dismiss); renderRecentAlertsWidget(container); updateNavBadge(); });
+  });
+}
+
 function renderDashboard(container) {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
   const newLast24h = state.lanRows.filter((r) => r.status === "new" && within24h(parseTs(r.timestamp))).length;
   const wifiLast24h = state.wifiRows.filter((r) => within24h(parseTs(r.timestamp)));
+  const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id));
 
   container.innerHTML = `
     <div class="page-section kpi-row">
@@ -1510,9 +1705,25 @@ function renderDashboard(container) {
         value: newLast24h, sub: "Nelle ultime 24h",
         sparkValues: hourlyCounts(state.lanRows.filter((r) => r.status === "new")), sparkColor: "var(--series-violet)",
       })}
+      ${kpiTile({
+        label: "Alert attivi", icon: "shield", tone: "critical",
+        value: activeAlerts.length,
+        sub: activeAlerts.length ? "Richiedono attenzione" : "Nessun avviso attivo",
+        subTone: activeAlerts.length ? "critical" : "good",
+      })}
+    </div>
+
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Distribuzione per rischio</h2><span class="card-sub">su porte esposte e alert collegati</span></div>
+        <div id="donut-risk"></div>
+      </div>
+      <div class="card" id="recent-alerts-mount"></div>
     </div>
 
     <div class="page-section card" id="nearby-section-mount"></div>
+
+    <div class="page-section card" id="host-section-mount"></div>
 
     <div class="page-section grid-3">
       <div class="card">
@@ -1528,15 +1739,15 @@ function renderDashboard(container) {
         <div class="bar-chart" id="chart-lan-activity" data-empty="Nessun dato"></div>
       </div>
     </div>
-
-    <div class="page-section card" id="host-section-mount"></div>
   `;
 
+  renderDonut(document.getElementById("donut-risk"), riskSegments(lanCurrent), "Dispositivi");
+  renderRecentAlertsWidget(document.getElementById("recent-alerts-mount"));
   renderNearbySection(document.getElementById("nearby-section-mount"));
+  renderHostSection(document.getElementById("host-section-mount"));
   renderDonut(document.getElementById("donut-vendor"), vendorSegments(lanCurrent), "Totale");
   renderDonut(document.getElementById("donut-status"), statusSegments(lanCurrent), "Totale");
   renderBarChart(document.getElementById("chart-lan-activity"), hourlyCounts(state.lanRows));
-  renderHostSection(document.getElementById("host-section-mount"));
 }
 
 function renderHost(container) {
@@ -1644,26 +1855,33 @@ function renderDeviceProfile(container, mac) {
 }
 
 function renderScansioni(container) {
-  const cycles = computeScanCycles().slice(0, 150);
+  container.innerHTML = `<div class="page-section card" id="scansioni-mount"></div>`;
+  renderScansioniBody(document.getElementById("scansioni-mount"));
+}
+
+function renderScansioniBody(container) {
+  const cycles = computeScanCycles();
+  const info = paginate(cycles, "scansioni");
   container.innerHTML = `
-    <div class="page-section card">
-      <div class="card-head"><h2>Cronologia scansioni LAN</h2><span class="card-sub">${cycles.length} cicli ricostruiti dal log di discovery</span></div>
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead><tr><th>Orario</th><th>Dispositivi visti</th><th>Nuovi</th><th>Offline</th></tr></thead>
-          <tbody>
-            ${cycles.map((c) => `<tr>
-              <td>${formatTs(new Date(c.startTs).toISOString())}</td>
-              <td>${c.deviceCount}</td>
-              <td>${c.newCount ? `<span class="badge status-new"><span class="dot"></span>${c.newCount}</span>` : '<span class="muted">0</span>'}</td>
-              <td>${c.offlineCount ? `<span class="badge status-offline"><span class="dot"></span>${c.offlineCount}</span>` : '<span class="muted">0</span>'}</td>
-            </tr>`).join("")}
-          </tbody>
-        </table>
-        ${cycles.length ? "" : '<p class="empty-state">Nessun ciclo di scansione nel log caricato.</p>'}
-      </div>
+    <div class="card-head"><h2>Cronologia scansioni LAN</h2><span class="card-sub">${cycles.length} cicli ricostruiti dal log di discovery</span></div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr><th>Orario</th><th>Dispositivi visti</th><th>Nuovi</th><th>Offline</th></tr></thead>
+        <tbody>
+          ${info.pageRows.map((c) => `<tr>
+            <td>${formatTs(new Date(c.startTs).toISOString())}</td>
+            <td>${c.deviceCount}</td>
+            <td>${c.newCount ? `<span class="badge status-new"><span class="dot"></span>${c.newCount}</span>` : '<span class="muted">0</span>'}</td>
+            <td>${c.offlineCount ? `<span class="badge status-offline"><span class="dot"></span>${c.offlineCount}</span>` : '<span class="muted">0</span>'}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+      ${cycles.length ? "" : '<p class="empty-state">Nessun ciclo di scansione nel log caricato.</p>'}
+      <div id="scansioni-pagination"></div>
     </div>
   `;
+  document.getElementById("scansioni-pagination").innerHTML = cycles.length ? paginationHtml("scansioni", info) : "";
+  wirePagination(document.getElementById("scansioni-pagination"), "scansioni", () => renderScansioniBody(container));
 }
 
 function alertItemHtml(a) {
@@ -1843,7 +2061,7 @@ function renderImpostazioni(container) {
     </div>
 
     <div class="page-section card">
-      <div class="card-head"><h2>Informazioni rete</h2><span class="card-sub">usate come etichetta del gateway in Mappa rete</span></div>
+      <div class="card-head"><h2>Informazioni rete</h2><span class="card-sub">etichetta del gateway per la Mappa rete (pagina momentaneamente nascosta)</span></div>
       <div class="settings-grid">
         <div class="field"><label for="set-net-label">Nome rete</label><input type="text" id="set-net-label" value="${escapeHtml(getSetting("netLabel"))}" placeholder="Casa_Network"></div>
         <div class="field"><label for="set-net-gateway">Gateway</label><input type="text" id="set-net-gateway" value="${escapeHtml(getSetting("netGateway"))}" placeholder="192.168.1.1"></div>
@@ -1962,14 +2180,13 @@ function renderAiuto(container) {
       <ul>
         <li><strong>Dashboard</strong> — panoramica: host attivi, probe WiFi, dispositivi nuovi, avvisi, distribuzione per vendor e stato, attività 24h.</li>
         <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device e punteggio di rischio (0-100, su porte esposte e alert collegati); il nome host è un link al profilo completo del dispositivo.</li>
-        <li><strong>Mappa rete</strong> — rappresentazione schematica della rete attorno al gateway configurato; clicca un nodo per aprirne il profilo (un anello colorato segnala rischio medio/alto).</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, top vendor, elenco probe grezzi.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
-        <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), etichetta del gateway per la Mappa rete, tema.</li>
+        <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
       </ul>
       <p class="field-hint">Premi <strong>Ctrl+K</strong> (o <strong>⌘K</strong>) in qualsiasi momento per la ricerca globale su pagine, dispositivi e avvisi.</p>
@@ -1980,8 +2197,7 @@ function renderAiuto(container) {
         <li>Nessun dato di traffico (Mbps): il daemon attuale misura solo presenza e porte aperte, non banda.</li>
         <li>I MAC dei probe WiFi e gli indirizzi BLE sono spesso randomizzati dai dispositivi moderni: vanno letti come indicatore di attività nei dintorni, non come identificativo univoco nel tempo.</li>
         <li>I nomi dei manufacturer BLE derivano da un elenco parziale e curato dei company ID Bluetooth SIG più comuni: un ID non riconosciuto viene mostrato come "ID 0x...".</li>
-        <li>"Mappa rete" è una rappresentazione schematica (a stella attorno al gateway), non una topologia rilevata automaticamente.</li>
-        <li>Il punteggio di rischio (colonna "Rischio" in Host, anello sui nodi della Mappa rete) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale.</li>
+        <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale.</li>
         <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: se il daemon o la dashboard rimuovono/ruotano quei file, la cronologia disponibile si riduce di conseguenza.</li>
       </ul>
     </div>
@@ -1992,10 +2208,14 @@ function renderAiuto(container) {
  * Router / shell
  * ---------------------------------------------------------------------- */
 
+// "mappa" (renderMappa/renderNetworkMap) è volutamente esclusa da ROUTES:
+// su una rete piatta a singolo segmento la topologia a stella non aggiunge
+// informazione reale rispetto alla tabella Host. Il codice resta pronto per
+// quando avrà senso (subnet/VLAN multiple, routing reale) — va solo
+// riaggiunta qui sotto per riabilitarla in sidebar/ricerca globale.
 const ROUTES = [
   { id: "dashboard", label: "Dashboard", icon: "grid", title: "Dashboard", subtitle: "Panoramica della rete locale", render: renderDashboard },
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Elenco completo dei dispositivi LAN", render: renderHost },
-  { id: "mappa", label: "Mappa rete", icon: "network", title: "Mappa rete", subtitle: "Topologia schematica della rete", render: renderMappa },
   { id: "scansioni", label: "Scansioni", icon: "radar", title: "Scansioni", subtitle: "Cronologia dei cicli di discovery LAN", render: renderScansioni },
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Feed cronologico unificato di tutti gli eventi", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "Probe WiFi", subtitle: "Probe request 802.11 rilevati nei dintorni", render: renderWifiPage },
