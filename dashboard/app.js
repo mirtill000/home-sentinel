@@ -27,6 +27,9 @@ const ICON_PATHS = {
   bluetooth: `<path d="M8 8l8 8-4 4V4l4 4-8 8"/>`,
   shield: `<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4.5"/>`,
   server: `<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r="0.9" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="0.9" fill="currentColor" stroke="none"/>`,
+  "arrow-left": `<path d="M19 12H5"/><path d="M11 6l-6 6 6 6"/>`,
+  "trending-up": `<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>`,
+  clock: `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>`,
 };
 
 function ICON(name) {
@@ -101,6 +104,11 @@ const state = {
   alertsFilter: "active",
   alertsTypeFilter: "all",
   dismissedAlerts: new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]")),
+  sourceStatus: {},
+  cmdkOpen: false,
+  trendRangeDays: 7,
+  deviceProfileMac: null,
+  timelineKindFilter: "all",
 };
 
 /* ---------------------------------------------------------------------- *
@@ -159,39 +167,50 @@ async function loadAllOnce() {
 
   try {
     state.lanRows = state.lanFile ? await readJsonlFile(state.lanFile) : await fetchJsonl(getSetting("lanUrl"));
+    state.sourceStatus.lan = { ok: true, count: state.lanRows.length };
   } catch (err) {
     errors.push(`LAN: ${err.message}`);
     state.lanRows = state.lanRows || [];
+    state.sourceStatus.lan = { ok: false, count: 0 };
   }
 
   try {
     state.wifiRows = state.wifiFile ? await readJsonlFile(state.wifiFile) : await fetchJsonl(getSetting("wifiUrl"));
+    state.sourceStatus.wifi = { ok: true, count: state.wifiRows.length };
   } catch (err) {
     errors.push(`WiFi: ${err.message}`);
     state.wifiRows = state.wifiRows || [];
+    state.sourceStatus.wifi = { ok: false, count: 0 };
   }
 
   try {
     state.bleRows = state.bleFile ? await readJsonlFile(state.bleFile) : await fetchJsonl(getSetting("bleUrl"));
+    state.sourceStatus.ble = { ok: true, count: state.bleRows.length };
   } catch (err) {
     errors.push(`BLE: ${err.message}`);
     state.bleRows = state.bleRows || [];
+    state.sourceStatus.ble = { ok: false, count: 0 };
   }
 
   // Alert/fingerprint sono generati dai moduli di detection opzionali del
   // daemon: possono legittimamente non esistere ancora (feature non
   // abilitata, o versione del daemon precedente alla loro introduzione),
   // quindi un fallimento qui resta silenzioso invece di comparire come
-  // errore di caricamento.
+  // errore di caricamento (ma viene comunque tracciato per il pannello
+  // "Stato moduli" in Impostazioni).
   try {
     state.alertsRows = await fetchJsonl(getSetting("alertsUrl"));
+    state.sourceStatus.alerts = { ok: true, count: state.alertsRows.length };
   } catch {
     state.alertsRows = state.alertsRows || [];
+    state.sourceStatus.alerts = { ok: false, count: 0 };
   }
   try {
     state.fingerprintRows = await fetchJsonl(getSetting("fingerprintUrl"));
+    state.sourceStatus.fingerprint = { ok: true, count: state.fingerprintRows.length };
   } catch {
     state.fingerprintRows = state.fingerprintRows || [];
+    state.sourceStatus.fingerprint = { ok: false, count: 0 };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -311,6 +330,57 @@ function firstSeenTs(mac) {
   return s.length ? s[0].timestamp : null;
 }
 
+function goToDevice(mac) {
+  window.location.hash = `#/device/${encodeURIComponent(mac)}`;
+}
+
+/* ---------------------------------------------------------------------- *
+ * Risk score: punteggio euristico 0-100 per device, combina porte a
+ * rischio esposte, alert collegati e incertezza sul tipo di device (nessun
+ * fingerprint disponibile). Non è una valutazione di sicurezza formale,
+ * solo un modo per ordinare "cosa guardare per primo".
+ * ---------------------------------------------------------------------- */
+
+function computeRiskScore(device, fingerprint, deviceAlerts) {
+  let score = 0;
+  const ports = Array.isArray(device?.open_ports) ? device.open_ports : [];
+  for (const p of ports) {
+    if (p === 23 || p === 3389 || p === 5900) score += 22; // telnet, RDP, VNC
+    else if (p === 21 || p === 445) score += 12; // FTP, SMB
+    else score += 3;
+  }
+  for (const a of deviceAlerts || []) {
+    if (a.severity === "critical") score += 20;
+    else if (a.severity === "serious") score += 10;
+    else score += 4;
+  }
+  if (!fingerprint || !fingerprint.device_type || fingerprint.device_type === "Sconosciuto") score += 5;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function riskLevel(score) {
+  if (score >= 70) return { label: "Critico", tone: "critical" };
+  if (score >= 40) return { label: "Alto", tone: "serious" };
+  if (score >= 15) return { label: "Medio", tone: "warning" };
+  return { label: "Basso", tone: "good" };
+}
+
+function riskBadgeHtml(score) {
+  const level = riskLevel(score);
+  return `<span class="badge risk-badge tone-${level.tone}" title="Punteggio di rischio euristico 0-100, su porte esposte e alert collegati">${score} · ${level.label}</span>`;
+}
+
+/** Mappa mac -> alert collegati (da computeAlerts(), già calcolato dal chiamante). */
+function groupAlertsByMac(alerts) {
+  const byMac = new Map();
+  for (const a of alerts) {
+    if (!a.mac) continue;
+    if (!byMac.has(a.mac)) byMac.set(a.mac, []);
+    byMac.get(a.mac).push(a);
+  }
+  return byMac;
+}
+
 function bucketRowsByHour(rows) {
   const now = new Date();
   now.setMinutes(0, 0, 0);
@@ -327,6 +397,138 @@ function bucketRowsByHour(rows) {
 }
 function hourlyCounts(rows) { return bucketRowsByHour(rows).map((b) => b.length); }
 function hourlyDistinctMac(rows) { return bucketRowsByHour(rows).map((b) => new Set(b.map((r) => r.mac)).size); }
+
+/**
+ * Trend storici (settimana/mese): calcolati lato browser sull'intera
+ * cronologia già caricata dai file JSONL (che, non essendo ruotati dal
+ * daemon, coprono di norma tutta la storia disponibile) — non serve un
+ * layer di query separato sullo specchio SQLite del daemon.
+ */
+function bucketRowsByDay(rows, days) {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const buckets = Array.from({ length: days }, () => []);
+  for (const row of rows) {
+    const ts = parseTs(row.timestamp);
+    if (ts === null) continue;
+    const dayFloor = new Date(ts);
+    dayFloor.setHours(0, 0, 0, 0);
+    const daysAgo = Math.round((now.getTime() - dayFloor.getTime()) / 86400000);
+    if (daysAgo >= 0 && daysAgo < days) buckets[days - 1 - daysAgo].push(row);
+  }
+  return buckets;
+}
+function dailyCounts(rows, days) { return bucketRowsByDay(rows, days).map((b) => b.length); }
+
+function periodDelta(rows, days) {
+  const now = Date.now();
+  const dayMs = 86400000;
+  const curStart = now - days * dayMs;
+  const prevStart = now - 2 * days * dayMs;
+  let cur = 0, prev = 0;
+  for (const row of rows) {
+    const ts = parseTs(row.timestamp);
+    if (ts === null) continue;
+    if (ts >= curStart) cur += 1;
+    else if (ts >= prevStart) prev += 1;
+  }
+  const deltaPct = prev > 0 ? Math.round(((cur - prev) / prev) * 100) : (cur > 0 ? 100 : 0);
+  return { cur, prev, deltaPct };
+}
+
+function trendSubLabel(d) {
+  if (d.prev === 0 && d.cur === 0) return "Nessun evento nel periodo";
+  const arrow = d.deltaPct > 0 ? "▲" : d.deltaPct < 0 ? "▼" : "▬";
+  return `${arrow} ${Math.abs(d.deltaPct)}% vs periodo precedente`;
+}
+
+/** Variante di renderBarChart con tick giornalieri invece che orari. */
+function renderDayBarChart(container, buckets, days) {
+  container.innerHTML = "";
+  const total = buckets.reduce((a, b) => a + b, 0);
+  if (total === 0) return; // CSS :empty mostra il placeholder
+
+  const max = Math.max(...buckets, 1);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const showEvery = days > 14 ? 5 : days > 7 ? 2 : 1;
+
+  const plot = document.createElement("div");
+  plot.className = "bar-plot";
+  const ticks = document.createElement("div");
+  ticks.className = "bar-ticks";
+
+  buckets.forEach((count, idx) => {
+    const daysAgo = days - 1 - idx;
+    const date = new Date(now.getTime() - daysAgo * 86400000);
+    const dateLabel = date.toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" });
+
+    const col = document.createElement("div");
+    col.className = "bar-col";
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.style.height = `${Math.max((count / max) * 100, count > 0 ? 3 : 0)}%`;
+    attachTooltip(bar, `${dateLabel} — ${count} evento${count === 1 ? "" : "i"}`);
+    col.appendChild(bar);
+    plot.appendChild(col);
+
+    const tick = document.createElement("span");
+    tick.className = "bar-tick";
+    tick.textContent = idx % showEvery === 0 ? dateLabel : "";
+    ticks.appendChild(tick);
+  });
+
+  container.append(plot, ticks);
+}
+
+function renderTrend(container) {
+  const range = state.trendRangeDays || 7;
+  const newDevices = state.lanRows.filter((r) => r.status === "new");
+  const alertRows = computeAlerts().filter((a) => a.ts !== null).map((a) => ({ timestamp: new Date(a.ts).toISOString() }));
+
+  const newDelta = periodDelta(newDevices, range);
+  const alertDelta = periodDelta(alertRows, range);
+
+  container.innerHTML = `
+    <div class="page-section">
+      <div class="filter-row" style="margin:0;">
+        <select class="select-control" id="trend-range">
+          <option value="7">Ultimi 7 giorni</option>
+          <option value="30">Ultimi 30 giorni</option>
+        </select>
+      </div>
+    </div>
+    <div class="page-section kpi-row">
+      ${kpiTile({
+        label: `Nuovi device (${range}g)`, icon: "monitor", tone: "violet",
+        value: newDelta.cur, sub: trendSubLabel(newDelta), subTone: newDelta.deltaPct > 0 ? "critical" : "good",
+      })}
+      ${kpiTile({
+        label: `Alert generati (${range}g)`, icon: "shield", tone: "critical",
+        value: alertDelta.cur, sub: trendSubLabel(alertDelta), subTone: alertDelta.deltaPct > 0 ? "critical" : "good",
+      })}
+    </div>
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Nuovi dispositivi</h2><span class="card-sub">per giorno</span></div>
+        <div class="bar-chart" id="chart-trend-new" data-empty="Nessun dato"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Alert generati</h2><span class="card-sub">per giorno</span></div>
+        <div class="bar-chart" id="chart-trend-alerts" data-empty="Nessun dato"></div>
+      </div>
+    </div>
+    <p class="field-hint">Calcolato lato browser sulla cronologia già caricata dai file di log (i JSONL non vengono ruotati automaticamente dal daemon, quindi coprono in genere l'intera storia salvo pulizia manuale) — non richiede un server di query separato.</p>
+  `;
+
+  document.getElementById("trend-range").value = String(range);
+  document.getElementById("trend-range").addEventListener("change", (e) => {
+    state.trendRangeDays = Number(e.target.value);
+    renderTrend(container);
+  });
+  renderDayBarChart(document.getElementById("chart-trend-new"), dailyCounts(newDevices, range), range);
+  renderDayBarChart(document.getElementById("chart-trend-alerts"), dailyCounts(alertRows, range), range);
+}
 
 function attachTooltip(el, text) {
   const tooltip = document.getElementById("tooltip");
@@ -696,6 +898,95 @@ function computeScanCycles() {
 }
 
 /* ---------------------------------------------------------------------- *
+ * Timeline: feed cronologico unificato (nuovi/offline LAN, alert,
+ * fingerprint) — solo eventi "notevoli", non ogni singolo probe/advertisement
+ * (troppo frequenti per essere leggibili in un feed).
+ * ---------------------------------------------------------------------- */
+
+function computeTimeline() {
+  const events = [];
+
+  for (const row of state.lanRows) {
+    if (row.status === "online") continue; // troppo frequente per essere "notevole"
+    const ts = parseTs(row.timestamp);
+    if (ts === null) continue;
+    events.push({
+      ts, kind: "lan",
+      icon: row.status === "new" ? "monitor" : "x",
+      tone: row.status === "new" ? "good" : "muted",
+      title: row.status === "new" ? "Nuovo dispositivo" : "Dispositivo offline",
+      desc: `${row.hostname || row.mac} (${row.ip})`,
+      mac: row.mac,
+    });
+  }
+
+  for (const a of computeAlerts()) {
+    if (a.ts === null) continue;
+    const tone = a.severity === "critical" ? "critical" : a.severity === "serious" ? "serious" : "blue";
+    events.push({ ts: a.ts, kind: "alert", icon: a.icon, tone, title: a.title, desc: a.desc, mac: a.mac });
+  }
+
+  for (const f of state.fingerprintRows) {
+    const ts = parseTs(f.timestamp);
+    if (ts === null) continue;
+    events.push({
+      ts, kind: "fingerprint", icon: "search", tone: "blue",
+      title: `Device identificato: ${f.device_type || "Sconosciuto"}`,
+      desc: f.ip || "", mac: f.mac,
+    });
+  }
+
+  return events.sort((a, b) => b.ts - a.ts);
+}
+
+const TIMELINE_KIND_LABELS = { lan: "Dispositivi (nuovi/offline)", alert: "Alert", fingerprint: "Fingerprint" };
+
+function timelineItemHtml(e) {
+  return `<div class="timeline-item">
+    <span class="timeline-icon tone-${e.tone}">${ICON(e.icon)}</span>
+    <div class="timeline-body">
+      <div class="timeline-title">${escapeHtml(e.title)}</div>
+      <div class="timeline-desc">${escapeHtml(e.desc)}${e.mac ? ` — <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(e.mac)}</button>` : ""}</div>
+      <div class="timeline-ts">${formatTs(new Date(e.ts).toISOString())}</div>
+    </div>
+  </div>`;
+}
+
+function renderTimeline(container) {
+  const events = computeTimeline().slice(0, 300);
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h2>Timeline eventi</h2>
+        <select class="select-control" id="timeline-kind-filter">
+          <option value="all">Tutti gli eventi</option>
+          <option value="lan">${TIMELINE_KIND_LABELS.lan}</option>
+          <option value="alert">${TIMELINE_KIND_LABELS.alert}</option>
+          <option value="fingerprint">${TIMELINE_KIND_LABELS.fingerprint}</option>
+        </select>
+      </div>
+      <div class="timeline" id="timeline-list"></div>
+    </div>`;
+
+  document.getElementById("timeline-kind-filter").value = state.timelineKindFilter;
+  document.getElementById("timeline-kind-filter").addEventListener("change", (e) => {
+    state.timelineKindFilter = e.target.value;
+    renderList();
+  });
+  renderList();
+
+  function renderList() {
+    const list = state.timelineKindFilter === "all" ? events : events.filter((e) => e.kind === state.timelineKindFilter);
+    const el = document.getElementById("timeline-list");
+    if (!list.length) { el.innerHTML = '<p class="empty-state">Nessun evento in questa categoria.</p>'; return; }
+    el.innerHTML = list.map(timelineItemHtml).join("");
+    el.querySelectorAll("[data-mac-link]").forEach((btn) => {
+      btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+    });
+  }
+}
+
+/* ---------------------------------------------------------------------- *
  * Host table (shared by Dashboard + Host page)
  * ---------------------------------------------------------------------- */
 
@@ -723,6 +1014,7 @@ function renderHostSection(container) {
           <th data-sort="mac">Indirizzo MAC</th>
           <th data-sort="vendor">Produttore</th>
           <th>Tipo</th>
+          <th>Rischio</th>
           <th data-sort="open_ports">Porte aperte</th>
           <th data-sort="last_seen">Ultima attività</th>
           <th></th>
@@ -761,8 +1053,9 @@ function renderHostTableBody() {
   });
   rows = sortRows(rows, state.lanSort.key, state.lanSort.dir);
   const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
+  const alertsByMac = groupAlertsByMac(computeAlerts());
 
-  body.innerHTML = rows.map((d) => hostRowHtml(d, fingerprintByMac.get(d.mac))).join("");
+  body.innerHTML = rows.map((d) => hostRowHtml(d, fingerprintByMac.get(d.mac), alertsByMac.get(d.mac))).join("");
   document.getElementById("host-empty").classList.toggle("hidden", rows.length > 0);
 
   body.querySelectorAll(".kebab-btn").forEach((btn) => {
@@ -788,19 +1081,24 @@ function renderHostTableBody() {
       renderHostTableBody();
     });
   });
+  body.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); goToDevice(btn.dataset.macLink); });
+  });
 }
 
-function hostRowHtml(d, fingerprint) {
+function hostRowHtml(d, fingerprint, alerts) {
   const menuOpen = state.openMenuMac === d.mac;
   const expanded = state.expandedMac === d.mac;
   const deviceType = fingerprint?.device_type || "";
+  const risk = computeRiskScore(d, fingerprint, alerts);
   let html = `<tr>
     <td>${statusBadge(d.status)}</td>
     <td class="mono">${escapeHtml(d.ip)}</td>
-    <td>${escapeHtml(d.hostname) || '<span class="muted">—</span>'}</td>
+    <td><button class="link-cell" data-mac-link="${escapeHtml(d.mac)}" title="Apri profilo dispositivo">${escapeHtml(d.hostname) || escapeHtml(d.mac)}</button></td>
     <td class="mono">${escapeHtml(d.mac)}</td>
     <td>${escapeHtml(d.vendor) || '<span class="muted">—</span>'}</td>
     <td>${escapeHtml(deviceType) || '<span class="muted">—</span>'}</td>
+    <td>${riskBadgeHtml(risk)}</td>
     <td>${formatPorts(d.open_ports) || '<span class="muted">—</span>'}</td>
     <td>${formatTs(d.timestamp)}</td>
     <td>
@@ -808,6 +1106,7 @@ function hostRowHtml(d, fingerprint) {
         <button class="kebab-btn" data-mac="${escapeHtml(d.mac)}" aria-label="Azioni">${ICON("kebab")}</button>
         ${menuOpen ? `<div class="row-menu-drop">
           <button data-action="details" data-mac="${escapeHtml(d.mac)}">${ICON("eye")}Vedi dettagli</button>
+          <button data-mac-link="${escapeHtml(d.mac)}">${ICON("monitor")}Profilo completo</button>
           <button data-action="copy" data-mac="${escapeHtml(d.mac)}">${ICON("copy")}Copia MAC</button>
         </div>` : ""}
       </div>
@@ -816,11 +1115,12 @@ function hostRowHtml(d, fingerprint) {
 
   if (expanded) {
     const history = sightingsForMac(d.mac).slice(-15).reverse();
-    html += `<tr class="detail-row"><td colspan="9">
+    html += `<tr class="detail-row"><td colspan="10">
       <div class="detail-grid">
         <div><span>Hostname</span>${escapeHtml(d.hostname) || "—"}</div>
         <div><span>Vendor</span>${escapeHtml(d.vendor) || "—"}</div>
         <div><span>Tipo dispositivo</span>${escapeHtml(deviceType) || "—"}</div>
+        <div><span>Punteggio di rischio</span>${riskBadgeHtml(risk)}</div>
         <div><span>Porte aperte</span>${formatPorts(d.open_ports) || "—"}</div>
         <div><span>Prima rilevazione</span>${formatTs(firstSeenTs(d.mac))}</div>
       </div>
@@ -1136,6 +1436,8 @@ function renderNetworkMap(container) {
   const n = nodes.length;
   const links = [];
   const nodeEls = [];
+  const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
+  const alertsByMac = groupAlertsByMac(computeAlerts());
 
   nodes.forEach((dev, i) => {
     const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
@@ -1145,8 +1447,13 @@ function renderNetworkMap(container) {
     const color = dev.status === "offline" ? "var(--status-muted)" : dev.status === "new" ? "var(--status-warning)" : "var(--status-good)";
     const label = escapeHtml(dev.hostname || dev.vendor || "Dispositivo");
     const shortLabel = label.length > 14 ? `${label.slice(0, 13)}…` : label;
-    nodeEls.push(`<g class="netmap-node" data-tip="${escapeHtml(dev.hostname || dev.mac)} — ${escapeHtml(dev.ip)} — ${escapeHtml(dev.status)}" transform="translate(${x.toFixed(1)},${y.toFixed(1)})">
-      <circle r="9" style="fill:${color}" stroke="var(--surface)" stroke-width="2.5"/>
+    const risk = computeRiskScore(dev, fingerprintByMac.get(dev.mac), alertsByMac.get(dev.mac));
+    const level = riskLevel(risk);
+    const hasRiskRing = risk >= 15;
+    const ringColor = hasRiskRing ? `var(--status-${level.tone})` : "var(--surface)";
+    const ringWidth = hasRiskRing ? 3 : 2.5;
+    nodeEls.push(`<g class="netmap-node" data-mac="${escapeHtml(dev.mac)}" data-tip="${escapeHtml(dev.hostname || dev.mac)} — ${escapeHtml(dev.ip)} — ${escapeHtml(dev.status)} — Rischio: ${risk} (${escapeHtml(level.label)})" transform="translate(${x.toFixed(1)},${y.toFixed(1)})">
+      <circle r="9" style="fill:${color}" stroke="${ringColor}" stroke-width="${ringWidth}"/>
       <text y="20" text-anchor="middle">${shortLabel}</text>
       <text class="netmap-ip" y="31" text-anchor="middle">${escapeHtml(dev.ip)}</text>
     </g>`);
@@ -1165,8 +1472,13 @@ function renderNetworkMap(container) {
       <span><span class="dot" style="background:var(--status-good)"></span>Online</span>
       <span><span class="dot" style="background:var(--status-warning)"></span>Nuovo</span>
       <span><span class="dot" style="background:var(--status-muted)"></span>Offline</span>
-    </div>`;
-  container.querySelectorAll(".netmap-node").forEach((el) => attachTooltip(el, el.dataset.tip));
+      <span><span class="dot" style="background:var(--status-serious)"></span>Anello = rischio medio/alto</span>
+    </div>
+    <p class="field-hint">Clicca su un nodo per aprire il profilo completo del dispositivo.</p>`;
+  container.querySelectorAll(".netmap-node").forEach((el) => {
+    attachTooltip(el, el.dataset.tip);
+    el.addEventListener("click", () => goToDevice(el.dataset.mac));
+  });
 }
 
 /* ---------------------------------------------------------------------- *
@@ -1241,6 +1553,97 @@ function renderMappa(container) {
   renderNetworkMap(document.getElementById("netmap-mount"));
 }
 
+/* ---------------------------------------------------------------------- *
+ * Device profile: vista unificata LAN + WiFi + BLE + fingerprint + alert
+ * per un singolo MAC. Non è una pagina della sidebar: si raggiunge da un
+ * link (tabella Host, mappa rete, timeline, avvisi, ricerca globale) via
+ * l'hash #/device/<mac>.
+ * ---------------------------------------------------------------------- */
+
+function renderDeviceProfile(container, mac) {
+  const lanCurrent = latestLanByMac(state.lanRows).find((d) => d.mac === mac);
+  const history = sightingsForMac(mac);
+  const fingerprint = latestFingerprintByMac(state.fingerprintRows).get(mac);
+  const wifiHits = state.wifiRows.filter((r) => r.mac === mac).slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
+  const bleHits = state.bleRows.filter((r) => r.mac === mac).slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
+  const deviceAlerts = computeAlerts().filter((a) => a.mac === mac);
+
+  const backButton = `<div class="page-section" style="margin-bottom:10px;">
+    <button class="btn btn-icon" id="device-back" title="Torna a Host">${ICON("arrow-left")}</button>
+  </div>`;
+
+  if (!lanCurrent && !history.length && !wifiHits.length && !bleHits.length) {
+    container.innerHTML = `${backButton}<div class="card">
+      <p class="empty-state">Nessun dato per il MAC <span class="mono">${escapeHtml(mac)}</span>. Potrebbe non essere mai stato rilevato, oppure non comparire più nei log caricati.</p>
+    </div>`;
+    document.getElementById("device-back").addEventListener("click", () => { window.location.hash = "#/host"; });
+    return;
+  }
+
+  const risk = lanCurrent ? computeRiskScore(lanCurrent, fingerprint, deviceAlerts) : null;
+
+  container.innerHTML = `
+    ${backButton}
+    <div class="page-section card device-profile-head">
+      <div class="device-profile-title">
+        <h2>${escapeHtml(lanCurrent?.hostname || fingerprint?.device_type || mac)}</h2>
+        <span class="mono">${escapeHtml(mac)}</span>
+        ${lanCurrent ? statusBadge(lanCurrent.status) : '<span class="badge status-offline"><span class="dot"></span>Non su LAN</span>'}
+        ${risk !== null ? riskBadgeHtml(risk) : ""}
+      </div>
+      <div class="detail-grid">
+        <div><span>IP</span>${lanCurrent ? escapeHtml(lanCurrent.ip) : "—"}</div>
+        <div><span>Vendor</span>${escapeHtml(lanCurrent?.vendor) || "—"}</div>
+        <div><span>Tipo dispositivo</span>${escapeHtml(fingerprint?.device_type) || "—"}</div>
+        <div><span>Porte aperte</span>${formatPorts(lanCurrent?.open_ports) || "—"}</div>
+        <div><span>Prima rilevazione</span>${formatTs(firstSeenTs(mac))}</div>
+        <div><span>Ultima attività LAN</span>${lanCurrent ? formatTs(lanCurrent.timestamp) : "—"}</div>
+      </div>
+    </div>
+
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Cronologia LAN</h2><span class="card-sub">${history.length} rilevazioni</span></div>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Timestamp</th><th>Stato</th><th>IP</th><th>Porte</th></tr></thead>
+          <tbody>${history.slice(-30).reverse().map((h) => `<tr>
+            <td>${formatTs(h.timestamp)}</td><td>${statusBadge(h.status)}</td>
+            <td class="mono">${escapeHtml(h.ip)}</td><td>${formatPorts(h.open_ports) || '<span class="muted">—</span>'}</td>
+          </tr>`).join("") || '<tr><td colspan="4"><p class="empty-state">Nessuna cronologia LAN.</p></td></tr>'}</tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Alert collegati</h2><span class="card-sub">${deviceAlerts.length} totali</span></div>
+        <div class="alert-list">${deviceAlerts.length ? deviceAlerts.slice(0, 20).map(alertItemHtml).join("") : '<p class="empty-state">Nessun alert per questo dispositivo.</p>'}</div>
+      </div>
+    </div>
+
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Probe WiFi</h2><span class="card-sub">${wifiHits.length} catturati</span></div>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Timestamp</th><th>SSID</th><th>RSSI</th><th>Canale</th></tr></thead>
+          <tbody>${wifiHits.slice(0, 30).map((r) => `<tr>
+            <td>${formatTs(r.timestamp)}</td><td>${escapeHtml(r.ssid) || '<span class="muted">nascosto/vuoto</span>'}</td>
+            <td>${r.rssi ?? '<span class="muted">—</span>'}</td><td>${escapeHtml(r.channel)}</td>
+          </tr>`).join("") || '<tr><td colspan="4"><p class="empty-state">Nessun probe WiFi per questo MAC.</p></td></tr>'}</tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Advertisement BLE</h2><span class="card-sub">${bleHits.length} catturati</span></div>
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>Timestamp</th><th>Nome</th><th>RSSI</th></tr></thead>
+          <tbody>${bleHits.slice(0, 30).map((r) => `<tr>
+            <td>${formatTs(r.timestamp)}</td><td>${escapeHtml(r.name) || '<span class="muted">—</span>'}</td><td>${r.rssi ?? '<span class="muted">—</span>'}</td>
+          </tr>`).join("") || '<tr><td colspan="3"><p class="empty-state">Nessun advertisement BLE per questo MAC.</p></td></tr>'}</tbody></table>
+        </div>
+      </div>
+    </div>
+    <p class="field-hint">I MAC dei probe WiFi e degli advertisement BLE sono spesso randomizzati dai dispositivi moderni e possono non coincidere con il MAC dell'interfaccia LAN dello stesso device: le sezioni sopra restano vuote in quel caso, non è un errore.</p>
+  `;
+  document.getElementById("device-back").addEventListener("click", () => { window.location.hash = "#/host"; });
+}
+
 function renderScansioni(container) {
   const cycles = computeScanCycles().slice(0, 150);
   container.innerHTML = `
@@ -1280,6 +1683,12 @@ function alertItemHtml(a) {
   </div>`;
 }
 
+const ALERT_PRESETS_KEY = "hs.alerts.presets";
+function getAlertPresets() {
+  try { return JSON.parse(localStorage.getItem(ALERT_PRESETS_KEY) || "[]"); } catch { return []; }
+}
+function saveAlertPresets(list) { localStorage.setItem(ALERT_PRESETS_KEY, JSON.stringify(list)); }
+
 function renderAvvisi(container) {
   const all = computeAlerts();
 
@@ -1306,6 +1715,7 @@ function renderAvvisi(container) {
           </select>
         </div>
       </div>
+      <div class="preset-row" id="preset-row"></div>
       <div class="alert-list" id="alert-list"></div>
     </div>`;
 
@@ -1313,13 +1723,16 @@ function renderAvvisi(container) {
   document.getElementById("alerts-filter").addEventListener("change", (e) => {
     state.alertsFilter = e.target.value;
     renderAlertList();
+    renderPresetChips();
   });
   document.getElementById("alerts-type-filter").value = state.alertsTypeFilter;
   document.getElementById("alerts-type-filter").addEventListener("change", (e) => {
     state.alertsTypeFilter = e.target.value;
     renderAlertList();
+    renderPresetChips();
   });
   renderAlertList();
+  renderPresetChips();
 
   function renderAlertList() {
     let list = all;
@@ -1333,11 +1746,77 @@ function renderAvvisi(container) {
       btn.addEventListener("click", () => { toggleDismiss(btn.dataset.dismiss); renderAlertList(); updateNavBadge(); });
     });
   }
+
+  function renderPresetChips() {
+    const presets = getAlertPresets();
+    const row = document.getElementById("preset-row");
+    row.innerHTML = `
+      ${presets.map((p, i) => `<button class="preset-chip ${state.alertsFilter === p.statusFilter && state.alertsTypeFilter === p.typeFilter ? "active" : ""}" data-preset="${i}">
+        ${escapeHtml(p.name)}<span class="preset-chip-x" data-preset-del="${i}">${ICON("x")}</span>
+      </button>`).join("")}
+      <button class="preset-chip preset-chip-add" id="preset-add">${ICON("bell")}Salva filtro attuale</button>
+    `;
+    row.querySelectorAll("[data-preset]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        if (e.target.closest("[data-preset-del]")) return;
+        const p = presets[Number(btn.dataset.preset)];
+        state.alertsFilter = p.statusFilter;
+        state.alertsTypeFilter = typesPresent.some((t) => t.type === p.typeFilter) ? p.typeFilter : "all";
+        document.getElementById("alerts-filter").value = state.alertsFilter;
+        document.getElementById("alerts-type-filter").value = state.alertsTypeFilter;
+        renderAlertList();
+        renderPresetChips();
+      });
+    });
+    row.querySelectorAll("[data-preset-del]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const list = getAlertPresets();
+        list.splice(Number(btn.dataset.presetDel), 1);
+        saveAlertPresets(list);
+        renderPresetChips();
+      });
+    });
+    document.getElementById("preset-add").addEventListener("click", () => {
+      const name = prompt('Nome per questo filtro (es. "Solo critici attivi"):');
+      if (!name || !name.trim()) return;
+      const list = getAlertPresets();
+      list.push({ name: name.trim(), statusFilter: state.alertsFilter, typeFilter: state.alertsTypeFilter });
+      saveAlertPresets(list);
+      renderPresetChips();
+    });
+  }
+}
+
+/** Stato dei moduli daemon, dedotto dai dati effettivamente caricati (non c'è un endpoint di stato dedicato). */
+function moduleStatusRow(label, key) {
+  const s = state.sourceStatus[key];
+  let tone = "muted", text = "Non ancora caricato";
+  if (s) {
+    if (s.ok && s.count > 0) { tone = "good"; text = `Attivo — ${s.count} righe caricate`; }
+    else if (s.ok && s.count === 0) { tone = "warning"; text = "Sorgente raggiungibile, nessuna riga ancora"; }
+    else { tone = "muted"; text = "Non rilevato (file assente o modulo non attivo sul daemon)"; }
+  }
+  return `<div class="module-status-row">
+    <span class="module-status-dot tone-${tone}"></span>
+    <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(text)}</span></div>
+  </div>`;
 }
 
 function renderImpostazioni(container) {
   const themeMode = getSetting("theme");
   container.innerHTML = `
+    <div class="page-section card">
+      <div class="card-head"><h2>Stato moduli</h2><span class="card-sub">dedotto dai dati effettivamente caricati, non da un endpoint di stato</span></div>
+      <div class="module-status-list">
+        ${moduleStatusRow("Discovery LAN", "lan")}
+        ${moduleStatusRow("Probe WiFi (--wifi-iface)", "wifi")}
+        ${moduleStatusRow("Scan BLE (--ble)", "ble")}
+        ${moduleStatusRow("Fingerprinting (--fingerprint)", "fingerprint")}
+        ${moduleStatusRow("Alert di detection", "alerts")}
+      </div>
+    </div>
+
     <div class="page-section card">
       <div class="card-head"><h2>Sorgenti dati</h2></div>
       <div class="settings-grid">
@@ -1483,15 +1962,18 @@ function renderAiuto(container) {
       <h3>Pagine</h3>
       <ul>
         <li><strong>Dashboard</strong> — panoramica: host attivi, probe WiFi, dispositivi nuovi, avvisi, distribuzione per vendor e stato, attività 24h.</li>
-        <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device (se il modulo <code>--fingerprint</code> è attivo sul daemon), dettaglio e cronologia per singolo MAC.</li>
-        <li><strong>Mappa rete</strong> — rappresentazione schematica della rete attorno al gateway configurato.</li>
+        <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device e punteggio di rischio (0-100, su porte esposte e alert collegati); il nome host è un link al profilo completo del dispositivo.</li>
+        <li><strong>Mappa rete</strong> — rappresentazione schematica della rete attorno al gateway configurato; clicca un nodo per aprirne il profilo (un anello colorato segnala rischio medio/alto).</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
+        <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, top vendor, elenco probe grezzi.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
-        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, orari insoliti, nuove porte su device noti).</li>
-        <li><strong>Impostazioni</strong> — sorgenti dati (JSON Lines), etichetta del gateway per la Mappa rete, tema.</li>
+        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, orari insoliti, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
+        <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
+        <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), etichetta del gateway per la Mappa rete, tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
       </ul>
+      <p class="field-hint">Premi <strong>Ctrl+K</strong> (o <strong>⌘K</strong>) in qualsiasi momento per la ricerca globale su pagine, dispositivi e avvisi.</p>
     </div>
     <div class="card help-section">
       <h3>Limiti da conoscere</h3>
@@ -1500,6 +1982,8 @@ function renderAiuto(container) {
         <li>I MAC dei probe WiFi e gli indirizzi BLE sono spesso randomizzati dai dispositivi moderni: vanno letti come indicatore di attività nei dintorni, non come identificativo univoco nel tempo.</li>
         <li>I nomi dei manufacturer BLE derivano da un elenco parziale e curato dei company ID Bluetooth SIG più comuni: un ID non riconosciuto viene mostrato come "ID 0x...".</li>
         <li>"Mappa rete" è una rappresentazione schematica (a stella attorno al gateway), non una topologia rilevata automaticamente.</li>
+        <li>Il punteggio di rischio (colonna "Rischio" in Host, anello sui nodi della Mappa rete) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale.</li>
+        <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: se il daemon o la dashboard rimuovono/ruotano quei file, la cronologia disponibile si riduce di conseguenza.</li>
       </ul>
     </div>
   `;
@@ -1514,9 +1998,11 @@ const ROUTES = [
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Elenco completo dei dispositivi LAN", render: renderHost },
   { id: "mappa", label: "Mappa rete", icon: "network", title: "Mappa rete", subtitle: "Topologia schematica della rete", render: renderMappa },
   { id: "scansioni", label: "Scansioni", icon: "radar", title: "Scansioni", subtitle: "Cronologia dei cicli di discovery LAN", render: renderScansioni },
+  { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Feed cronologico unificato di tutti gli eventi", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "Probe WiFi", subtitle: "Probe request 802.11 rilevati nei dintorni", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "Dispositivi BLE", subtitle: "Scan passivo Bluetooth Low Energy nei dintorni", render: renderBlePage },
   { id: "avvisi", label: "Avvisi", icon: "bell", title: "Avvisi", subtitle: "Eventi che richiedono attenzione", render: renderAvvisi },
+  { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Andamento storico di dispositivi e alert", render: renderTrend },
   { id: "impostazioni", label: "Impostazioni", icon: "sliders", title: "Impostazioni", subtitle: "Sorgenti dati, rete e aspetto", render: renderImpostazioni },
   { id: "esporta", label: "Esporta", icon: "download", title: "Esporta", subtitle: "Scarica i dati raccolti", render: renderEsporta },
   { id: "aiuto", label: "Aiuto", icon: "help", title: "Aiuto", subtitle: "Guida rapida a Home Sentinel", render: renderAiuto },
@@ -1545,11 +2031,24 @@ function updateNavBadge() {
 }
 
 function onRouteChange() {
-  const id = window.location.hash.replace(/^#\/?/, "") || "dashboard";
-  const route = getRouteById(id);
-  state.route = route.id;
+  const hash = window.location.hash.replace(/^#\/?/, "") || "dashboard";
+  const [id, param] = hash.split("/");
   state.expandedMac = null;
   state.openMenuMac = null;
+
+  if (id === "device" && param) {
+    state.route = "device";
+    state.deviceProfileMac = decodeURIComponent(param);
+    document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
+    document.getElementById("page-title").textContent = "Profilo dispositivo";
+    document.getElementById("page-subtitle").textContent = state.deviceProfileMac;
+    document.getElementById("page-icon").innerHTML = ICON("monitor");
+    renderCurrentRoute();
+    return;
+  }
+
+  const route = getRouteById(id);
+  state.route = route.id;
 
   document.querySelectorAll(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.route === route.id));
   document.getElementById("page-title").textContent = route.title;
@@ -1560,7 +2059,11 @@ function onRouteChange() {
 }
 
 function renderCurrentRoute() {
-  getRouteById(state.route).render(document.getElementById("view-root"));
+  if (state.route === "device") {
+    renderDeviceProfile(document.getElementById("view-root"), state.deviceProfileMac);
+  } else {
+    getRouteById(state.route).render(document.getElementById("view-root"));
+  }
   updateNavBadge();
 }
 
@@ -1659,6 +2162,102 @@ function readUrlParams() {
 }
 
 /* ---------------------------------------------------------------------- *
+ * Command palette (Ctrl+K): ricerca globale su pagine, dispositivi, alert
+ * ---------------------------------------------------------------------- */
+
+const CMDK_TYPE_LABELS = { page: "Pagine", device: "Dispositivi", alert: "Avvisi" };
+let cmdkResults = [];
+let cmdkActiveIndex = 0;
+
+function computeSearchIndex() {
+  const items = [];
+  for (const r of ROUTES) {
+    items.push({ type: "page", label: r.label, sub: r.subtitle, icon: r.icon, action: () => { window.location.hash = `#/${r.id}`; } });
+  }
+  for (const d of latestLanByMac(state.lanRows)) {
+    items.push({
+      type: "device", label: d.hostname || d.mac, sub: `${d.ip} · ${d.vendor || "vendor sconosciuto"}`, icon: "monitor",
+      keywords: `${d.ip} ${d.mac} ${d.hostname || ""} ${d.vendor || ""}`, action: () => goToDevice(d.mac),
+    });
+  }
+  for (const a of computeAlerts().slice(0, 100)) {
+    items.push({
+      type: "alert", label: a.title, sub: a.desc, icon: a.icon,
+      keywords: `${a.title} ${a.desc} ${a.mac || ""}`, action: () => { window.location.hash = "#/avvisi"; },
+    });
+  }
+  return items;
+}
+
+function openCmdk() {
+  state.cmdkOpen = true;
+  document.getElementById("cmdk-overlay").classList.remove("hidden");
+  const input = document.getElementById("cmdk-input");
+  input.value = "";
+  renderCmdkResults("");
+  setTimeout(() => input.focus(), 0);
+}
+function closeCmdk() {
+  state.cmdkOpen = false;
+  document.getElementById("cmdk-overlay").classList.add("hidden");
+}
+
+function highlightCmdkIndex(idx) {
+  const items = document.querySelectorAll(".cmdk-item");
+  items.forEach((it, i) => it.classList.toggle("active", i === idx));
+  cmdkActiveIndex = idx;
+  items[idx]?.scrollIntoView({ block: "nearest" });
+}
+
+function renderCmdkResults(query) {
+  const q = query.trim().toLowerCase();
+  const index = computeSearchIndex();
+  cmdkResults = !q
+    ? index.filter((i) => i.type === "page")
+    : index.filter((i) => `${i.label} ${i.sub || ""} ${i.keywords || ""}`.toLowerCase().includes(q)).slice(0, 30);
+
+  const el = document.getElementById("cmdk-results");
+  if (!cmdkResults.length) { el.innerHTML = '<p class="empty-state">Nessun risultato.</p>'; return; }
+
+  let lastType = null;
+  el.innerHTML = cmdkResults.map((r, i) => {
+    const groupHeader = r.type !== lastType ? `<div class="cmdk-group">${CMDK_TYPE_LABELS[r.type]}</div>` : "";
+    lastType = r.type;
+    return `${groupHeader}<button class="cmdk-item" data-idx="${i}">${ICON(r.icon)}<div>
+      <div class="cmdk-item-label">${escapeHtml(r.label)}</div>
+      ${r.sub ? `<div class="cmdk-item-sub">${escapeHtml(r.sub)}</div>` : ""}
+    </div></button>`;
+  }).join("");
+
+  el.querySelectorAll(".cmdk-item").forEach((btn) => {
+    btn.addEventListener("click", () => { cmdkResults[Number(btn.dataset.idx)].action(); closeCmdk(); });
+  });
+  highlightCmdkIndex(0);
+}
+
+function setupCmdk() {
+  document.getElementById("cmdk-open").addEventListener("click", openCmdk);
+  document.getElementById("cmdk-overlay").addEventListener("click", (e) => {
+    if (e.target.id === "cmdk-overlay") closeCmdk();
+  });
+  document.getElementById("cmdk-input").addEventListener("input", (e) => renderCmdkResults(e.target.value));
+  document.getElementById("cmdk-input").addEventListener("keydown", (e) => {
+    if (!cmdkResults.length) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); highlightCmdkIndex(Math.min(cmdkActiveIndex + 1, cmdkResults.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); highlightCmdkIndex(Math.max(cmdkActiveIndex - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); cmdkResults[cmdkActiveIndex]?.action(); closeCmdk(); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      openCmdk();
+    } else if (e.key === "Escape" && state.cmdkOpen) {
+      closeCmdk();
+    }
+  });
+}
+
+/* ---------------------------------------------------------------------- *
  * Init
  * ---------------------------------------------------------------------- */
 
@@ -1667,9 +2266,12 @@ function init() {
   initTheme();
   document.getElementById("icon-brand").innerHTML = ICON("wifi");
   document.getElementById("icon-refresh").innerHTML = ICON("refresh");
+  document.getElementById("icon-cmdk-open").innerHTML = ICON("search");
+  document.getElementById("icon-cmdk").innerHTML = ICON("search");
 
   renderSidebarNav();
   setupTopbar();
+  setupCmdk();
   updateStatusPill();
 
   document.addEventListener("click", (e) => {

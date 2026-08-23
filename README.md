@@ -134,20 +134,26 @@ a posteriori:
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 10 sezioni, tutte basate sui dati reali dei log
+utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
-e alert di detection:
+e alert di detection. In qualsiasi punto della dashboard, **Ctrl+K** (⌘K su
+Mac) apre una ricerca globale su pagine, dispositivi e avvisi:
 
 - **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi),
   widget "Dispositivi nei dintorni" (euristica su segnale forte + presenza
   ripetuta, incrociando probe WiFi e BLE), distribuzione per vendor e per
   stato, attività di rete 24h, tabella host.
 - **Host** — elenco completo dei dispositivi LAN, con tipo di device (se
-  `--fingerprint` è attivo sul daemon), dettaglio e cronologia delle
-  rilevazioni per singolo MAC.
+  `--fingerprint` è attivo) e punteggio di rischio 0-100 (euristica su porte
+  esposte e alert collegati); il nome host apre il **profilo completo** del
+  dispositivo (cronologia LAN, probe WiFi, advertisement BLE, alert e
+  fingerprint riuniti in un'unica vista).
 - **Mappa rete** — topologia schematica (a stella) attorno al gateway
-  configurato in Impostazioni.
+  configurato in Impostazioni; i nodi sono cliccabili (aprono il profilo
+  device) e mostrano un anello colorato per il rischio medio/alto.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
+- **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
+  device, offline, alert, fingerprint), filtrabile per categoria.
 - **WiFi** — KPI (probe 24h, MAC distinti, % con SSID, RSSI medio, vendor
   noti), attività oraria, top vendor (da OUI del MAC), widget di
   correlazione MAC/vendor/SSID cercati, elenco probe grezzi.
@@ -158,11 +164,16 @@ e alert di detection:
   RDP, SMB, VNC, FTP) aperte sui device correnti, calcolati dalla dashboard
   stessa; più gli alert generati dai moduli di detection del daemon
   (`alerts_detection.jsonl`, se presente) — ARP spoofing, rogue DHCP, evil
-  twin WiFi, anomalie comportamentali. Nessun dato è inventato.
-- **Impostazioni** — sorgenti dati JSON Lines (URL o file locale, incluse
-  quelle di alert/fingerprint se i moduli corrispondenti sono attivi), tema
-  (Chiaro/Scuro/Sistema), intervallo di auto-refresh (1/5/15/30/60s o
-  disattivato), etichetta del gateway usata in Mappa rete.
+  twin WiFi, anomalie comportamentali. Filtrabili per tipologia e stato, con
+  combinazioni di filtri salvabili come preset. Nessun dato è inventato.
+- **Trend** — andamento di nuovi dispositivi e alert negli ultimi 7/30
+  giorni (grafici giornalieri + variazione % vs periodo precedente),
+  calcolato lato browser sulla cronologia già caricata dai JSONL.
+- **Impostazioni** — pannello di stato dei moduli daemon (dedotto dai dati
+  effettivamente caricati: attivo / nessun dato / non rilevato), sorgenti
+  dati JSON Lines (URL o file locale), tema (Chiaro/Scuro/Sistema),
+  intervallo di auto-refresh (1/5/15/30/60s o disattivato), etichetta del
+  gateway usata in Mappa rete.
 - **Esporta** — scarica dispositivi LAN, log completo, probe WiFi, scan
   BLE, fingerprint device o avvisi in CSV o JSON.
 - **Aiuto** — guida rapida e limiti noti.
