@@ -6,10 +6,9 @@ WARNING). Il conflitto ARP/IP invece resta dentro `LanDiscoveryService` in
 home_sentinel.py, perché ha bisogno dello stato "online/offline" già tenuto
 lì per evitare falsi positivi sulle normali riassegnazioni DHCP.
 
-  - AnomalyDetector: baseline per MAC (istogramma di presenza per ora del
-    giorno + insieme di porte note), persistita su SQLite se disponibile.
-    Segnala presenza in un orario mai osservato prima e nuove porte aperte
-    su un device già noto.
+  - AnomalyDetector: baseline per MAC (insieme di porte note), persistita
+    su SQLite se disponibile. Segnala nuove porte aperte su un device già
+    noto.
   - RogueDhcpDetector: sniffing passivo di DHCPOFFER/DHCPACK; se non è
     configurata una lista di server fidati impara il primo osservato,
     segnala ogni server successivo diverso.
@@ -54,9 +53,7 @@ class AlertManager:
 
 
 class AnomalyDetector:
-    """Baseline comportamentale per device (orario tipico + porte note)."""
-
-    MIN_OBSERVATIONS_FOR_HOUR_CHECK = 50
+    """Baseline comportamentale per device (porte note)."""
 
     def __init__(self, alert_manager: AlertManager, store=None):
         self.alert_manager = alert_manager
@@ -64,26 +61,16 @@ class AnomalyDetector:
         self.baselines: dict[str, dict] = store.load_baselines() if store else {}
 
     def observe(self, mac: str, ip: str, hostname: str, vendor: str, open_ports: list[int]) -> None:
-        now = datetime.now(timezone.utc)
-        hour = now.hour
         baseline = self.baselines.get(mac)
 
         if baseline is None:
             baseline = {
                 "first_seen": _now_iso(),
-                "hour_histogram": [0] * 24,
                 "known_ports": [],
                 "observations": 0,
             }
             self.baselines[mac] = baseline
         else:
-            if (baseline["observations"] >= self.MIN_OBSERVATIONS_FOR_HOUR_CHECK
-                    and baseline["hour_histogram"][hour] == 0):
-                self.alert_manager.emit(
-                    "medium", "orario_insolito",
-                    f"Device {mac} ({hostname or ip}) attivo in un orario mai osservato prima ({hour}:00)",
-                    mac=mac, ip=ip, details={"hour": hour},
-                )
             known_ports = set(baseline["known_ports"])
             new_ports = sorted(set(open_ports) - known_ports)
             if new_ports and known_ports:
@@ -93,7 +80,6 @@ class AnomalyDetector:
                     mac=mac, ip=ip, details={"new_ports": new_ports, "known_ports": sorted(known_ports)},
                 )
 
-        baseline["hour_histogram"][hour] += 1
         baseline["known_ports"] = sorted(set(baseline["known_ports"]) | set(open_ports))
         baseline["observations"] += 1
         baseline["updated_at"] = _now_iso()
