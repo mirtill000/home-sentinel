@@ -51,7 +51,18 @@ from sentinel_storage import SqliteStore
 
 LOG = logging.getLogger("home_sentinel")
 
-DEFAULT_PORTS = [21, 22, 23, 25, 53, 80, 139, 443, 445, 3389, 5000, 8080, 8443]
+# 50 porte "alte" (>1024) comuni per servizi self-hosted/home-lab/IoT tipici
+# su una rete domestica (NAS, home automation, media server, dev/db) — le
+# porte 1-1024 ("well-known") non hanno bisogno di essere elencate qui, sono
+# già tutte incluse in DEFAULT_PORTS sotto.
+COMMON_HIGH_PORTS = [
+    1433, 1521, 1723, 1883, 2049, 2375, 2376, 3000, 3001, 3306,
+    4443, 4444, 5000, 5001, 5432, 5601, 5900, 5901, 6379, 6667,
+    6881, 7000, 7070, 8006, 8008, 8009, 8080, 8081, 8088, 8096,
+    8123, 8181, 8443, 8500, 8880, 8883, 8888, 9000, 9001, 9042,
+    9090, 9091, 9100, 9200, 9300, 9443, 10000, 11211, 27017, 32400,
+]
+DEFAULT_PORTS = sorted(set(range(1, 1025)) | set(COMMON_HIGH_PORTS))
 
 
 # --------------------------------------------------------------------------
@@ -86,7 +97,12 @@ def scan_ports(ip: str, ports: list[int], timeout: float = 0.5) -> list[int]:
             return None
 
     open_ports = []
-    with ThreadPoolExecutor(max_workers=min(32, len(ports)) or 1) as ex:
+    # Con liste da ~1000 porte (default: 1-1024 + porte alte comuni) un tetto
+    # di 32 thread renderebbe lo scan di un device lento (decine di secondi
+    # su porte filtrate che vanno in timeout); 128 thread — comunque solo
+    # I/O in attesa, non CPU-bound — lo riportano a pochi secondi anche su
+    # un Raspberry Pi 3.
+    with ThreadPoolExecutor(max_workers=min(128, len(ports)) or 1) as ex:
         for result in ex.map(check, ports):
             if result:
                 open_ports.append(result)
@@ -502,7 +518,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--ports",
         default=",".join(str(port) for port in DEFAULT_PORTS),
-        help="Porte da controllare, separate da virgola",
+        help=(
+            "Porte da controllare, separate da virgola (default: le porte 1-1024 "
+            "più ~50 porte \"alte\" comuni per servizi self-hosted/home-lab/IoT, "
+            "es. 8080, 8123, 9100, 32400 — elenco completo in COMMON_HIGH_PORTS "
+            "dentro home_sentinel.py)"
+        ),
     )
     p.add_argument(
         "--port-scan-interval",

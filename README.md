@@ -75,6 +75,17 @@ PTR (comune per molti IoT/stampanti), con un secondo tentativo via query
 NetBIOS diretta al device — resta comunque vuoto se nessuno dei due
 risponde.
 
+Il port scan (`--ports`) di default copre le porte **1-1024** ("well-known")
+più **50 porte "alte"** comuni per servizi self-hosted/home-lab/IoT tipici
+di una rete domestica (NAS, home automation, media server, dev/db — es.
+`8080`, `8123` Home Assistant, `9100` stampanti di rete, `32400` Plex;
+elenco completo in `COMMON_HIGH_PORTS` dentro `home_sentinel.py`), per un
+totale di 1074 porte per device. Uno scan così ampio viene rifatto per lo
+stesso device solo ogni ora (`--port-scan-interval`, default 3600s) per non
+saturare la rete; un device appena scoperto viene invece scansionato subito,
+indipendentemente dall'intervallo. Passa un elenco custom via `--ports` per
+restringere o ampliare l'insieme.
+
 **`wifi_probes.jsonl`**: `{timestamp, mac, vendor, ssid, rssi, channel}`
 Una riga per ogni probe request 802.11 catturato durante il channel
 hopping. `rssi` è un numero, oppure `null` se il radiotap non lo riporta.
