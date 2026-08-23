@@ -799,7 +799,6 @@ const ALERT_TYPE_META = {
   possibile_arp_spoofing: { label: "Possibile ARP spoofing", icon: "shield" },
   possibile_rogue_dhcp: { label: "Possibile rogue DHCP", icon: "server" },
   possibile_evil_twin: { label: "Possibile evil twin WiFi", icon: "wifi" },
-  orario_insolito: { label: "Presenza in orario insolito", icon: "radar" },
   nuova_porta: { label: "Nuova porta aperta su device noto", icon: "alert-triangle" },
   nuovo_dispositivo: { label: "Nuovo dispositivo rilevato", icon: "monitor" },
   porta_rischio: { label: "Porta a rischio aperta", icon: "alert-triangle" },
@@ -1968,7 +1967,7 @@ function renderAiuto(container) {
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, top vendor, elenco probe grezzi.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
-        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, orari insoliti, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
+        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
         <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), etichetta del gateway per la Mappa rete, tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>

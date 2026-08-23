@@ -96,7 +96,7 @@ porte aperte (chiave = porta).
 `{timestamp, severity, type, mac, ip, message, details}`
 Una riga per ogni alert generato dai moduli di detection (vedi sotto).
 `severity` è `low`/`medium`/`high`, `type` un codice macchina (es.
-`possibile_arp_spoofing`, `nuova_porta`, `orario_insolito`,
+`possibile_arp_spoofing`, `nuova_porta`,
 `possibile_rogue_dhcp`, `possibile_evil_twin`).
 
 ## Moduli di detection
@@ -106,11 +106,9 @@ SQLite) invece che sulla console soltanto, così restano consultabili anche
 a posteriori:
 
 - **Anomaly detection** (attivo di default, `--no-anomaly-detection` per
-  disabilitarlo): costruisce per ogni MAC una baseline di orari di
-  attività tipici e porte normalmente aperte; segnala presenza in un
-  orario mai osservato prima (dopo un periodo minimo di apprendimento) e
-  nuove porte aperte su un device già noto. La baseline è persistita su
-  SQLite e sopravvive ai riavvii del daemon.
+  disabilitarlo): costruisce per ogni MAC una baseline delle porte
+  normalmente aperte; segnala nuove porte aperte su un device già noto. La
+  baseline è persistita su SQLite e sopravvive ai riavvii del daemon.
 - **Rilevamento conflitti ARP/IP** (attivo di default,
   `--no-arp-detection` per disabilitarlo): segnala quando due MAC diversi,
   entrambi risultanti online, rivendicano lo stesso IP nello stesso ciclo

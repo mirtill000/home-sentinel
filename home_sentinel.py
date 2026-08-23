@@ -573,7 +573,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--no-anomaly-detection",
         action="store_true",
-        help="Disabilita la baseline comportamentale per device (orari tipici, porte note)",
+        help="Disabilita la baseline comportamentale per device (porte note)",
     )
     p.add_argument(
         "--no-arp-detection",

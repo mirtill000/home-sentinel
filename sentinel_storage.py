@@ -86,7 +86,6 @@ CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(type);
 CREATE TABLE IF NOT EXISTS device_baseline (
     mac TEXT PRIMARY KEY,
     first_seen TEXT NOT NULL,
-    hour_histogram TEXT NOT NULL,
     known_ports TEXT NOT NULL,
     observations INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
@@ -104,7 +103,32 @@ class SqliteStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
+        self._migrate_drop_hour_histogram()
         self._conn.commit()
+
+    def _migrate_drop_hour_histogram(self) -> None:
+        """Rimuove la colonna hour_histogram da un database creato da una
+        versione precedente (rilevamento "orario insolito", rimosso).
+
+        Necessario perché CREATE TABLE IF NOT EXISTS non altera una tabella
+        già esistente: senza questa migrazione, un .db creato prima di
+        questa modifica continuerebbe ad avere la colonna NOT NULL e ogni
+        INSERT (che ora non la valorizza più) fallirebbe.
+        """
+        cols = [row[1] for row in self._conn.execute("PRAGMA table_info(device_baseline)").fetchall()]
+        if "hour_histogram" not in cols:
+            return
+        try:
+            self._conn.execute("ALTER TABLE device_baseline DROP COLUMN hour_histogram")
+        except sqlite3.OperationalError:
+            # sqlite3 troppo vecchio per DROP COLUMN (< 3.35): ricrea la tabella
+            self._conn.execute("ALTER TABLE device_baseline RENAME TO device_baseline_old")
+            self._conn.executescript(SCHEMA)
+            self._conn.execute(
+                "INSERT INTO device_baseline (mac, first_seen, known_ports, observations, updated_at) "
+                "SELECT mac, first_seen, known_ports, observations, updated_at FROM device_baseline_old"
+            )
+            self._conn.execute("DROP TABLE device_baseline_old")
 
     def insert_lan_event(self, row: dict) -> None:
         with self._lock:
@@ -169,14 +193,13 @@ class SqliteStore:
     def load_baselines(self) -> dict[str, dict]:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT mac, first_seen, hour_histogram, known_ports, observations, updated_at FROM device_baseline"
+                "SELECT mac, first_seen, known_ports, observations, updated_at FROM device_baseline"
             )
             rows = cur.fetchall()
         baselines = {}
-        for mac, first_seen, hour_histogram, known_ports, observations, updated_at in rows:
+        for mac, first_seen, known_ports, observations, updated_at in rows:
             baselines[mac] = {
                 "first_seen": first_seen,
-                "hour_histogram": json.loads(hour_histogram),
                 "known_ports": json.loads(known_ports),
                 "observations": observations,
                 "updated_at": updated_at,
@@ -186,13 +209,13 @@ class SqliteStore:
     def upsert_baseline(self, mac: str, baseline: dict) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO device_baseline (mac, first_seen, hour_histogram, known_ports, observations, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
+                "INSERT INTO device_baseline (mac, first_seen, known_ports, observations, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(mac) DO UPDATE SET "
-                "hour_histogram=excluded.hour_histogram, known_ports=excluded.known_ports, "
+                "known_ports=excluded.known_ports, "
                 "observations=excluded.observations, updated_at=excluded.updated_at",
                 (
-                    mac, baseline["first_seen"], json.dumps(baseline["hour_histogram"]),
+                    mac, baseline["first_seen"],
                     json.dumps(baseline["known_ports"]), baseline["observations"], baseline["updated_at"],
                 ),
             )
