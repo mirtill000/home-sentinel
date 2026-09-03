@@ -902,22 +902,6 @@ function riskSegments(devices) {
   ];
 }
 
-function bleManufacturerSegments(rows) {
-  const counts = new Map();
-  for (const r of rows) {
-    const ids = Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : [];
-    if (!ids.length) {
-      counts.set("Sconosciuto", (counts.get("Sconosciuto") || 0) + 1);
-      continue;
-    }
-    for (const id of ids) {
-      const label = bleCompanyLabel(id);
-      counts.set(label, (counts.get(label) || 0) + 1);
-    }
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-}
-
 /** Probe per canale WiFi, ordinati per numero di canale (non per frequenza): si legge come uno spettro. */
 function wifiChannelSegments(rows) {
   const counts = new Map();
@@ -1625,32 +1609,33 @@ function renderBlePage(container) {
       })}
     </div>
 
-    <div class="page-section grid-2">
-      <div class="card">
-        <div class="card-head"><h2>Attività BLE <span class="card-sub">ultime 24h</span></h2></div>
-        <div class="bar-chart" id="chart-ble-activity" data-empty="Nessun dato"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Top manufacturer</h2><span class="card-sub">da company ID annunciati</span></div>
-        <div class="hbar-chart" id="chart-ble-manufacturer" data-empty="Nessun dato"></div>
-      </div>
+    <div class="page-section card">
+      <div class="card-head"><h2>Attività BLE <span class="card-sub">ultime 24h</span></h2></div>
+      <div class="bar-chart" id="chart-ble-activity" data-empty="Nessun dato"></div>
     </div>
 
-    <div class="page-section card" id="ble-top-mount"></div>
+    <div class="page-section card" id="ble-devices-mount"></div>
 
     <div class="page-section card" id="ble-section-mount"></div>
   `;
 
   renderBarChart(document.getElementById("chart-ble-activity"), hourlyCounts(state.bleRows));
-  renderHBarChart(document.getElementById("chart-ble-manufacturer"), bleManufacturerSegments(bleLast24h), "var(--cat-2)");
-  renderBleTopDevices(document.getElementById("ble-top-mount"));
+  renderBleDevicesTable(document.getElementById("ble-devices-mount"));
   renderBleSection(document.getElementById("ble-section-mount"));
 }
 
-/** Top 10 device BLE per numero di avvistamenti, su tutto lo storico caricato. */
-function computeBleTopDevices(rows, limit = 10) {
+/**
+ * Riepilogo per device BLE: un MAC, una riga, con nome pubblicizzato,
+ * manufacturer, segnale medio, numero di avvistamenti e ultimo avvistamento
+ * su tutto lo storico caricato. Sostituisce la vecchia coppia "grafico top
+ * manufacturer" (ridondante col KPI "Manufacturer noti" e con la colonna
+ * manufacturer già visibile qui e nel log grezzo) + "top 10 per avvistamenti"
+ * con un'unica tabella ricercabile e paginata, senza limite ai primi 10.
+ */
+function computeBleDeviceOverview(rows) {
   const byMac = new Map();
   for (const r of rows) {
+    if (!r.mac) continue;
     if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, name: "", rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0, manufacturerIds: new Set() });
     const e = byMac.get(r.mac);
     e.sightings += 1;
@@ -1660,32 +1645,62 @@ function computeBleTopDevices(rows, limit = 10) {
     if (ts > e.lastTs) e.lastTs = ts;
     for (const id of (Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : [])) e.manufacturerIds.add(id);
   }
-  return [...byMac.values()]
-    .map((e) => ({
-      ...e,
-      avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null,
-      manufacturer: e.manufacturerIds.size ? bleCompanyLabel([...e.manufacturerIds][0]) : "",
-    }))
-    .sort((a, b) => b.sightings - a.sightings)
-    .slice(0, limit);
+  return [...byMac.values()].map((e) => ({
+    ...e,
+    avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null,
+    manufacturer: e.manufacturerIds.size ? bleCompanyLabel([...e.manufacturerIds][0]) : "",
+  }));
 }
 
-function renderBleTopDevices(container) {
-  const top = computeBleTopDevices(state.bleRows, 10);
+function renderBleDevicesTable(container) {
   container.innerHTML = `
-    <div class="card-head"><h2>Dispositivi più ricorrenti</h2><span class="card-sub">top 10 per numero di avvistamenti, su tutto lo storico caricato</span></div>
-    ${top.length ? `<div class="table-scroll"><table class="data-table">
-      <thead><tr><th>#</th><th>Dispositivo</th><th>Manufacturer</th><th>Segnale medio</th><th>Avvistamenti</th><th>Ultimo avvistamento</th></tr></thead>
-      <tbody>${top.map((d, i) => `<tr>
-        <td class="mono">${i + 1}</td>
-        <td>${escapeHtml(d.name) || `<span class="mono muted">${escapeHtml(d.mac)}</span>`}</td>
-        <td>${escapeHtml(d.manufacturer) || '<span class="muted">—</span>'}</td>
-        <td>${signalBarsHtml(d.avgRssi)}</td>
-        <td>${d.sightings}</td>
-        <td>${formatTs(new Date(d.lastTs).toISOString())}</td>
-      </tr>`).join("")}</tbody>
-    </table></div>` : '<p class="empty-state">Nessun advertisement BLE nel log caricato.</p>'}
-  `;
+    <div class="card-head">
+      <h2>Dispositivi BLE</h2>
+      <span class="card-sub">un riepilogo per MAC — nome, manufacturer, segnale e avvistamenti, su tutto lo storico caricato</span>
+      <div class="filter-row" style="margin:0;">
+        <div class="search-input">${ICON("search")}<input type="text" id="ble-devices-search" placeholder="Cerca per MAC, nome, manufacturer…"></div>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr><th>Dispositivo</th><th>Manufacturer</th><th>Segnale medio</th><th>Avvistamenti</th><th>Ultimo avvistamento</th></tr></thead>
+        <tbody id="ble-devices-body"></tbody>
+      </table>
+      <p class="empty-state hidden" id="ble-devices-empty">Nessun advertisement BLE — controlla la sorgente dati in Impostazioni.</p>
+      <div id="ble-devices-pagination"></div>
+    </div>`;
+  document.getElementById("ble-devices-search").addEventListener("input", () => { getPagination("ble-devices").page = 1; renderBleDevicesTableBody(); });
+  renderBleDevicesTableBody();
+}
+
+function renderBleDevicesTableBody() {
+  const searchEl = document.getElementById("ble-devices-search");
+  const body = document.getElementById("ble-devices-body");
+  if (!searchEl || !body) return;
+
+  const search = searchEl.value.trim().toLowerCase();
+  const all = computeBleDeviceOverview(state.bleRows);
+  const rows = all
+    .filter((e) => !search || `${e.mac} ${displayName(e.mac, "")} ${e.name} ${e.manufacturer}`.toLowerCase().includes(search))
+    .sort((a, b) => b.sightings - a.sightings);
+
+  const info = paginate(rows, "ble-devices");
+  body.innerHTML = info.pageRows.map((e) => `<tr>
+    <td>
+      <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(displayName(e.mac, e.name || e.mac))}</button>
+      ${trustBadgeHtml(e.mac)}
+    </td>
+    <td>${escapeHtml(e.manufacturer) || '<span class="muted">—</span>'}</td>
+    <td>${signalBarsHtml(e.avgRssi)}</td>
+    <td>${e.sightings}</td>
+    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+  </tr>`).join("");
+  document.getElementById("ble-devices-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("ble-devices-pagination").innerHTML = rows.length ? paginationHtml("ble-devices", info) : "";
+  wirePagination(document.getElementById("ble-devices-pagination"), "ble-devices", renderBleDevicesTableBody);
+  body.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
 }
 
 function renderBleSection(container) {
@@ -2376,7 +2391,7 @@ function renderAiuto(container) {
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "Dispositivi WiFi" — un riepilogo per MAC con traffico stimato, SSID cercati e probe totali — e in fondo il log probe grezzo per l'analisi riga per riga.</li>
-        <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
+        <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: KPI e attività 24h in alto, poi la tabella "Dispositivi BLE" — un riepilogo per MAC con nome, manufacturer, segnale e numero di avvistamenti — e in fondo il log advertisement grezzo per l'analisi riga per riga.</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
         <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), tema.</li>
