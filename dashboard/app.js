@@ -136,10 +136,49 @@ function parseJsonl(text) {
   return rows;
 }
 
+/**
+ * Oltre questa soglia, fetchJsonl scarica solo la coda più recente del file
+ * (via HTTP Range) invece dell'intero contenuto. I log JSONL sono
+ * append-only e in ordine cronologico, quindi la coda è esattamente "i dati
+ * più recenti" — utile perché un log come i probe WiFi (il più "rumoroso")
+ * può arrivare a svariati MB anche con la rotazione lato daemon attiva
+ * (--max-log-size-mb, default 20MB) prima che scatti.
+ */
+const TAIL_FETCH_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Scarica e parsa un file JSONL. Ritorna { rows, truncated, totalBytes }:
+ * `truncated` è true se è stata scaricata solo la coda (file più grande di
+ * TAIL_FETCH_BYTES) — la dashboard lo segnala invece di far finta che i
+ * dati siano completi. Il fetch "solo coda" richiede che il server statico
+ * supporti le richieste HTTP Range (nginx: sì di default; il semplice
+ * `python3 -m http.server` no — in quel caso si ripiega in automatico sul
+ * download completo, senza errori).
+ */
 async function fetchJsonl(url) {
+  try {
+    const headRes = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if (headRes.ok) {
+      const totalBytes = Number(headRes.headers.get("content-length"));
+      if (totalBytes > TAIL_FETCH_BYTES) {
+        const rangeRes = await fetch(url, {
+          cache: "no-store",
+          headers: { Range: `bytes=-${TAIL_FETCH_BYTES}` },
+        });
+        if (rangeRes.status === 206) {
+          const lines = (await rangeRes.text()).split("\n");
+          lines.shift(); // la prima riga del blocco è quasi certamente tagliata a metà: si scarta a priori
+          return { rows: parseJsonl(lines.join("\n")), truncated: true, totalBytes };
+        }
+        // il server non supporta Range (status diverso da 206): si continua sotto col fetch completo
+      }
+    }
+  } catch {
+    // HEAD/Range falliti (CORS, server che non li implementa, file://…): si ripiega sul fetch completo
+  }
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status} su ${url}`);
-  return parseJsonl(await res.text());
+  return { rows: parseJsonl(await res.text()), truncated: false, totalBytes: null };
 }
 
 function readJsonlFile(file) {
@@ -168,30 +207,48 @@ async function loadAllOnce() {
   const errors = [];
 
   try {
-    state.lanRows = state.lanFile ? await readJsonlFile(state.lanFile) : await fetchJsonl(getSetting("lanUrl"));
-    state.sourceStatus.lan = { ok: true, count: state.lanRows.length };
+    if (state.lanFile) {
+      state.lanRows = await readJsonlFile(state.lanFile);
+      state.sourceStatus.lan = { ok: true, count: state.lanRows.length, truncated: false };
+    } else {
+      const r = await fetchJsonl(getSetting("lanUrl"));
+      state.lanRows = r.rows;
+      state.sourceStatus.lan = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+    }
   } catch (err) {
     errors.push(`LAN: ${err.message}`);
     state.lanRows = state.lanRows || [];
-    state.sourceStatus.lan = { ok: false, count: 0 };
+    state.sourceStatus.lan = { ok: false, count: 0, truncated: false };
   }
 
   try {
-    state.wifiRows = state.wifiFile ? await readJsonlFile(state.wifiFile) : await fetchJsonl(getSetting("wifiUrl"));
-    state.sourceStatus.wifi = { ok: true, count: state.wifiRows.length };
+    if (state.wifiFile) {
+      state.wifiRows = await readJsonlFile(state.wifiFile);
+      state.sourceStatus.wifi = { ok: true, count: state.wifiRows.length, truncated: false };
+    } else {
+      const r = await fetchJsonl(getSetting("wifiUrl"));
+      state.wifiRows = r.rows;
+      state.sourceStatus.wifi = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+    }
   } catch (err) {
     errors.push(`WiFi: ${err.message}`);
     state.wifiRows = state.wifiRows || [];
-    state.sourceStatus.wifi = { ok: false, count: 0 };
+    state.sourceStatus.wifi = { ok: false, count: 0, truncated: false };
   }
 
   try {
-    state.bleRows = state.bleFile ? await readJsonlFile(state.bleFile) : await fetchJsonl(getSetting("bleUrl"));
-    state.sourceStatus.ble = { ok: true, count: state.bleRows.length };
+    if (state.bleFile) {
+      state.bleRows = await readJsonlFile(state.bleFile);
+      state.sourceStatus.ble = { ok: true, count: state.bleRows.length, truncated: false };
+    } else {
+      const r = await fetchJsonl(getSetting("bleUrl"));
+      state.bleRows = r.rows;
+      state.sourceStatus.ble = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+    }
   } catch (err) {
     errors.push(`BLE: ${err.message}`);
     state.bleRows = state.bleRows || [];
-    state.sourceStatus.ble = { ok: false, count: 0 };
+    state.sourceStatus.ble = { ok: false, count: 0, truncated: false };
   }
 
   // Alert/fingerprint sono generati dai moduli di detection opzionali del
@@ -201,18 +258,20 @@ async function loadAllOnce() {
   // errore di caricamento (ma viene comunque tracciato per il pannello
   // "Stato moduli" in Impostazioni).
   try {
-    state.alertsRows = await fetchJsonl(getSetting("alertsUrl"));
-    state.sourceStatus.alerts = { ok: true, count: state.alertsRows.length };
+    const r = await fetchJsonl(getSetting("alertsUrl"));
+    state.alertsRows = r.rows;
+    state.sourceStatus.alerts = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
   } catch {
     state.alertsRows = state.alertsRows || [];
-    state.sourceStatus.alerts = { ok: false, count: 0 };
+    state.sourceStatus.alerts = { ok: false, count: 0, truncated: false };
   }
   try {
-    state.fingerprintRows = await fetchJsonl(getSetting("fingerprintUrl"));
-    state.sourceStatus.fingerprint = { ok: true, count: state.fingerprintRows.length };
+    const r = await fetchJsonl(getSetting("fingerprintUrl"));
+    state.fingerprintRows = r.rows;
+    state.sourceStatus.fingerprint = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
   } catch {
     state.fingerprintRows = state.fingerprintRows || [];
-    state.sourceStatus.fingerprint = { ok: false, count: 0 };
+    state.sourceStatus.fingerprint = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -602,7 +661,7 @@ function renderTrend(container) {
         <div class="bar-chart" id="chart-trend-alerts" data-empty="Nessun dato"></div>
       </div>
     </div>
-    <p class="field-hint">Calcolato lato browser sulla cronologia già caricata dai file di log (i JSONL non vengono ruotati automaticamente dal daemon, quindi coprono in genere l'intera storia salvo pulizia manuale) — non richiede un server di query separato.</p>
+    <p class="field-hint">Calcolato lato browser sulla cronologia già caricata dai file di log — non richiede un server di query separato. Il daemon ruota i JSONL oltre una certa dimensione (<code>--max-log-size-mb</code>, default 20MB) e la dashboard, per restare veloce, scarica solo la coda più recente dei file più grandi (vedi eventuale avviso nella pagina WiFi/BLE): su 30 giorni il trend potrebbe quindi non coprire l'intero periodo se il log ha già ruotato o è stato troncato al caricamento.</p>
   `;
 
   document.getElementById("trend-range").value = String(range);
@@ -1384,8 +1443,15 @@ function renderWifiPage(container) {
   const withSsid = wifiLast24h.filter((r) => r.ssid && r.ssid.trim());
   const avg = avgRssi(wifiLast24h);
   const knownVendors = new Set(wifiLast24h.map((r) => r.vendor).filter((v) => v && v.trim()));
+  const wifiStatus = state.sourceStatus.wifi;
 
   container.innerHTML = `
+    ${wifiStatus?.truncated ? `
+      <div class="page-section info-banner">
+        ${ICON("layers")}
+        <span>Log probe WiFi da ${formatBytes(wifiStatus.totalBytes)}: per restare veloce la dashboard carica solo gli ultimi ${formatBytes(TAIL_FETCH_BYTES)} (i più recenti). Le viste sotto — comprese le 24h — sono corrette, ma "Trend" su 30 giorni potrebbe non coprire l'intero periodo. Imposta <code>--max-log-size-mb</code>/<code>--log-backup-count</code> sul daemon per contenere la crescita del file.</span>
+      </div>
+    ` : ""}
     <div class="page-section kpi-row">
       ${kpiTile({
         label: "Probe WiFi (24h)", icon: "wifi", tone: "blue",
@@ -2006,13 +2072,25 @@ function renderAvvisi(container) {
 }
 
 /** Stato dei moduli daemon, dedotto dai dati effettivamente caricati (non c'è un endpoint di stato dedicato). */
+function formatBytes(bytes) {
+  if (!bytes) return "";
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
 function moduleStatusRow(label, key) {
   const s = state.sourceStatus[key];
   let tone = "muted", text = "Non ancora caricato";
   if (s) {
-    if (s.ok && s.count > 0) { tone = "good"; text = `Attivo — ${s.count} righe caricate`; }
-    else if (s.ok && s.count === 0) { tone = "warning"; text = "Sorgente raggiungibile, nessuna riga ancora"; }
-    else { tone = "muted"; text = "Non rilevato (file assente o modulo non attivo sul daemon)"; }
+    if (s.ok && s.count > 0) {
+      tone = "good";
+      text = `Attivo — ${s.count} righe caricate`;
+      if (s.truncated) text += ` (solo le più recenti — file da ${formatBytes(s.totalBytes)}, limitate le ultime ${formatBytes(TAIL_FETCH_BYTES)})`;
+    } else if (s.ok && s.count === 0) {
+      tone = "warning"; text = "Sorgente raggiungibile, nessuna riga ancora";
+    } else {
+      tone = "muted"; text = "Non rilevato (file assente o modulo non attivo sul daemon)";
+    }
   }
   return `<div class="module-status-row">
     <span class="module-status-dot tone-${tone}"></span>
@@ -2198,7 +2276,7 @@ function renderAiuto(container) {
         <li>I MAC dei probe WiFi e gli indirizzi BLE sono spesso randomizzati dai dispositivi moderni: vanno letti come indicatore di attività nei dintorni, non come identificativo univoco nel tempo.</li>
         <li>I nomi dei manufacturer BLE derivano da un elenco parziale e curato dei company ID Bluetooth SIG più comuni: un ID non riconosciuto viene mostrato come "ID 0x...".</li>
         <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale.</li>
-        <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: se il daemon o la dashboard rimuovono/ruotano quei file, la cronologia disponibile si riduce di conseguenza.</li>
+        <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: la rotazione automatica dei log sul daemon (<code>--max-log-size-mb</code>) e il caricamento "solo coda" della dashboard sui file più grandi (>4MB) riducono di conseguenza la cronologia disponibile, specie oltre i 7-30 giorni.</li>
       </ul>
     </div>
   `;

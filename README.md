@@ -66,6 +66,16 @@ Di default scrivono tutti in **`/var/log/home-sentinel/`**
 viene creata automaticamente al primo avvio se non esiste già (il daemon
 gira come root).
 
+Ogni file viene **ruotato in stile logrotate** una volta superati
+**20MB** (`--max-log-size-mb`, `0` per disabilitare) — il file corrente
+diventa `<nome>.1.jsonl`, quello più vecchio `<nome>.2.jsonl` e così via
+fino a `--log-backup-count` (default 3) copie conservate, poi la più
+vecchia viene eliminata. Il file "vivo" resta sempre allo stesso percorso,
+quindi i symlink creati da `dashboard/link-logs.sh` restano validi dopo
+ogni rotazione. `wifi_probes.jsonl` in particolare — il log più "rumoroso", un probe WiFi
+per ogni dispositivo nei dintorni — può arrivare a diversi MB al giorno su
+una rete affollata: la rotazione evita che cresca senza limite.
+
 **`lan_discovery.jsonl`**: `{timestamp, status, ip, mac, hostname, vendor, open_ports}`
 Una riga per ogni device visto ad ogni ciclo di scan (`status=new|online`),
 più una riga `status=offline` la prima volta che un device smette di
@@ -151,7 +161,17 @@ LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
 e alert di detection. In qualsiasi punto della dashboard, **Ctrl+K** (⌘K su
 Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni tabella
 ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno scorrimento
-pagine:
+pagine.
+
+Per i file JSONL oltre 4MB (tipicamente `wifi_probes.jsonl`, il più
+"rumoroso"), la dashboard scarica solo la coda più recente via **HTTP
+Range** invece dell'intero file — dato che i log sono append-only e in
+ordine cronologico, la coda è esattamente "i dati più recenti". Richiede
+che il server statico supporti le richieste Range (**nginx**: sì di
+default; il semplice `python3 -m http.server` no — in quel caso si
+ripiega in automatico sul download completo, senza errori, solo senza il
+vantaggio di velocità). Quando succede, un avviso compare nella pagina
+interessata e nel pannello "Stato moduli" in Impostazioni.
 
 - **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi,
   alert attivi), distribuzione per rischio e ultimi avvisi, widget

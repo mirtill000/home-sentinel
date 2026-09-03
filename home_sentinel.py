@@ -125,10 +125,22 @@ class JsonlLogger:
     una riga troncata da una scrittura interrotta (crash, spegnimento
     improvviso) viene semplicemente ignorata da un parser JSONL a valle,
     esattamente come un CSV con l'ultima riga incompleta.
+
+    Con `max_bytes` impostato, il file viene ruotato in stile logrotate
+    quando supera quella soglia: `<nome>.jsonl` -> `<nome>.1.jsonl` -> ... ->
+    `<nome>.<backup_count>.jsonl` (che viene eliminato). Il file "vivo" resta
+    sempre allo stesso path, quindi eventuali symlink verso di esso (es.
+    quelli creati da dashboard/link-logs.sh) restano validi dopo la
+    rotazione: puntano al percorso, non all'inode, e vedono subito il nuovo
+    file più piccolo. Necessario perché i probe WiFi in particolare possono
+    accumulare svariati MB al giorno su una rete affollata, senza questo
+    limite crescerebbero indefinitamente.
     """
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, max_bytes: int | None = None, backup_count: int = 3):
         self.path = path
+        self.max_bytes = max_bytes
+        self.backup_count = backup_count
         self._lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self.path, "a", encoding="utf-8")
@@ -138,6 +150,22 @@ class JsonlLogger:
             self._file.write(json.dumps(row, ensure_ascii=False))
             self._file.write("\n")
             self._file.flush()
+            if self.max_bytes and self._file.tell() >= self.max_bytes:
+                self._rotate()
+
+    def _rotate(self) -> None:
+        self._file.close()
+        if self.backup_count > 0:
+            for i in range(self.backup_count - 1, 0, -1):
+                src = self.path.with_suffix(f".{i}{self.path.suffix}")
+                dst = self.path.with_suffix(f".{i + 1}{self.path.suffix}")
+                if src.exists():
+                    src.replace(dst)
+            self.path.replace(self.path.with_suffix(f".1{self.path.suffix}"))
+        else:
+            self.path.unlink(missing_ok=True)
+        LOG.info("Ruotato %s (limite %d byte raggiunto)", self.path, self.max_bytes)
+        self._file = open(self.path, "a", encoding="utf-8")
 
     def close(self) -> None:
         with self._lock:
@@ -632,6 +660,20 @@ def parse_args() -> argparse.Namespace:
         "(richiede --wifi-iface; ogni BSSID nuovo per un SSID monitorato genera un alert)",
     )
 
+    p.add_argument(
+        "--max-log-size-mb",
+        type=float,
+        default=20.0,
+        help="Dimensione massima (MB) di ciascun file JSONL prima della rotazione stile logrotate "
+        "(0 = disabilita la rotazione, i file crescono senza limite)",
+    )
+    p.add_argument(
+        "--log-backup-count",
+        type=int,
+        default=3,
+        help="Numero di file ruotati da conservare per ciascun log (es. wifi_probes.1.jsonl, .2.jsonl, ...)",
+    )
+
     p.add_argument("--log-level", default="INFO")
     return p.parse_args()
 
@@ -652,18 +694,23 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    max_log_bytes = int(args.max_log_size_mb * 1024 * 1024) if args.max_log_size_mb > 0 else None
+
+    def make_logger(path: str) -> JsonlLogger:
+        return JsonlLogger(Path(path), max_bytes=max_log_bytes, backup_count=args.log_backup_count)
+
     sqlite_store = None if args.no_db else SqliteStore(Path(args.db))
 
-    alerts_log = JsonlLogger(Path(args.alerts_log))
+    alerts_log = make_logger(args.alerts_log)
     alert_manager = AlertManager(alerts_log, sqlite_store)
 
     anomaly_detector = None if args.no_anomaly_detection else AnomalyDetector(alert_manager, sqlite_store)
 
     fingerprint_log = None
     if args.fingerprint:
-        fingerprint_log = JsonlLogger(Path(args.fingerprint_log))
+        fingerprint_log = make_logger(args.fingerprint_log)
 
-    lan_log = JsonlLogger(Path(args.lan_log))
+    lan_log = make_logger(args.lan_log)
     ports = [int(port) for port in args.ports.split(",") if port.strip()]
     lan_service = LanDiscoveryService(
         subnet=args.subnet,
@@ -685,7 +732,7 @@ def main() -> None:
 
     probe_log = None
     if args.wifi_iface:
-        probe_log = JsonlLogger(Path(args.probe_log))
+        probe_log = make_logger(args.probe_log)
         channels = [int(ch) for ch in args.wifi_channels.split(",") if ch.strip()]
         evil_twin_detector = EvilTwinDetector(home_ssids, alert_manager) if home_ssids else None
         wifi_service = WifiProbeMonitor(
@@ -706,7 +753,7 @@ def main() -> None:
 
     ble_log = None
     if args.ble:
-        ble_log = JsonlLogger(Path(args.ble_log))
+        ble_log = make_logger(args.ble_log)
         ble_service = BleScanMonitor(
             log=ble_log, stop_event=stop_event, adapter=args.ble_adapter, sqlite_store=sqlite_store,
         )
