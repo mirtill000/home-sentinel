@@ -1,0 +1,10 @@
+[Unit]
+Description=Home Sentinel - schedulazione del report settimanale via email
+
+[Timer]
+# Ogni lunedì alle 8:00. Cambia pure: es. "daily" per un digest giornaliero.
+OnCalendar=Mon *-*-* 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

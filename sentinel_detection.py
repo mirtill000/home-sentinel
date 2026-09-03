@@ -15,12 +15,17 @@ lì per evitare falsi positivi sulle normali riassegnazioni DHCP.
   - EvilTwinDetector: osserva i beacon 802.11 catturati dal WiFi probe
     monitor (stesso adattatore in monitor mode) e segnala un SSID
     "di casa" trasmesso da un BSSID mai visto prima.
+  - DeauthFloodDetector: osserva i frame di deauthentication/disassociation
+    802.11 catturati dallo stesso monitor; un frame isolato è normale
+    (disconnessione legittima), un burst nella stessa finestra temporale è
+    il pattern tipico di un attacco deauth/disassoc flood.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 LOG = logging.getLogger("home_sentinel")
@@ -169,3 +174,44 @@ class EvilTwinDetector:
                 details={"ssid": ssid, "bssid_nuovo": bssid, "bssid_noti": sorted(bssids)},
             )
         bssids.add(bssid)
+
+
+class DeauthFloodDetector:
+    """Rileva burst di frame deauth/disassoc 802.11 (attacco deauth/disassoc flood).
+
+    Un frame isolato è normale (un device che si disconnette/rinnova
+    l'associazione); il segnale d'attacco è il *tasso*: molti frame in una
+    finestra breve. Un cooldown evita di spammare un alert per ogni singolo
+    frame durante un flood prolungato.
+    """
+
+    def __init__(self, alert_manager: AlertManager, window_seconds: float = 10.0,
+                 threshold: int = 10, cooldown_seconds: float = 60.0):
+        self.alert_manager = alert_manager
+        self.window_seconds = window_seconds
+        self.threshold = threshold
+        self.cooldown_seconds = cooldown_seconds
+        self._events: list[float] = []
+        self._last_alert_ts = 0.0
+
+    def observe(self, kind: str, source_mac: str, dest_mac: str, reason_code: int | None) -> None:
+        now = time.time()
+        self._events.append(now)
+        cutoff = now - self.window_seconds
+        self._events = [t for t in self._events if t >= cutoff]
+
+        if len(self._events) < self.threshold:
+            return
+        if (now - self._last_alert_ts) < self.cooldown_seconds:
+            return
+        self._last_alert_ts = now
+
+        count = len(self._events)
+        self.alert_manager.emit(
+            "high", "possibile_deauth_flood",
+            f"Rilevati {count} frame {kind} 802.11 in {self.window_seconds:.0f}s "
+            f"(ultimo: {source_mac or '?'} -> {dest_mac or '?'}, reason={reason_code}): "
+            "possibile attacco deauth/disassoc",
+            mac=source_mac or None,
+            details={"count": count, "window_s": self.window_seconds, "kind": kind, "reason_code": reason_code},
+        )
