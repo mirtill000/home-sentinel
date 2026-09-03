@@ -10,8 +10,9 @@ del Pi 3, nessun adattatore esterno necessario).
 Oltre alla discovery, include moduli opzionali di detection: fingerprinting
 del *tipo* di device (mDNS/SSDP/NetBIOS/banner, non solo vendor da MAC OUI),
 una baseline comportamentale per device con rilevamento anomalie (orari
-insoliti, nuove porte aperte), e rilevamento di possibili attacchi di rete
-(ARP spoofing, rogue DHCP, evil twin WiFi). Vedi "Moduli di detection" sotto.
+insoliti, nuove porte aperte), rilevamento di possibili attacchi di rete
+(ARP spoofing, rogue DHCP, evil twin WiFi, deauth/disassoc flood WiFi) e una
+stima del traffico WiFi per device. Vedi "Moduli di detection" sotto.
 
 Ogni evento viene appeso in tempo reale a file **JSON Lines** separati
 (un oggetto JSON per riga, uno per modulo). Non serve un database per far
@@ -121,7 +122,17 @@ porte aperte (chiave = porta).
 Una riga per ogni alert generato dai moduli di detection (vedi sotto).
 `severity` è `low`/`medium`/`high`, `type` un codice macchina (es.
 `possibile_arp_spoofing`, `nuova_porta`,
-`possibile_rogue_dhcp`, `possibile_evil_twin`).
+`possibile_rogue_dhcp`, `possibile_evil_twin`, `possibile_deauth_flood`).
+
+**`wifi_traffic.jsonl`** (con `--wifi-iface`, salvo `--no-wifi-traffic`):
+`{timestamp, mac, bytes, frames, interval_s}`
+Una riga per device per ogni intervallo di aggregazione (`--wifi-traffic-interval`,
+default 60s): somma dei byte e conteggio dei frame dati 802.11 (`addr2` come
+mittente) catturati durante il channel hopping in quell'intervallo. È una
+**stima relativa**, non banda reale: il Pi non è il gateway, quindi vede solo
+i frame transitati sul canale su cui si trovava in quel momento durante
+l'hopping, non tutto il traffico del device. Utile per confrontare device tra
+loro (chi trasmette di più), non per misurare Mbps effettivi.
 
 ## Moduli di detection
 
@@ -152,6 +163,20 @@ a posteriori:
   Genera traffico di rete aggiuntivo (sonde attive), per questo è opt-in;
   gira solo alla prima rilevazione di un device e ad ogni port scan
   periodico, non ad ogni ciclo.
+- **Deauth/disassoc flood WiFi** (attivo di default quando `--wifi-iface` è
+  in uso, `--no-deauth-detection` per disabilitarlo): conta i frame 802.11
+  di tipo deauthentication/disassociation catturati durante il channel
+  hopping e segnala un possibile attacco quando ne osserva più di
+  `--deauth-threshold` (default 10) in una finestra di `--deauth-window-seconds`
+  (default 10s) — un singolo frame deauth è normale (disconnessione
+  legittima), un burst no. Un cooldown di 60s tra un alert e il successivo
+  evita di saturare il log durante un flood prolungato.
+- **Stima traffico WiFi per device** (attiva di default quando
+  `--wifi-iface` è in uso, `--no-wifi-traffic` per disabilitarla): somma la
+  lunghezza dei frame dati 802.11 catturati per MAC mittente durante il
+  channel hopping, aggregata ogni `--wifi-traffic-interval` secondi (default
+  60) su `wifi_traffic.jsonl` e, se attivo, sullo specchio SQLite. È una
+  stima relativa (vedi sopra), non una misura di banda reale.
 
 ## Dashboard
 
@@ -183,13 +208,20 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   `--fingerprint` è attivo) e punteggio di rischio 0-100 (euristica su porte
   esposte e alert collegati); il nome host apre il **profilo completo** del
   dispositivo (cronologia LAN, probe WiFi, advertisement BLE, alert e
-  fingerprint riuniti in un'unica vista).
+  fingerprint riuniti in un'unica vista). Da qui, o dal menu azioni di una
+  riga, puoi assegnare un **nome personalizzato** a un device e
+  contrassegnarlo come **fidato**: riduce il punteggio di rischio e la
+  severità degli alert collegati (di un livello), senza nasconderli. Dati
+  salvati solo nel browser (`localStorage`), non richiedono modifiche al
+  daemon.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
 - **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
   device, offline, alert, fingerprint), filtrabile per categoria.
 - **WiFi** — KPI (probe 24h, MAC distinti, % con SSID, RSSI medio, vendor
-  noti), attività oraria, distribuzione per canale, top vendor, dispositivi
-  che cercano una rete specifica (aggregato), log probe grezzo.
+  noti), attività oraria, distribuzione per canale, top vendor, **traffico
+  WiFi stimato per device** (se `wifi_traffic.jsonl` è disponibile —
+  indicatore relativo, non banda esatta, vedi sopra), dispositivi che
+  cercano una rete specifica (aggregato), log probe grezzo.
 - **BLE** — KPI (advertisement 24h, MAC distinti, % con nome, RSSI medio,
   manufacturer noti), attività oraria, top manufacturer, **top 10
   dispositivi più ricorrenti** (per numero di avvistamenti), log
@@ -198,8 +230,11 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   RDP, SMB, VNC, FTP) aperte sui device correnti, calcolati dalla dashboard
   stessa; più gli alert generati dai moduli di detection del daemon
   (`alerts_detection.jsonl`, se presente) — ARP spoofing, rogue DHCP, evil
-  twin WiFi, anomalie comportamentali. Filtrabili per tipologia e stato, con
-  combinazioni di filtri salvabili come preset. Nessun dato è inventato.
+  twin WiFi, possibile deauth/disassoc flood, anomalie comportamentali.
+  Filtrabili per tipologia e stato, con combinazioni di filtri salvabili
+  come preset. Gli alert collegati a un device contrassegnato come fidato
+  vengono mostrati con severità ridotta di un livello. Nessun dato è
+  inventato.
 - **Trend** — andamento di nuovi dispositivi e alert negli ultimi 7/30
   giorni (grafici giornalieri + variazione % vs periodo precedente),
   calcolato lato browser sulla cronologia già caricata dai JSONL.
@@ -241,8 +276,50 @@ URL richiede invece un server, per via delle restrizioni CORS su `file://`).
 I percorsi sono configurabili anche via query string, es.
 `?lan=/log/lan_discovery.jsonl&wifi=/log/wifi_probes.jsonl`.
 
-Il daemon attuale misura solo presenza e porte aperte, non traffico di rete:
-la dashboard non mostra quindi metriche di banda.
+Il daemon misura presenza e porte aperte per tutti i device, e per il WiFi
+anche una stima relativa di traffico (vedi `wifi_traffic.jsonl` sopra) — non
+è comunque una misura di banda reale, dato che il Pi non è il gateway.
+
+## Report periodico via email
+
+`send_report.py` è uno script standalone, separato dal daemon continuo:
+pensato per girare periodicamente (es. una volta a settimana) tramite un
+timer systemd o cron, invia un digest via email con nuovi dispositivi, alert
+per tipo/severità e top device per traffico WiFi stimato nel periodo. Legge
+sempre dallo specchio **SQLite** del daemon (`--db`, stesso path passato a
+`home_sentinel.py`), non dai JSONL — che possono essere già stati ruotati o
+solo parzialmente scaricati dalla dashboard — quindi richiede che il daemon
+giri senza `--no-db`.
+
+Uso minimo (richiede un server SMTP; con `--dry-run` stampa il report su
+stdout invece di inviarlo, utile per testare senza configurare nulla):
+
+```bash
+python3 send_report.py \
+    --smtp-host smtp.example.com --smtp-port 587 --use-tls \
+    --smtp-user me@example.com --from-addr home-sentinel@example.com \
+    --to-addr me@example.com
+```
+
+La password SMTP **non va mai passata in chiaro sulla riga di comando**: si
+legge da una variabile d'ambiente (`--smtp-password-env`, default
+`HOME_SENTINEL_SMTP_PASSWORD`). Per l'esecuzione schedulata, `systemd/home-sentinel-report.service`
+(`Type=oneshot`) e `systemd/home-sentinel-report.timer` (default: ogni lunedì
+alle 8:00, `OnCalendar`) forniscono un template pronto — la password va in un
+file separato referenziato da `EnvironmentFile` (es.
+`/etc/home-sentinel/report.env`, permessi `chmod 600`, mai nel file di unit
+né sulla riga di comando, per non finire in chiaro in `ps`/`systemctl
+status`):
+
+```bash
+sudo cp systemd/home-sentinel-report.service systemd/home-sentinel-report.timer /etc/systemd/system/
+sudo mkdir -p /etc/home-sentinel
+echo "HOME_SENTINEL_SMTP_PASSWORD=..." | sudo tee /etc/home-sentinel/report.env
+sudo chmod 600 /etc/home-sentinel/report.env
+# adatta subnet/percorsi/destinatari in home-sentinel-report.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now home-sentinel-report.timer
+```
 
 ## Note
 
@@ -255,5 +332,8 @@ la dashboard non mostra quindi metriche di banda.
 - I log generati contengono dati potenzialmente identificativi (MAC, IP,
   hostname) di dispositivi propri e altrui: non sono versionati (vedi
   `.gitignore`) e vanno trattati/conservati di conseguenza.
+- Nomi personalizzati e stato "fidato" assegnati dalla dashboard vivono solo
+  nel `localStorage` del browser usato: non sono condivisi tra browser/device
+  diversi e non vengono inviati al daemon.
 - Per l'esecuzione continua si consiglia systemd (vedi
   `systemd/home-sentinel.service`) piuttosto che una demonizzazione manuale.

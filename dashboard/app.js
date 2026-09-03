@@ -46,12 +46,12 @@ function ICON(name) {
 const SETTINGS_KEYS = {
   lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", bleUrl: "hs.bleUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
   netLabel: "hs.net.label", netGateway: "hs.net.gateway",
-  alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl",
+  alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl", wifiTrafficUrl: "hs.wifiTrafficUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
   netLabel: "", netGateway: "",
-  alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl",
+  alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl", wifiTrafficUrl: "wifi_traffic.jsonl",
 };
 
 function getSetting(key) {
@@ -91,6 +91,7 @@ const state = {
   bleRows: [],
   alertsRows: [],
   fingerprintRows: [],
+  wifiTrafficRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -272,6 +273,14 @@ async function loadAllOnce() {
   } catch {
     state.fingerprintRows = state.fingerprintRows || [];
     state.sourceStatus.fingerprint = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("wifiTrafficUrl"));
+    state.wifiTrafficRows = r.rows;
+    state.sourceStatus.wifiTraffic = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.wifiTrafficRows = state.wifiTrafficRows || [];
+    state.sourceStatus.wifiTraffic = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -478,10 +487,50 @@ function goToDevice(mac) {
 }
 
 /* ---------------------------------------------------------------------- *
+ * Etichette device: nome personalizzato e stato "fidato", persistiti in
+ * localStorage (per MAC). Un device fidato riduce il rumore — punteggio di
+ * rischio più basso, severità degli alert attenuata — senza nascondere
+ * nulla: resta comunque visibile ovunque, solo con priorità minore.
+ * ---------------------------------------------------------------------- */
+
+const DEVICE_LABELS_KEY = "hs.deviceLabels";
+
+function getDeviceLabels() {
+  try { return JSON.parse(localStorage.getItem(DEVICE_LABELS_KEY) || "{}"); } catch { return {}; }
+}
+function saveDeviceLabels(labels) { localStorage.setItem(DEVICE_LABELS_KEY, JSON.stringify(labels)); }
+
+function getDeviceLabel(mac) {
+  const labels = getDeviceLabels();
+  return labels[mac] || { trusted: false, name: "" };
+}
+
+function setDeviceLabel(mac, patch) {
+  const labels = getDeviceLabels();
+  const next = { ...getDeviceLabel(mac), ...patch };
+  if (next.trusted || next.name) labels[mac] = next;
+  else delete labels[mac]; // torna al default: nessuna voce da conservare
+  saveDeviceLabels(labels);
+}
+
+/** Nome da mostrare per un device: personalizzato se impostato, altrimenti il fallback (hostname/MAC). */
+function displayName(mac, fallback) {
+  const label = getDeviceLabel(mac);
+  return label.name || fallback;
+}
+
+function trustBadgeHtml(mac) {
+  if (!getDeviceLabel(mac).trusted) return "";
+  return `<span class="badge trust-badge" title="Contrassegnato come fidato">${ICON("shield")}Fidato</span>`;
+}
+
+/* ---------------------------------------------------------------------- *
  * Risk score: punteggio euristico 0-100 per device, combina porte a
  * rischio esposte, alert collegati e incertezza sul tipo di device (nessun
  * fingerprint disponibile). Non è una valutazione di sicurezza formale,
- * solo un modo per ordinare "cosa guardare per primo".
+ * solo un modo per ordinare "cosa guardare per primo". Un device
+ * contrassegnato come fidato pesa meno (il rumore si riduce, il dato resta
+ * comunque visibile).
  * ---------------------------------------------------------------------- */
 
 function computeRiskScore(device, fingerprint, deviceAlerts) {
@@ -498,6 +547,7 @@ function computeRiskScore(device, fingerprint, deviceAlerts) {
     else score += 4;
   }
   if (!fingerprint || !fingerprint.device_type || fingerprint.device_type === "Sconosciuto") score += 5;
+  if (device?.mac && getDeviceLabel(device.mac).trusted) score *= 0.4;
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
@@ -888,6 +938,48 @@ function wifiChannelSegments(rows) {
   return [...counts.entries()].sort((a, b) => Number(a[0]) - Number(b[0]));
 }
 
+/**
+ * Top device per traffico WiFi stimato (wifi_traffic.jsonl, se il daemon
+ * gira con --wifi-iface e senza --no-wifi-traffic). È una stima grezza dai
+ * frame dati catturati durante il channel hopping — non è banda esatta, si
+ * vede solo la frazione di traffico transitata mentre si era fermi su quel
+ * canale.
+ */
+function computeWifiTrafficTop(rows, limit = 10) {
+  const totals = new Map();
+  for (const r of rows) {
+    if (!r.mac) continue;
+    if (!totals.has(r.mac)) totals.set(r.mac, { mac: r.mac, bytes: 0, frames: 0 });
+    const e = totals.get(r.mac);
+    e.bytes += Number(r.bytes) || 0;
+    e.frames += Number(r.frames) || 0;
+  }
+  return [...totals.values()].sort((a, b) => b.bytes - a.bytes).slice(0, limit);
+}
+
+function renderWifiTrafficWidget(container) {
+  const top = computeWifiTrafficTop(state.wifiTrafficRows, 10);
+  container.innerHTML = `
+    <div class="card-head"><h2>Traffico WiFi stimato</h2><span class="card-sub">top 10 per byte catturati, su tutto lo storico caricato</span></div>
+    ${top.length ? `<div class="table-scroll"><table class="data-table">
+      <thead><tr><th>#</th><th>Dispositivo</th><th>Traffico stimato</th><th>Frame catturati</th></tr></thead>
+      <tbody>${top.map((d, i) => `<tr>
+        <td class="mono">${i + 1}</td>
+        <td>
+          <button class="link-cell" data-mac-link="${escapeHtml(d.mac)}">${escapeHtml(displayName(d.mac, d.mac))}</button>
+          ${trustBadgeHtml(d.mac)}
+        </td>
+        <td>${formatBytes(d.bytes) || "—"}</td>
+        <td>${d.frames}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>` : '<p class="empty-state">Nessun dato di traffico WiFi. Attivo di default con --wifi-iface sul daemon, salvo --no-wifi-traffic.</p>'}
+    <p class="field-hint">Stima indicativa dai frame dati catturati durante il channel hopping: si vede solo la frazione di traffico transitata mentre si era fermi sul canale in quel momento, non è una misura di banda esatta.</p>
+  `;
+  container.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
+}
+
 /* ---------------------------------------------------------------------- *
  * Dispositivi nei dintorni (euristica: segnale forte + presenza ripetuta,
  * incrociando probe WiFi e advertisement BLE. Non è una localizzazione
@@ -969,6 +1061,7 @@ const ALERT_TYPE_META = {
   possibile_arp_spoofing: { label: "Possibile ARP spoofing", icon: "shield" },
   possibile_rogue_dhcp: { label: "Possibile rogue DHCP", icon: "server" },
   possibile_evil_twin: { label: "Possibile evil twin WiFi", icon: "wifi" },
+  possibile_deauth_flood: { label: "Possibile attacco deauth/disassoc WiFi", icon: "wifi" },
   nuova_porta: { label: "Nuova porta aperta su device noto", icon: "alert-triangle" },
   nuovo_dispositivo: { label: "Nuovo dispositivo rilevato", icon: "monitor" },
   porta_rischio: { label: "Porta a rischio aperta", icon: "alert-triangle" },
@@ -1031,8 +1124,19 @@ function computeAlerts() {
     });
   }
 
+  for (const a of alerts) {
+    if (a.mac && getDeviceLabel(a.mac).trusted) a.severity = downgradeSeverity(a.severity);
+  }
+
   alerts.sort((a, b) => (b.ts || 0) - (a.ts || 0));
   return alerts;
+}
+
+/** Un livello di severità in meno: per gli alert su device contrassegnati come fidati. */
+function downgradeSeverity(severity) {
+  if (severity === "critical") return "serious";
+  if (severity === "serious") return "info";
+  return severity;
 }
 
 function isDismissed(id) { return state.dismissedAlerts.has(id); }
@@ -1219,7 +1323,7 @@ function renderHostTableBody() {
   let rows = lanCurrent.filter((d) => {
     if (statusFilter !== "all" && d.status !== statusFilter) return false;
     if (!search) return true;
-    return `${d.ip} ${d.mac} ${d.hostname} ${d.vendor}`.toLowerCase().includes(search);
+    return `${d.ip} ${d.mac} ${d.hostname} ${d.vendor} ${getDeviceLabel(d.mac).name}`.toLowerCase().includes(search);
   });
   rows = sortRows(rows, state.lanSort.key, state.lanSort.dir);
   const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
@@ -1254,6 +1358,14 @@ function renderHostTableBody() {
       renderHostTableBody();
     });
   });
+  body.querySelectorAll('[data-action="trust"]').forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setDeviceLabel(btn.dataset.mac, { trusted: !getDeviceLabel(btn.dataset.mac).trusted });
+      state.openMenuMac = null;
+      renderHostTableBody();
+    });
+  });
   body.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); goToDevice(btn.dataset.macLink); });
   });
@@ -1264,10 +1376,15 @@ function hostRowHtml(d, fingerprint, alerts) {
   const expanded = state.expandedMac === d.mac;
   const deviceType = fingerprint?.device_type || "";
   const risk = computeRiskScore(d, fingerprint, alerts);
+  const trusted = getDeviceLabel(d.mac).trusted;
+  const name = displayName(d.mac, d.hostname || d.mac);
   let html = `<tr>
     <td>${statusBadge(d.status)}</td>
     <td class="mono">${escapeHtml(d.ip)}</td>
-    <td><button class="link-cell" data-mac-link="${escapeHtml(d.mac)}" title="Apri profilo dispositivo">${escapeHtml(d.hostname) || escapeHtml(d.mac)}</button></td>
+    <td>
+      <button class="link-cell" data-mac-link="${escapeHtml(d.mac)}" title="Apri profilo dispositivo">${escapeHtml(name)}</button>
+      ${trustBadgeHtml(d.mac)}
+    </td>
     <td class="mono">${escapeHtml(d.mac)}</td>
     <td>${escapeHtml(d.vendor) || '<span class="muted">—</span>'}</td>
     <td>${escapeHtml(deviceType) || '<span class="muted">—</span>'}</td>
@@ -1280,6 +1397,7 @@ function hostRowHtml(d, fingerprint, alerts) {
         ${menuOpen ? `<div class="row-menu-drop">
           <button data-action="details" data-mac="${escapeHtml(d.mac)}">${ICON("eye")}Vedi dettagli</button>
           <button data-mac-link="${escapeHtml(d.mac)}">${ICON("monitor")}Profilo completo</button>
+          <button data-action="trust" data-mac="${escapeHtml(d.mac)}">${ICON("shield")}${trusted ? "Rimuovi fiducia" : "Segna come fidato"}</button>
           <button data-action="copy" data-mac="${escapeHtml(d.mac)}">${ICON("copy")}Copia MAC</button>
         </div>` : ""}
       </div>
@@ -1489,6 +1607,8 @@ function renderWifiPage(container) {
       </div>
     </div>
 
+    <div class="page-section card" id="wifi-traffic-mount"></div>
+
     <div class="page-section card" id="wifi-corr-mount"></div>
 
     <div class="page-section card" id="wifi-section-mount"></div>
@@ -1497,6 +1617,7 @@ function renderWifiPage(container) {
   renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
   renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Canale ${ch}`, n]), "var(--cat-3)");
   renderHBarChart(document.getElementById("chart-wifi-vendor"), wifiVendorSegments(wifiLast24h), "var(--series-blue)");
+  renderWifiTrafficWidget(document.getElementById("wifi-traffic-mount"));
   renderWifiCorrelation(document.getElementById("wifi-corr-mount"));
   renderWifiSection(document.getElementById("wifi-section-mount"));
 }
@@ -1857,15 +1978,18 @@ function renderDeviceProfile(container, mac) {
   }
 
   const risk = lanCurrent ? computeRiskScore(lanCurrent, fingerprint, deviceAlerts) : null;
+  const label = getDeviceLabel(mac);
+  const title = displayName(mac, lanCurrent?.hostname || fingerprint?.device_type || mac);
 
   container.innerHTML = `
     ${backButton}
     <div class="page-section card device-profile-head">
       <div class="device-profile-title">
-        <h2>${escapeHtml(lanCurrent?.hostname || fingerprint?.device_type || mac)}</h2>
+        <h2>${escapeHtml(title)}</h2>
         <span class="mono">${escapeHtml(mac)}</span>
         ${lanCurrent ? statusBadge(lanCurrent.status) : '<span class="badge status-offline"><span class="dot"></span>Non su LAN</span>'}
         ${risk !== null ? riskBadgeHtml(risk) : ""}
+        ${trustBadgeHtml(mac)}
       </div>
       <div class="detail-grid">
         <div><span>IP</span>${lanCurrent ? escapeHtml(lanCurrent.ip) : "—"}</div>
@@ -1874,6 +1998,15 @@ function renderDeviceProfile(container, mac) {
         <div><span>Porte aperte</span>${formatPorts(lanCurrent?.open_ports) || "—"}</div>
         <div><span>Prima rilevazione</span>${formatTs(firstSeenTs(mac))}</div>
         <div><span>Ultima attività LAN</span>${lanCurrent ? formatTs(lanCurrent.timestamp) : "—"}</div>
+      </div>
+      <div class="device-label-editor">
+        <div class="field">
+          <label for="device-name-input">Nome personalizzato</label>
+          <input type="text" id="device-name-input" value="${escapeHtml(label.name)}" placeholder="es. iPhone di Marco">
+        </div>
+        <button class="btn ${label.trusted ? "btn-primary" : ""}" id="device-trust-toggle">
+          ${ICON("shield")}${label.trusted ? "Fidato — rimuovi" : "Segna come fidato"}
+        </button>
       </div>
     </div>
 
@@ -1918,6 +2051,14 @@ function renderDeviceProfile(container, mac) {
     <p class="field-hint">I MAC dei probe WiFi e degli advertisement BLE sono spesso randomizzati dai dispositivi moderni e possono non coincidere con il MAC dell'interfaccia LAN dello stesso device: le sezioni sopra restano vuote in quel caso, non è un errore.</p>
   `;
   document.getElementById("device-back").addEventListener("click", () => { window.location.hash = "#/host"; });
+  document.getElementById("device-name-input").addEventListener("change", (e) => {
+    setDeviceLabel(mac, { name: e.target.value.trim() });
+    renderDeviceProfile(container, mac);
+  });
+  document.getElementById("device-trust-toggle").addEventListener("click", () => {
+    setDeviceLabel(mac, { trusted: !getDeviceLabel(mac).trusted });
+    renderDeviceProfile(container, mac);
+  });
 }
 
 function renderScansioni(container) {
@@ -2108,6 +2249,7 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("Probe WiFi (--wifi-iface)", "wifi")}
         ${moduleStatusRow("Scan BLE (--ble)", "ble")}
         ${moduleStatusRow("Fingerprinting (--fingerprint)", "fingerprint")}
+        ${moduleStatusRow("Traffico WiFi stimato", "wifiTraffic")}
         ${moduleStatusRow("Alert di detection", "alerts")}
       </div>
     </div>
@@ -2123,6 +2265,7 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-ble-file">Oppure carica file locale</label><input type="file" id="set-ble-file" accept=".jsonl,.ndjson,.json,.txt"></div>
         <div class="field"><label for="set-alerts-url">Log alert di detection (.jsonl)</label><input type="text" id="set-alerts-url" value="${escapeHtml(getSetting("alertsUrl"))}"></div>
         <div class="field"><label for="set-fingerprint-url">Log fingerprint device (.jsonl)</label><input type="text" id="set-fingerprint-url" value="${escapeHtml(getSetting("fingerprintUrl"))}"></div>
+        <div class="field"><label for="set-wifi-traffic-url">Log traffico WiFi (.jsonl)</label><input type="text" id="set-wifi-traffic-url" value="${escapeHtml(getSetting("wifiTrafficUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -2166,6 +2309,7 @@ function renderImpostazioni(container) {
   document.getElementById("set-ble-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.bleFile = e.target.files[0]; loadAll(); } });
   document.getElementById("set-alerts-url").addEventListener("change", (e) => { setSetting("alertsUrl", e.target.value.trim() || SETTINGS_DEFAULTS.alertsUrl); loadAll(); });
   document.getElementById("set-fingerprint-url").addEventListener("change", (e) => { setSetting("fingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.fingerprintUrl); loadAll(); });
+  document.getElementById("set-wifi-traffic-url").addEventListener("change", (e) => { setSetting("wifiTrafficUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiTrafficUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -2195,6 +2339,7 @@ function renderEsporta(container) {
     ${exportCardHtml("Probe WiFi", `${state.wifiRows.length} righe`, "wifi")}
     ${exportCardHtml("Scan BLE", `${state.bleRows.length} righe`, "ble")}
     ${exportCardHtml("Fingerprint device", `${state.fingerprintRows.length} righe`, "fingerprint")}
+    ${exportCardHtml("Traffico WiFi stimato", `${state.wifiTrafficRows.length} righe`, "wifi-traffic")}
     ${exportCardHtml("Avvisi", `${alerts.length} avvisi`, "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
@@ -2232,6 +2377,7 @@ function doExport(key, format) {
   else if (key === "wifi") { rows = state.wifiRows; filename = "wifi_probes"; }
   else if (key === "ble") { rows = state.bleRows; filename = "ble_discovery"; }
   else if (key === "fingerprint") { rows = state.fingerprintRows; filename = "fingerprint_discovery"; }
+  else if (key === "wifi-traffic") { rows = state.wifiTrafficRows; filename = "wifi_traffic"; }
   else if (key === "alerts") {
     rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
     filename = "alerts";
@@ -2257,12 +2403,12 @@ function renderAiuto(container) {
       <h3>Pagine</h3>
       <ul>
         <li><strong>Dashboard</strong> — panoramica: host attivi, probe WiFi, dispositivi nuovi, avvisi, distribuzione per vendor e stato, attività 24h.</li>
-        <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device e punteggio di rischio (0-100, su porte esposte e alert collegati); il nome host è un link al profilo completo del dispositivo.</li>
+        <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device e punteggio di rischio (0-100, su porte esposte e alert collegati); il nome host è un link al profilo completo del dispositivo. Da lì, o dal menu azioni di una riga, puoi assegnare un nome personalizzato e contrassegnare un device come fidato (riduce il rumore: punteggio di rischio più basso, alert collegati meno severi).</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
-        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, top vendor, elenco probe grezzi.</li>
+        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, distribuzione per canale, top vendor, traffico WiFi stimato per device, elenco probe grezzi.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
-        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
+        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
         <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), tema.</li>
         <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
@@ -2272,10 +2418,11 @@ function renderAiuto(container) {
     <div class="card help-section">
       <h3>Limiti da conoscere</h3>
       <ul>
-        <li>Nessun dato di traffico (Mbps): il daemon attuale misura solo presenza e porte aperte, non banda.</li>
+        <li>Il traffico WiFi stimato non è banda reale (Mbps): il Pi non è il gateway, quindi conta solo i byte dei frame dati catturati durante il channel hopping su un'interfaccia in monitor mode — una frazione parziale del traffico reale, utile come indicatore relativo (chi trasmette di più rispetto agli altri device) ma non come misura di banda assoluta.</li>
         <li>I MAC dei probe WiFi e gli indirizzi BLE sono spesso randomizzati dai dispositivi moderni: vanno letti come indicatore di attività nei dintorni, non come identificativo univoco nel tempo.</li>
         <li>I nomi dei manufacturer BLE derivano da un elenco parziale e curato dei company ID Bluetooth SIG più comuni: un ID non riconosciuto viene mostrato come "ID 0x...".</li>
-        <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale.</li>
+        <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale; contrassegnare un device come fidato lo attenua (punteggio ridotto, alert collegati un livello meno severo) ma non lo nasconde né lo esclude dai controlli.</li>
+        <li>Il rilevamento di deauth/disassoc flood è a soglia (numero di frame in una finestra temporale): reti WiFi molto affollate o con roaming aggressivo possono generare falsi positivi occasionali, e un attacco molto lento/distribuito nel tempo può restare sotto soglia.</li>
         <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: la rotazione automatica dei log sul daemon (<code>--max-log-size-mb</code>) e il caricamento "solo coda" della dashboard sui file più grandi (>4MB) riducono di conseguenza la cronologia disponibile, specie oltre i 7-30 giorni.</li>
       </ul>
     </div>

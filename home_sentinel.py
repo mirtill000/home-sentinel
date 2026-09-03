@@ -7,7 +7,10 @@ Tre moduli indipendenti, ciascuno in un proprio thread:
     MAC OUI) e port scan; scrive ogni evento su JSON Lines.
   - WifiProbeMonitor (opzionale): sniffing passivo dei probe request 802.11
     su un'interfaccia in monitor mode, con channel hopping; scrive ogni
-    probe catturato su un secondo file JSON Lines.
+    probe catturato su un secondo file JSON Lines. Osserva anche i beacon
+    (evil twin), i frame deauth/disassoc (possibile attacco flood) e stima
+    il traffico per device dai frame dati catturati, tutto sullo stesso
+    adattatore in monitor mode, senza sonde aggiuntive.
   - BleScanMonitor (opzionale): scan passivo degli advertisement BLE nei
     dintorni via l'adattatore Bluetooth locale (BlueZ) — a differenza del
     probe WiFi non serve un adattatore esterno: il Bluetooth 4.1 LE onboard
@@ -39,13 +42,19 @@ from pathlib import Path
 
 try:
     from scapy.all import ARP, Ether, conf, sniff, srp
-    from scapy.layers.dot11 import Dot11Beacon, Dot11Elt, Dot11ProbeReq
+    from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11Deauth, Dot11Disas, Dot11Elt, Dot11ProbeReq
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "scapy non è installato. Installa le dipendenze con: pip install -r requirements.txt"
     ) from exc
 
-from sentinel_detection import AlertManager, AnomalyDetector, EvilTwinDetector, RogueDhcpDetector
+from sentinel_detection import (
+    AlertManager,
+    AnomalyDetector,
+    DeauthFloodDetector,
+    EvilTwinDetector,
+    RogueDhcpDetector,
+)
 from sentinel_fingerprint import fingerprint_device, netbios_probe
 from sentinel_storage import SqliteStore
 
@@ -344,6 +353,9 @@ class WifiProbeMonitor:
         auto_monitor: bool = False,
         sqlite_store: SqliteStore | None = None,
         evil_twin_detector: EvilTwinDetector | None = None,
+        deauth_detector: DeauthFloodDetector | None = None,
+        traffic_log: JsonlLogger | None = None,
+        traffic_flush_interval: float = 60.0,
     ):
         self.iface = iface
         self.channels = channels
@@ -353,7 +365,12 @@ class WifiProbeMonitor:
         self.auto_monitor = auto_monitor
         self.sqlite_store = sqlite_store
         self.evil_twin_detector = evil_twin_detector
+        self.deauth_detector = deauth_detector
+        self.traffic_log = traffic_log
+        self.traffic_flush_interval = traffic_flush_interval
         self._current_channel = channels[0]
+        self._traffic_lock = threading.Lock()
+        self._traffic_counters: dict[str, dict[str, int]] = {}
 
     def _setup_monitor_mode(self) -> None:
         for cmd in (
@@ -384,8 +401,14 @@ class WifiProbeMonitor:
             self.stop_event.wait(self.hop_interval)
 
     def _handle_packet(self, pkt) -> None:
+        if self.deauth_detector is not None and (pkt.haslayer(Dot11Deauth) or pkt.haslayer(Dot11Disas)):
+            self._handle_deauth(pkt)
+
         if self.evil_twin_detector is not None and pkt.haslayer(Dot11Beacon):
             self._handle_beacon(pkt)
+
+        if self.traffic_log is not None and pkt.haslayer(Dot11) and pkt.type == 2:
+            self._handle_data_frame(pkt)
 
         if not pkt.haslayer(Dot11ProbeReq):
             return
@@ -428,6 +451,56 @@ class WifiProbeMonitor:
             return
         self.evil_twin_detector.observe_beacon(ssid, bssid or "")
 
+    def _handle_deauth(self, pkt) -> None:
+        kind = "deauth" if pkt.haslayer(Dot11Deauth) else "disassoc"
+        reason_code = None
+        try:
+            layer = pkt[Dot11Deauth] if kind == "deauth" else pkt[Dot11Disas]
+            reason_code = int(layer.reason)
+        except Exception:
+            pass
+        source = (pkt.addr2 or "").lower()
+        dest = (pkt.addr1 or "").lower()
+        self.deauth_detector.observe(kind, source, dest, reason_code)
+
+    def _handle_data_frame(self, pkt) -> None:
+        # Stima grezza del traffico per MAC: conta byte/frame dei frame dati
+        # visti durante il channel hopping. Il payload resta illeggibile se
+        # la rete è cifrata (WPA2/3), ma lunghezza e header 802.11 restano
+        # visibili anche così — sufficiente per un indicatore relativo di
+        # "chi genera più traffico", non per una banda esatta (si vede solo
+        # una frazione dei frame, quella catturata durante la sosta su quel
+        # canale).
+        mac = (pkt.addr2 or "").lower()
+        if not mac:
+            return
+        with self._traffic_lock:
+            entry = self._traffic_counters.setdefault(mac, {"bytes": 0, "frames": 0})
+            entry["bytes"] += len(pkt)
+            entry["frames"] += 1
+
+    def _flush_traffic(self) -> None:
+        with self._traffic_lock:
+            counters = self._traffic_counters
+            self._traffic_counters = {}
+        if not counters:
+            return
+        ts = now_iso()
+        for mac, stats in counters.items():
+            row = {
+                "timestamp": ts, "mac": mac,
+                "bytes": stats["bytes"], "frames": stats["frames"],
+                "interval_s": self.traffic_flush_interval,
+            }
+            self.traffic_log.write(row)
+            if self.sqlite_store:
+                self.sqlite_store.insert_wifi_traffic(row)
+
+    def _traffic_flush_loop(self) -> None:
+        while not self.stop_event.is_set():
+            self.stop_event.wait(self.traffic_flush_interval)
+            self._flush_traffic()
+
     def run(self) -> None:
         if self.auto_monitor:
             try:
@@ -448,6 +521,13 @@ class WifiProbeMonitor:
         hop_thread = threading.Thread(target=self._hop_loop, daemon=True, name="wifi-channel-hop")
         hop_thread.start()
 
+        traffic_thread = None
+        if self.traffic_log is not None:
+            traffic_thread = threading.Thread(
+                target=self._traffic_flush_loop, daemon=True, name="wifi-traffic-flush",
+            )
+            traffic_thread.start()
+
         LOG.info("WiFi probe monitor avviato su %s", self.iface)
         try:
             while not self.stop_event.is_set():
@@ -456,6 +536,9 @@ class WifiProbeMonitor:
             LOG.exception("WiFi probe monitor terminato con errore")
         finally:
             hop_thread.join(timeout=2)
+            if traffic_thread:
+                self._flush_traffic()  # scrive gli eventuali contatori residui prima di uscire
+                traffic_thread.join(timeout=2)
 
 
 # --------------------------------------------------------------------------
@@ -661,6 +744,41 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
+        "--no-deauth-detection",
+        action="store_true",
+        help="Disabilita il rilevamento di burst di frame deauth/disassoc 802.11 (richiede --wifi-iface)",
+    )
+    p.add_argument(
+        "--deauth-window-seconds",
+        type=float,
+        default=10.0,
+        help="Finestra temporale (s) su cui contare i frame deauth/disassoc per rilevare un burst",
+    )
+    p.add_argument(
+        "--deauth-threshold",
+        type=int,
+        default=10,
+        help="Numero minimo di frame deauth/disassoc nella finestra per generare un alert",
+    )
+
+    p.add_argument(
+        "--no-wifi-traffic",
+        action="store_true",
+        help="Disabilita la stima del traffico WiFi per device (richiede --wifi-iface)",
+    )
+    p.add_argument(
+        "--wifi-traffic-log",
+        default="/var/log/home-sentinel/wifi_traffic.jsonl",
+        help="Percorso file JSON Lines della stima di traffico WiFi per device",
+    )
+    p.add_argument(
+        "--wifi-traffic-interval",
+        type=float,
+        default=60.0,
+        help="Intervallo (s) di aggregazione dei contatori di traffico WiFi prima di scriverli su log",
+    )
+
+    p.add_argument(
         "--max-log-size-mb",
         type=float,
         default=20.0,
@@ -731,10 +849,16 @@ def main() -> None:
     home_ssids = {s.strip() for s in args.home_ssid.split(",") if s.strip()}
 
     probe_log = None
+    wifi_traffic_log = None
     if args.wifi_iface:
         probe_log = make_logger(args.probe_log)
         channels = [int(ch) for ch in args.wifi_channels.split(",") if ch.strip()]
         evil_twin_detector = EvilTwinDetector(home_ssids, alert_manager) if home_ssids else None
+        deauth_detector = None if args.no_deauth_detection else DeauthFloodDetector(
+            alert_manager, window_seconds=args.deauth_window_seconds, threshold=args.deauth_threshold,
+        )
+        if not args.no_wifi_traffic:
+            wifi_traffic_log = make_logger(args.wifi_traffic_log)
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
@@ -744,6 +868,9 @@ def main() -> None:
             auto_monitor=args.auto_monitor,
             sqlite_store=sqlite_store,
             evil_twin_detector=evil_twin_detector,
+            deauth_detector=deauth_detector,
+            traffic_log=wifi_traffic_log,
+            traffic_flush_interval=args.wifi_traffic_interval,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
     else:
@@ -784,6 +911,8 @@ def main() -> None:
         lan_log.close()
         if probe_log:
             probe_log.close()
+        if wifi_traffic_log:
+            wifi_traffic_log.close()
         if ble_log:
             ble_log.close()
         if fingerprint_log:

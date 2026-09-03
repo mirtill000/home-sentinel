@@ -678,6 +678,16 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .device-profile-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .device-profile-title h2 { margin: 0; font-size: 1.1rem; }
 
+.trust-badge { background: var(--brand-wash); color: var(--brand); }
+.trust-badge svg { width: 11px; height: 11px; }
+
+.device-label-editor {
+  display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);
+}
+.device-label-editor .field { flex: 1; min-width: 220px; }
+.device-label-editor .btn { flex-shrink: 0; }
+
 /* ------------------------------------------------------------------ *
  * Module status (Impostazioni)
  * ------------------------------------------------------------------ */

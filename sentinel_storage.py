@@ -5,9 +5,10 @@ d'archivio (append-only, resiliente a scritture interrotte), SQLite abilita
 query indicizzate — storico per device, filtri, aggregazioni — senza dover
 riparsare file da milioni di righe ad ogni consultazione.
 
-Un solo file .db con quattro tabelle "evento" (una per modulo di discovery),
-più due tabelle di supporto per fingerprint dei device e alert di sicurezza,
-e una per la baseline comportamentale usata dall'anomaly detector.
+Un solo file .db con le tabelle "evento" (una per modulo di discovery, più
+il traffico WiFi stimato), le tabelle di supporto per fingerprint dei
+device e alert di sicurezza, e la baseline comportamentale usata
+dall'anomaly detector.
 """
 
 from __future__ import annotations
@@ -90,6 +91,17 @@ CREATE TABLE IF NOT EXISTS device_baseline (
     observations INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS wifi_traffic (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    frames INTEGER NOT NULL,
+    interval_s REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_traffic_mac ON wifi_traffic(mac);
+CREATE INDEX IF NOT EXISTS idx_traffic_ts ON wifi_traffic(timestamp);
 """
 
 
@@ -187,6 +199,14 @@ class SqliteStore:
                     row["timestamp"], row["severity"], row["type"], row.get("mac"), row.get("ip"),
                     row["message"], json.dumps(row.get("details", {})),
                 ),
+            )
+            self._conn.commit()
+
+    def insert_wifi_traffic(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO wifi_traffic (timestamp, mac, bytes, frames, interval_s) VALUES (?, ?, ?, ?, ?)",
+                (row["timestamp"], row["mac"], row["bytes"], row["frames"], row["interval_s"]),
             )
             self._conn.commit()
 

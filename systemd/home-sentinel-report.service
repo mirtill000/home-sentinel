@@ -1,0 +1,27 @@
+[Unit]
+Description=Home Sentinel - report periodico via email
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# La password SMTP NON va mai scritta qui: mettila in un file separato,
+# leggibile solo da root (chmod 600), es. /etc/home-sentinel/report.env
+# con una riga tipo:
+#   HOME_SENTINEL_SMTP_PASSWORD=la-tua-password-o-app-password
+EnvironmentFile=/etc/home-sentinel/report.env
+# Adatta subnet/percorsi/destinatari al tuo ambiente. --db deve puntare
+# allo stesso database usato da home-sentinel.service (--db, default
+# /var/log/home-sentinel/home-sentinel.db).
+ExecStart=/usr/bin/python3 /opt/home-sentinel/send_report.py \
+    --period-days 7 \
+    --smtp-host smtp.example.com \
+    --smtp-port 587 \
+    --use-tls \
+    --smtp-user mittente@example.com \
+    --from-addr home-sentinel@example.com \
+    --to-addr te@example.com
+User=root
+
+[Install]
+WantedBy=multi-user.target
