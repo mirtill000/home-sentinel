@@ -918,15 +918,6 @@ function bleManufacturerSegments(rows) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
 }
 
-function wifiVendorSegments(rows) {
-  const counts = new Map();
-  for (const r of rows) {
-    const v = (r.vendor || "").trim() || "Sconosciuto";
-    counts.set(v, (counts.get(v) || 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-}
-
 /** Probe per canale WiFi, ordinati per numero di canale (non per frequenza): si legge come uno spettro. */
 function wifiChannelSegments(rows) {
   const counts = new Map();
@@ -939,43 +930,95 @@ function wifiChannelSegments(rows) {
 }
 
 /**
- * Top device per traffico WiFi stimato (wifi_traffic.jsonl, se il daemon
- * gira con --wifi-iface e senza --no-wifi-traffic). È una stima grezza dai
+ * Riepilogo unificato per device WiFi: un MAC, una riga. Unisce i probe
+ * request (SSID cercati, conteggio, ultimo avvistamento) e il traffico
+ * stimato (wifi_traffic.jsonl, se il daemon gira con --wifi-iface e senza
+ * --no-wifi-traffic) invece di tenerli in due tabelle separate con le
+ * stesse colonne MAC/vendor duplicate. Il traffico è una stima grezza dai
  * frame dati catturati durante il channel hopping — non è banda esatta, si
  * vede solo la frazione di traffico transitata mentre si era fermi su quel
  * canale.
  */
-function computeWifiTrafficTop(rows, limit = 10) {
-  const totals = new Map();
-  for (const r of rows) {
+function computeWifiDeviceOverview(probeRows, trafficRows) {
+  const byMac = new Map();
+  const get = (mac) => {
+    if (!byMac.has(mac)) byMac.set(mac, { mac, vendor: "", ssids: new Map(), totalProbes: 0, lastTs: 0, bytes: 0, frames: 0 });
+    return byMac.get(mac);
+  };
+  for (const r of probeRows) {
     if (!r.mac) continue;
-    if (!totals.has(r.mac)) totals.set(r.mac, { mac: r.mac, bytes: 0, frames: 0 });
-    const e = totals.get(r.mac);
+    const e = get(r.mac);
+    e.totalProbes += 1;
+    if (!e.vendor && r.vendor) e.vendor = r.vendor;
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts > e.lastTs) e.lastTs = ts;
+    if (r.ssid && r.ssid.trim()) e.ssids.set(r.ssid, (e.ssids.get(r.ssid) || 0) + 1);
+  }
+  for (const r of trafficRows) {
+    if (!r.mac) continue;
+    const e = get(r.mac);
     e.bytes += Number(r.bytes) || 0;
     e.frames += Number(r.frames) || 0;
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts > e.lastTs) e.lastTs = ts;
   }
-  return [...totals.values()].sort((a, b) => b.bytes - a.bytes).slice(0, limit);
+  return [...byMac.values()].map((e) => ({ ...e, ssidList: [...e.ssids.entries()].sort((a, b) => b[1] - a[1]) }));
 }
 
-function renderWifiTrafficWidget(container) {
-  const top = computeWifiTrafficTop(state.wifiTrafficRows, 10);
+function renderWifiDevicesTable(container) {
   container.innerHTML = `
-    <div class="card-head"><h2>Traffico WiFi stimato</h2><span class="card-sub">top 10 per byte catturati, su tutto lo storico caricato</span></div>
-    ${top.length ? `<div class="table-scroll"><table class="data-table">
-      <thead><tr><th>#</th><th>Dispositivo</th><th>Traffico stimato</th><th>Frame catturati</th></tr></thead>
-      <tbody>${top.map((d, i) => `<tr>
-        <td class="mono">${i + 1}</td>
-        <td>
-          <button class="link-cell" data-mac-link="${escapeHtml(d.mac)}">${escapeHtml(displayName(d.mac, d.mac))}</button>
-          ${trustBadgeHtml(d.mac)}
-        </td>
-        <td>${formatBytes(d.bytes) || "—"}</td>
-        <td>${d.frames}</td>
-      </tr>`).join("")}</tbody>
-    </table></div>` : '<p class="empty-state">Nessun dato di traffico WiFi. Attivo di default con --wifi-iface sul daemon, salvo --no-wifi-traffic.</p>'}
-    <p class="field-hint">Stima indicativa dai frame dati catturati durante il channel hopping: si vede solo la frazione di traffico transitata mentre si era fermi sul canale in quel momento, non è una misura di banda esatta.</p>
+    <div class="card-head">
+      <h2>Dispositivi WiFi</h2>
+      <span class="card-sub">un riepilogo per MAC — traffico stimato, SSID cercati e probe totali, su tutto lo storico caricato</span>
+      <div class="filter-row" style="margin:0;">
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-devices-search" placeholder="Cerca per MAC, nome, vendor, SSID…"></div>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr><th>Dispositivo</th><th>Vendor</th><th>Traffico stimato</th><th>SSID cercati</th><th>Probe totali</th><th>Ultimo avvistamento</th></tr></thead>
+        <tbody id="wifi-devices-body"></tbody>
+      </table>
+      <p class="empty-state hidden" id="wifi-devices-empty">Nessun probe WiFi — controlla la sorgente dati in Impostazioni.</p>
+      <div id="wifi-devices-pagination"></div>
+    </div>
+    <p class="field-hint">Traffico stimato dai frame dati catturati durante il channel hopping (non è banda esatta); SSID cercati solo per i probe che li pubblicizzano — molti device moderni non lo fanno più per privacy, quindi è normale che la colonna resti vuota per molte righe.</p>
   `;
-  container.querySelectorAll("[data-mac-link]").forEach((btn) => {
+  document.getElementById("wifi-devices-search").addEventListener("input", () => { getPagination("wifi-devices").page = 1; renderWifiDevicesTableBody(); });
+  renderWifiDevicesTableBody();
+}
+
+function renderWifiDevicesTableBody() {
+  const searchEl = document.getElementById("wifi-devices-search");
+  const body = document.getElementById("wifi-devices-body");
+  if (!searchEl || !body) return;
+
+  const search = searchEl.value.trim().toLowerCase();
+  const all = computeWifiDeviceOverview(state.wifiRows, state.wifiTrafficRows);
+  const rows = all
+    .filter((e) => {
+      if (!search) return true;
+      const ssidText = e.ssidList.map(([s]) => s).join(" ");
+      return `${e.mac} ${displayName(e.mac, "")} ${e.vendor} ${ssidText}`.toLowerCase().includes(search);
+    })
+    .sort((a, b) => (b.bytes - a.bytes) || (b.totalProbes - a.totalProbes));
+
+  const info = paginate(rows, "wifi-devices");
+  body.innerHTML = info.pageRows.map((e) => `<tr>
+    <td>
+      <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(displayName(e.mac, e.mac))}</button>
+      ${trustBadgeHtml(e.mac)}
+    </td>
+    <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
+    <td>${formatBytes(e.bytes) || '<span class="muted">—</span>'}</td>
+    <td>${e.ssidList.length ? e.ssidList.map(([ssid, count]) => `${escapeHtml(ssid)} (${count})`).join(", ") : '<span class="muted">—</span>'}</td>
+    <td>${e.totalProbes}</td>
+    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+  </tr>`).join("");
+  document.getElementById("wifi-devices-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("wifi-devices-pagination").innerHTML = rows.length ? paginationHtml("wifi-devices", info) : "";
+  wirePagination(document.getElementById("wifi-devices-pagination"), "wifi-devices", renderWifiDevicesTableBody);
+  body.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
   });
 }
@@ -1427,72 +1470,6 @@ function hostRowHtml(d, fingerprint, alerts) {
  * WiFi page (KPI + grafici + tabella grezza)
  * ---------------------------------------------------------------------- */
 
-/** Per ogni MAC, i SSID specifici cercati (probe con SSID non vuoto) con relativo conteggio. */
-function computeWifiSsidCorrelation(rows) {
-  const byMac = new Map();
-  for (const r of rows) {
-    if (!r.ssid || !r.ssid.trim()) continue;
-    if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, vendor: r.vendor || "", ssids: new Map(), total: 0, lastTs: 0 });
-    const entry = byMac.get(r.mac);
-    if (!entry.vendor && r.vendor) entry.vendor = r.vendor;
-    entry.ssids.set(r.ssid, (entry.ssids.get(r.ssid) || 0) + 1);
-    entry.total += 1;
-    const ts = parseTs(r.timestamp) || 0;
-    if (ts > entry.lastTs) entry.lastTs = ts;
-  }
-  return [...byMac.values()]
-    .map((e) => ({ ...e, ssidList: [...e.ssids.entries()].sort((a, b) => b[1] - a[1]) }))
-    .sort((a, b) => b.lastTs - a.lastTs);
-}
-
-function renderWifiCorrelation(container) {
-  container.innerHTML = `
-    <div class="card-head">
-      <h2>Dispositivi che cercano una rete specifica</h2>
-      <span class="card-sub">MAC che hanno pubblicizzato l'SSID cercato nei probe (aggregato)</span>
-      <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="wifi-corr-search" placeholder="Cerca per MAC, vendor, SSID…"></div>
-      </div>
-    </div>
-    <div class="table-scroll">
-      <table class="data-table">
-        <thead><tr><th>MAC</th><th>Vendor</th><th>SSID cercati</th><th>Probe totali</th><th>Ultimo avvistamento</th></tr></thead>
-        <tbody id="wifi-corr-body"></tbody>
-      </table>
-      <p class="empty-state hidden" id="wifi-corr-empty">Nessun probe con SSID specifico nel log caricato: molti device moderni non lo trasmettono più per privacy, quindi è normale che questa lista sia corta o vuota.</p>
-      <div id="wifi-corr-pagination"></div>
-    </div>`;
-
-  document.getElementById("wifi-corr-search").addEventListener("input", () => { getPagination("wifi-corr").page = 1; renderWifiCorrelationBody(); });
-  renderWifiCorrelationBody();
-}
-
-function renderWifiCorrelationBody() {
-  const searchEl = document.getElementById("wifi-corr-search");
-  const body = document.getElementById("wifi-corr-body");
-  if (!searchEl || !body) return;
-
-  const search = searchEl.value.trim().toLowerCase();
-  const all = computeWifiSsidCorrelation(state.wifiRows);
-  const rows = all.filter((e) => {
-    if (!search) return true;
-    const ssidText = e.ssidList.map(([s]) => s).join(" ");
-    return `${e.mac} ${e.vendor} ${ssidText}`.toLowerCase().includes(search);
-  });
-
-  const info = paginate(rows, "wifi-corr");
-  body.innerHTML = info.pageRows.map((e) => `<tr>
-    <td class="mono">${escapeHtml(e.mac)}</td>
-    <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
-    <td>${e.ssidList.map(([ssid, count]) => `${escapeHtml(ssid)} (${count})`).join(", ")}</td>
-    <td>${e.total}</td>
-    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
-  </tr>`).join("");
-  document.getElementById("wifi-corr-empty").classList.toggle("hidden", rows.length > 0);
-  document.getElementById("wifi-corr-pagination").innerHTML = rows.length ? paginationHtml("wifi-corr", info) : "";
-  wirePagination(document.getElementById("wifi-corr-pagination"), "wifi-corr", renderWifiCorrelationBody);
-}
-
 function renderWifiSection(container) {
   container.innerHTML = `
     <div class="card-head">
@@ -1592,7 +1569,7 @@ function renderWifiPage(container) {
       })}
     </div>
 
-    <div class="page-section grid-3">
+    <div class="page-section grid-2">
       <div class="card">
         <div class="card-head"><h2>Attività probe <span class="card-sub">ultime 24h</span></h2></div>
         <div class="bar-chart" id="chart-wifi-activity" data-empty="Nessun dato"></div>
@@ -1601,24 +1578,16 @@ function renderWifiPage(container) {
         <div class="card-head"><h2>Canali WiFi</h2><span class="card-sub">probe per canale (24h)</span></div>
         <div class="hbar-chart" id="chart-wifi-channel" data-empty="Nessun dato"></div>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>Top vendor</h2><span class="card-sub">da OUI del MAC</span></div>
-        <div class="hbar-chart" id="chart-wifi-vendor" data-empty="Nessun dato"></div>
-      </div>
     </div>
 
-    <div class="page-section card" id="wifi-traffic-mount"></div>
-
-    <div class="page-section card" id="wifi-corr-mount"></div>
+    <div class="page-section card" id="wifi-devices-mount"></div>
 
     <div class="page-section card" id="wifi-section-mount"></div>
   `;
 
   renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
   renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Canale ${ch}`, n]), "var(--cat-3)");
-  renderHBarChart(document.getElementById("chart-wifi-vendor"), wifiVendorSegments(wifiLast24h), "var(--series-blue)");
-  renderWifiTrafficWidget(document.getElementById("wifi-traffic-mount"));
-  renderWifiCorrelation(document.getElementById("wifi-corr-mount"));
+  renderWifiDevicesTable(document.getElementById("wifi-devices-mount"));
   renderWifiSection(document.getElementById("wifi-section-mount"));
 }
 
@@ -2406,7 +2375,7 @@ function renderAiuto(container) {
         <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device e punteggio di rischio (0-100, su porte esposte e alert collegati); il nome host è un link al profilo completo del dispositivo. Da lì, o dal menu azioni di una riga, puoi assegnare un nome personalizzato e contrassegnare un device come fidato (riduce il rumore: punteggio di rischio più basso, alert collegati meno severi).</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
-        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: MAC/SSID/vendor visti, RSSI medio, distribuzione per canale, top vendor, traffico WiFi stimato per device, elenco probe grezzi.</li>
+        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "Dispositivi WiFi" — un riepilogo per MAC con traffico stimato, SSID cercati e probe totali — e in fondo il log probe grezzo per l'analisi riga per riga.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: device visti, manufacturer riconosciuti, RSSI medio, elenco advertisement grezzi.</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
