@@ -378,21 +378,22 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   avvistamenti, ricercabile e paginata — e in fondo il log advertisement
   grezzo.
 - **Dashboard** (ex "Nearby"/"Dintorni", è la home) — in cima i 2 KPI
-  essenziali (vedi sopra), poi la casetta isometrica grande e centrata,
-  con riquadri collegati da linee guida per SSID cercati nei probe, reti
-  WiFi adiacenti realmente rilevate, dispositivi WiFi e Bluetooth visti
-  nelle ultime 24h (più vicini = segnale medio più forte — non la
-  posizione reale, vedi il disclaimer nella pagina stessa). La casetta
-  mostra sempre fino a 10 riquadri in totale, distribuiti tra le sole
-  categorie attive nei filtri in alto (nascondere una categoria
-  ridistribuisce i suoi posti alle altre, invece di un numero fisso per
-  categoria). Sotto la casetta, in una griglia (non più ai lati, per non
-  rimpicciolire la mappa): un riepilogo della pagina Host (host
-  totali/attivi/offline, distribuzione del rischio, pulsante per
-  l'elenco completo), stato della scansione ed elenco completo per
-  categoria. Filtri per categoria in alto (nascondono la categoria
-  ovunque compaia), click su un riquadro o una riga per aprire il
-  profilo del device (dove disponibile). Importante: gli "SSID cercati" sono le reti *salvate* sui
+  essenziali (vedi sopra), poi la casetta isometrica grande (si adatta alla
+  larghezza della card) e centrata, con riquadri collegati da linee guida
+  per SSID cercati nei probe, reti WiFi adiacenti realmente rilevate,
+  dispositivi WiFi e Bluetooth visti nelle ultime 24h (più vicini = segnale
+  medio più forte — vista puramente illustrativa, non una mappa reale né
+  una distanza fisica). La casetta mostra sempre fino a 10 riquadri in
+  totale, distribuiti tra le sole categorie attive nei filtri in alto
+  (nascondere una categoria ridistribuisce i suoi posti alle altre, invece
+  di un numero fisso per categoria). Sotto la casetta, in una griglia (non
+  più ai lati, per non rimpicciolire la mappa): stato della scansione, un
+  riepilogo della pagina Host (host totali/attivi/offline, distribuzione
+  del rischio, pulsante per l'elenco completo) e pannelli con l'elenco
+  completo per categoria — ciascuno mostra le prime righe con un pulsante
+  "View all" per espanderlo a tutte. Filtri per categoria in alto
+  (nascondono la categoria ovunque compaia), click su un riquadro o una
+  riga per aprire il profilo del device (dove disponibile). Importante: gli "SSID cercati" sono le reti *salvate* sui
   device nei dintorni (dal probe request), non le reti WiFi fisicamente
   presenti in zona — un telefono chiede di decine di reti note
   indipendentemente da dove si trova davvero, e il canale non è mai

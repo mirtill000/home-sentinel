@@ -123,6 +123,7 @@ const state = {
   deviceProfileMac: null,
   timelineKindFilter: "all",
   radarFilters: { network: true, probe: true, ap: true, ble: true },
+  radarPanelsExpanded: {},
   pagination: {},
 };
 
@@ -2124,7 +2125,6 @@ function renderHouseRadarPage(container) {
       <div class="radar-legend" id="radar-legend"></div>
       <div class="dintorni-map-wrap" id="radar-mount"></div>
       <div class="dintorni-panels-grid" id="dintorni-panels"></div>
-      <p class="field-hint">Purely illustrative view, not a real map: the distance of the cards from the house only reflects the average signal (RSSI) over the last 24 hours — strong signal = closer, weak = farther — not a physical distance, and the arrangement around the house is random (no direction data exists). The rings around the router are decorative, not a real coverage measurement. Devices already present on your LAN are not shown here (they're not "external"); WiFi/BLE MACs are often randomized by modern devices and may make the same device appear more than once. <strong>"SSIDs requested" is not a list of WiFi networks physically present here</strong>: these are network names that devices nearby have requested in probe requests, i.e. the networks they have saved — a phone asks about dozens of known networks at once (home, work, past trips) regardless of where it actually is; a name you don't recognize isn't necessarily a network nearby. <strong>"Adjacent networks" is different</strong>: it comes from the beacon frames access points broadcast themselves, so BSSID, SSID and channel reflect networks genuinely detected around you — signal strength is still the only distance proxy.</p>
     </div>
   `;
   renderHouseRadarLegend(document.getElementById("radar-legend"));
@@ -2153,14 +2153,17 @@ function renderHouseRadarLegend(container) {
   });
 }
 
-function dintorniPanelHtml({ title, icon, color, rows, totalCount, rowHtml, emptyText }) {
-  const shown = rows.slice(0, DINTORNI_PANEL_ROWS);
+function dintorniPanelHtml({ key, title, icon, color, rows, totalCount, rowHtml, emptyText }) {
+  const expanded = !!state.radarPanelsExpanded[key];
+  const shown = expanded ? rows : rows.slice(0, DINTORNI_PANEL_ROWS);
   const more = totalCount - shown.length;
   return `
     <div class="dintorni-panel">
       <div class="dintorni-panel-head" style="color:${color}">${ICON(icon)}<span>${escapeHtml(title)}</span></div>
       ${shown.length
-        ? `<div class="dintorni-panel-rows">${shown.map(rowHtml).join("")}</div>${more > 0 ? `<div class="dintorni-panel-more">+ ${more} more</div>` : ""}`
+        ? `<div class="dintorni-panel-rows">${shown.map(rowHtml).join("")}</div>${more > 0 || expanded
+            ? `<button type="button" class="dintorni-panel-more" data-radar-panel-toggle="${key}">${more > 0 ? "View all" : "Show less"}</button>`
+            : ""}`
         : `<p class="dintorni-panel-empty">${escapeHtml(emptyText)}</p>`}
     </div>`;
 }
@@ -2172,6 +2175,17 @@ function renderDintorniPanels(data) {
   const hostSummary = computeHostSummary();
 
   mount.innerHTML = [
+    `<div class="dintorni-panel">
+      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Scan status</span></div>
+      <div class="dintorni-status-rows">
+        <div class="dintorni-status-row"><span>Last updated</span><strong id="dintorni-last-updated">—</strong></div>
+        <div class="dintorni-status-row"><span>SSIDs requested</span><strong>${data.networks.length}</strong></div>
+        <div class="dintorni-status-row"><span>WiFi devices</span><strong>${data.probes.length}</strong></div>
+        <div class="dintorni-status-row"><span>Adjacent networks</span><strong>${data.aps.length}</strong></div>
+        <div class="dintorni-status-row"><span>Bluetooth devices</span><strong>${data.ble.length}</strong></div>
+      </div>
+      <button type="button" class="btn btn-primary dintorni-refresh" id="dintorni-refresh">${ICON("refresh")}Refresh now</button>
+    </div>`,
     `<div class="dintorni-panel">
       <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("monitor")}<span>Host summary</span></div>
       <div class="dintorni-status-rows">
@@ -2187,19 +2201,8 @@ function renderDintorniPanels(data) {
       </div>
       <button type="button" class="btn btn-primary" id="dintorni-host-view-all" style="width:100%;justify-content:center;">${ICON("monitor")}View all hosts</button>
     </div>`,
-    `<div class="dintorni-panel">
-      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Scan status</span></div>
-      <div class="dintorni-status-rows">
-        <div class="dintorni-status-row"><span>Last updated</span><strong id="dintorni-last-updated">—</strong></div>
-        <div class="dintorni-status-row"><span>SSIDs requested</span><strong>${data.networks.length}</strong></div>
-        <div class="dintorni-status-row"><span>WiFi devices</span><strong>${data.probes.length}</strong></div>
-        <div class="dintorni-status-row"><span>Adjacent networks</span><strong>${data.aps.length}</strong></div>
-        <div class="dintorni-status-row"><span>Bluetooth devices</span><strong>${data.ble.length}</strong></div>
-      </div>
-      <button type="button" class="btn btn-primary dintorni-refresh" id="dintorni-refresh">${ICON("refresh")}Refresh now</button>
-    </div>`,
     state.radarFilters.network ? dintorniPanelHtml({
-      title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
+      key: "network", title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
       rows: data.networks, totalCount: data.networks.length,
       emptyText: "No SSIDs requested in probes in the last 24h.",
       rowHtml: (e) => `<div class="dintorni-row">
@@ -2210,7 +2213,7 @@ function renderDintorniPanels(data) {
       </div>`,
     }) : "",
     state.radarFilters.probe ? dintorniPanelHtml({
-      title: "WiFi devices", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
+      key: "probe", title: "WiFi devices", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
       rows: data.probes, totalCount: data.probes.length,
       emptyText: "No probes detected in the last 24h.",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
@@ -2220,7 +2223,7 @@ function renderDintorniPanels(data) {
       </button>`,
     }) : "",
     state.radarFilters.ap ? dintorniPanelHtml({
-      title: "Adjacent networks", icon: "wifi", color: RADAR_CATEGORY_META.ap.color,
+      key: "ap", title: "Adjacent networks", icon: "wifi", color: RADAR_CATEGORY_META.ap.color,
       rows: data.aps, totalCount: data.aps.length,
       emptyText: "No WiFi network beacons detected in the last 24h.",
       rowHtml: (e) => `<div class="dintorni-row">
@@ -2231,7 +2234,7 @@ function renderDintorniPanels(data) {
       </div>`,
     }) : "",
     state.radarFilters.ble ? dintorniPanelHtml({
-      title: "Bluetooth devices", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
+      key: "ble", title: "Bluetooth devices", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
       rows: data.ble, totalCount: data.ble.length,
       emptyText: "No Bluetooth devices detected in the last 24h.",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
@@ -2252,6 +2255,13 @@ function renderDintorniPanels(data) {
   });
   mount.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
+  mount.querySelectorAll("[data-radar-panel-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.radarPanelToggle;
+      state.radarPanelsExpanded[key] = !state.radarPanelsExpanded[key];
+      renderDintorniPanels(data);
+    });
   });
 }
 
@@ -2935,7 +2945,7 @@ function renderAiuto(container) {
     <div class="card help-section">
       <h3>Pages</h3>
       <ul>
-        <li><strong>Dashboard</strong> (home) — active hosts and active alerts at the top, then an isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); below the house, a Host summary (totals, active/offline, risk distribution) plus panels with the full list for each category and scan status. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons) — see the disclaimer on the page. The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Click a card or a row for details.</li>
+        <li><strong>Dashboard</strong> (home) — active hosts and active alerts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with the full list for each category — each capped at a handful of rows with a "View all" button to expand it. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
         <li><strong>Host</strong> — full list of known LAN devices, with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. From there, or from a row's action menu, you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
