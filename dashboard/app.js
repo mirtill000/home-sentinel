@@ -1873,11 +1873,10 @@ function computeHouseRadar() {
 
     if (r.ssid && r.ssid.trim()) {
       const key = r.ssid.trim();
-      if (!networks.has(key)) networks.set(key, { key, label: key, macs: new Set(), channels: new Map(), rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
+      if (!networks.has(key)) networks.set(key, { key, label: key, macs: new Set(), rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
       const e = networks.get(key);
       e.sightings += 1;
       e.macs.add(r.mac);
-      if (r.channel !== null && r.channel !== undefined && r.channel !== "") e.channels.set(r.channel, (e.channels.get(r.channel) || 0) + 1);
       if (rssi !== null) { e.rssiSum += rssi; e.rssiCount += 1; }
       if (ts > e.lastTs) e.lastTs = ts;
     }
@@ -1908,14 +1907,7 @@ function computeHouseRadar() {
 
   const finalize = (map) => [...map.values()]
     .filter((e) => e.rssiCount > 0)
-    .map((e) => {
-      const out = { ...e, avgRssi: Math.round(e.rssiSum / e.rssiCount) };
-      if (e.channels) {
-        out.commonChannel = [...e.channels.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-        out.deviceCount = e.macs.size;
-      }
-      return out;
-    })
+    .map((e) => ({ ...e, avgRssi: Math.round(e.rssiSum / e.rssiCount) }))
     .sort((a, b) => b.avgRssi - a.avgRssi)
     .slice(0, RADAR_MAX_PER_CATEGORY);
 
@@ -1923,7 +1915,7 @@ function computeHouseRadar() {
 }
 
 const RADAR_CATEGORY_META = {
-  network: { label: "Reti WiFi", color: "var(--cat-1)", icon: "wifi" },
+  network: { label: "SSID cercati", color: "var(--cat-1)", icon: "wifi" },
   probe: { label: "Dispositivi WiFi", color: "var(--cat-2)", icon: "wifi" },
   ble: { label: "Dispositivi Bluetooth", color: "var(--cat-7)", icon: "bluetooth" },
 };
@@ -1950,7 +1942,7 @@ function renderHouseRadarPage(container) {
     <div class="page-section card">
       <div class="card-head">
         <h2>Dintorni di casa</h2>
-        <span class="card-sub">reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, per intensità di segnale</span>
+        <span class="card-sub">SSID cercati, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, per intensità di segnale</span>
       </div>
       <div class="radar-legend" id="radar-legend"></div>
       <div class="dintorni-layout">
@@ -1958,7 +1950,7 @@ function renderHouseRadarPage(container) {
         <div class="dintorni-col dintorni-col-center" id="radar-mount"></div>
         <div class="dintorni-col" id="dintorni-col-right"></div>
       </div>
-      <p class="field-hint">Vista puramente illustrativa, non una mappa reale: la distanza dei riquadri dalla casa riflette solo il segnale medio (RSSI) nelle ultime 24 ore — segnale forte = più vicino, debole = più lontano — non una distanza fisica, e la disposizione attorno alla casa è casuale (nessun dato di direzione esiste). Gli anelli attorno al router sono decorativi, non una misura di copertura reale. I dispositivi già presenti sulla tua rete LAN non sono mostrati qui (non sono "esterni"); MAC WiFi/BLE spesso randomizzati dai device moderni possono far comparire lo stesso dispositivo più volte. Il canale mostrato per una rete è quello più frequente osservato nei probe, non un dato fisso dell'access point.</p>
+      <p class="field-hint">Vista puramente illustrativa, non una mappa reale: la distanza dei riquadri dalla casa riflette solo il segnale medio (RSSI) nelle ultime 24 ore — segnale forte = più vicino, debole = più lontano — non una distanza fisica, e la disposizione attorno alla casa è casuale (nessun dato di direzione esiste). Gli anelli attorno al router sono decorativi, non una misura di copertura reale. I dispositivi già presenti sulla tua rete LAN non sono mostrati qui (non sono "esterni"); MAC WiFi/BLE spesso randomizzati dai device moderni possono far comparire lo stesso dispositivo più volte. <strong>"SSID cercati" non è l'elenco delle reti WiFi fisicamente presenti qui</strong>: sono i nomi di rete che i dispositivi nei dintorni hanno richiesto nei probe request, cioè le reti che hanno salvate — un telefono chiede contemporaneamente di decine di reti note (di casa, lavoro, viaggi passati) indipendentemente da dove si trova davvero; un nome che non riconosci non è necessariamente una rete nelle vicinanze.</p>
     </div>
   `;
   renderHouseRadarLegend(document.getElementById("radar-legend"));
@@ -2006,13 +1998,13 @@ function renderDintorniSidePanels(data) {
 
   left.innerHTML = [
     state.radarFilters.network ? dintorniPanelHtml({
-      title: "Reti WiFi", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
+      title: "SSID cercati", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
       rows: data.networks, totalCount: data.networks.length,
-      emptyText: "Nessuna rete rilevata nelle ultime 24h.",
+      emptyText: "Nessun SSID cercato nei probe nelle ultime 24h.",
       rowHtml: (e) => `<div class="dintorni-row">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
-        ${e.commonChannel !== null && e.commonChannel !== undefined ? `<span class="dintorni-row-meta">Ch. ${escapeHtml(e.commonChannel)}</span>` : ""}
+        <span class="dintorni-row-meta">${e.macs.size} device</span>
         <span class="badge dintorni-dbm">${e.avgRssi} dBm</span>
       </div>`,
     }) : "",
@@ -2033,7 +2025,7 @@ function renderDintorniSidePanels(data) {
       <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Stato scansione</span></div>
       <div class="dintorni-status-rows">
         <div class="dintorni-status-row"><span>Ultimo aggiornamento</span><strong id="dintorni-last-updated">—</strong></div>
-        <div class="dintorni-status-row"><span>Reti rilevate</span><strong>${data.networks.length}</strong></div>
+        <div class="dintorni-status-row"><span>SSID cercati</span><strong>${data.networks.length}</strong></div>
         <div class="dintorni-status-row"><span>Dispositivi WiFi</span><strong>${data.probes.length}</strong></div>
         <div class="dintorni-status-row"><span>Dispositivi Bluetooth</span><strong>${data.ble.length}</strong></div>
       </div>
@@ -2052,7 +2044,7 @@ function renderDintorniSidePanels(data) {
     <div class="dintorni-panel">
       <div class="dintorni-panel-head"><span>Legenda</span></div>
       <div class="dintorni-legend-rows">
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-1)"></span>Rete WiFi (per SSID)</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-1)"></span>SSID cercato nei probe (non per forza presente qui)</div>
         <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-2)"></span>Dispositivo WiFi (probe)</div>
         <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-7)"></span>Dispositivo Bluetooth</div>
         <div class="dintorni-legend-row"><span class="dot" style="background:var(--status-good)"></span>Segnale forte / <span class="dot" style="background:var(--status-warning)"></span>medio / <span class="dot" style="background:var(--status-critical)"></span>debole</div>
@@ -2121,10 +2113,10 @@ function renderHouseRadar(container, data) {
     const y = cy + radius * Math.sin(angle) * radiusSquash;
     const meta = RADAR_CATEGORY_META[e.category];
     const label = e.label.length > 11 ? `${e.label.slice(0, 10)}…` : e.label;
-    const valueText = e.category === "network"
-      ? `${e.avgRssi} dBm${e.commonChannel !== null && e.commonChannel !== undefined ? ` · Ch. ${e.commonChannel}` : ""}`
-      : e.category === "probe" ? formatRelativeTime(e.lastTs) : `${e.avgRssi} dBm`;
-    const tip = `${e.label} — ${e.avgRssi} dBm — ${e.sightings} avvistamenti — ${formatRelativeTime(e.lastTs)}`;
+    const valueText = e.category === "probe" ? formatRelativeTime(e.lastTs) : `${e.avgRssi} dBm`;
+    const tip = e.category === "network"
+      ? `${e.label} — SSID cercato da ${e.macs.size} device — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)}`
+      : `${e.label} — ${e.avgRssi} dBm — ${e.sightings} avvistamenti — ${formatRelativeTime(e.lastTs)}`;
 
     lines.push(`<line x1="${routerPoint.x.toFixed(1)}" y1="${routerPoint.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" class="radar-callout-line"/>`);
     cards.push(`<g class="radar-callout" data-tip="${escapeHtml(tip)}" ${e.mac ? `data-mac="${escapeHtml(e.mac)}"` : ""} transform="translate(${(x - cardW / 2).toFixed(1)},${(y - cardH / 2).toFixed(1)})">
@@ -2711,7 +2703,7 @@ function renderAiuto(container) {
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "Dispositivi WiFi" — un riepilogo per MAC con traffico stimato, SSID cercati e probe totali — e in fondo il log probe grezzo per l'analisi riga per riga.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: KPI e attività 24h in alto, poi la tabella "Dispositivi BLE" — un riepilogo per MAC con nome, manufacturer, segnale e numero di avvistamenti — e in fondo il log advertisement grezzo per l'analisi riga per riga.</li>
-        <li><strong>Dintorni</strong> — casetta isometrica al centro con riquadri collegati da linee guida per reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h (più vicini = segnale più forte, non posizione reale); pannelli laterali con l'elenco completo di ciascuna categoria, stato scansione e legenda. Clicca un riquadro o una riga per il dettaglio, usa i filtri in alto per nascondere una categoria (ovunque compaia).</li>
+        <li><strong>Dintorni</strong> — casetta isometrica al centro con riquadri collegati da linee guida per SSID cercati nei probe, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h (più vicini = segnale più forte, non posizione reale); pannelli laterali con l'elenco completo di ciascuna categoria, stato scansione e legenda. Gli "SSID cercati" sono le reti salvate sui device nei dintorni, non necessariamente reti presenti qui — vedi il disclaimer nella pagina. Clicca un riquadro o una riga per il dettaglio, usa i filtri in alto per nascondere una categoria (ovunque compaia).</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
         <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), tema.</li>
@@ -2728,7 +2720,7 @@ function renderAiuto(container) {
         <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale; contrassegnare un device come fidato lo attenua (punteggio ridotto, alert collegati un livello meno severo) ma non lo nasconde né lo esclude dai controlli.</li>
         <li>Il rilevamento di deauth/disassoc flood è a soglia (numero di frame in una finestra temporale): reti WiFi molto affollate o con roaming aggressivo possono generare falsi positivi occasionali, e un attacco molto lento/distribuito nel tempo può restare sotto soglia.</li>
         <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: la rotazione automatica dei log sul daemon (<code>--max-log-size-mb</code>) e il caricamento "solo coda" della dashboard sui file più grandi (>4MB) riducono di conseguenza la cronologia disponibile, specie oltre i 7-30 giorni.</li>
-        <li>La pagina "Dintorni" è puramente illustrativa: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24h, non una distanza fisica reale, e l'angolo attorno alla casa è casuale (nessun dato di direzione esiste). Non è una localizzazione, solo un colpo d'occhio su "quanto c'è intorno".</li>
+        <li>La pagina "Dintorni" è puramente illustrativa: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24h, non una distanza fisica reale, e l'angolo attorno alla casa è casuale (nessun dato di direzione esiste). Non è una localizzazione, solo un colpo d'occhio su "quanto c'è intorno". Il pannello "SSID cercati" in particolare non è un elenco di reti WiFi fisicamente vicine: sono i nomi di rete richiesti nei probe request dai device nei dintorni, cioè le reti che quei device hanno salvate — un telefono può cercare contemporaneamente decine di reti note ovunque le abbia usate in passato, indipendentemente da dove si trova ora.</li>
       </ul>
     </div>
   `;
@@ -2750,7 +2742,7 @@ const ROUTES = [
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Feed cronologico unificato di tutti gli eventi", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "Probe WiFi", subtitle: "Probe request 802.11 rilevati nei dintorni", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "Dispositivi BLE", subtitle: "Scan passivo Bluetooth Low Energy nei dintorni", render: renderBlePage },
-  { id: "dintorni", label: "Dintorni", icon: "home", title: "Dintorni di casa", subtitle: "Vista radar isometrica di reti WiFi, dispositivi WiFi e Bluetooth nei dintorni", render: renderHouseRadarPage },
+  { id: "dintorni", label: "Dintorni", icon: "home", title: "Dintorni di casa", subtitle: "Vista radar isometrica di SSID cercati, dispositivi WiFi e Bluetooth nei dintorni", render: renderHouseRadarPage },
   { id: "avvisi", label: "Avvisi", icon: "bell", title: "Avvisi", subtitle: "Eventi che richiedono attenzione", render: renderAvvisi },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Andamento storico di dispositivi e alert", render: renderTrend },
   { id: "impostazioni", label: "Impostazioni", icon: "sliders", title: "Impostazioni", subtitle: "Sorgenti dati, rete e aspetto", render: renderImpostazioni },
