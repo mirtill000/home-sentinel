@@ -331,6 +331,30 @@ class SqliteStore:
             counts.setdefault(day, [0, 0])[1] = n
         return {day: (v[0], v[1]) for day, v in counts.items()}
 
+    def load_latest_lan_state(self) -> dict[str, dict]:
+        """L'ultima riga lan_events per ogni MAC, per ripristinare lo stato in memoria di
+        LanDiscoveryService dopo un riavvio del daemon (stesso principio di load_baselines): senza,
+        ogni device apparirebbe "mai visto prima" e la colonna porte aperte in dashboard resterebbe
+        vuota finché non arriva un nuovo port scan (--port-scan-interval, di norma fino a un'ora),
+        anche se l'ultimo elenco noto è già scritto e disponibile qui.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT mac, ip, hostname, vendor, status, open_ports FROM lan_events "
+                "WHERE id IN (SELECT MAX(id) FROM lan_events GROUP BY mac)"
+            ).fetchall()
+        state = {}
+        for mac, ip, hostname, vendor, status, open_ports_json in rows:
+            try:
+                open_ports = json.loads(open_ports_json) if open_ports_json else []
+            except (TypeError, ValueError):
+                open_ports = []
+            state[mac] = {
+                "ip": ip, "hostname": hostname or "", "vendor": vendor or "",
+                "status": status, "open_ports": open_ports,
+            }
+        return state
+
     def load_baselines(self) -> dict[str, dict]:
         with self._lock:
             cur = self._conn.execute(
