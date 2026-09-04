@@ -320,7 +320,12 @@ utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
 e alert di detection. **Nearby è la home**: è la prima voce del menu
 laterale e la pagina che si apre di default (`dashboard/` senza `#/...`
-nell'URL); include anche un riepilogo compatto della pagina Host (host
+nell'URL). In cima, prima della casetta isometrica, i 4 KPI principali
+(host attivi, probe WiFi 24h, dispositivi nuovi, alert attivi — stessi
+identici numeri della Dashboard, calcolati in un solo posto) e gli ultimi
+5 alert attivi con pulsante di dismiss, così le informazioni più urgenti
+sono visibili subito senza dover cambiare pagina; più giù, tra i pannelli
+sotto la mappa, un riepilogo compatto della pagina Host (host
 totali/attivi/offline, distribuzione del rischio) con un pulsante per
 aprire l'elenco completo. In qualsiasi punto della dashboard, **Ctrl+K**
 (⌘K su Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni
@@ -381,8 +386,9 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e
   avvistamenti, ricercabile e paginata — e in fondo il log advertisement
   grezzo.
-- **Nearby** (ex "Dintorni", ora la home) — casetta isometrica grande e
-  centrata, con riquadri collegati da linee guida per SSID cercati nei
+- **Nearby** (ex "Dintorni", ora la home) — in cima i 4 KPI principali e
+  gli ultimi 5 alert attivi (vedi sopra), poi la casetta isometrica grande
+  e centrata, con riquadri collegati da linee guida per SSID cercati nei
   probe, reti WiFi adiacenti realmente rilevate, dispositivi WiFi e
   Bluetooth visti nelle ultime 24h (più vicini = segnale medio più forte —
   non la posizione reale, vedi il disclaimer nella pagina stessa). Sotto
