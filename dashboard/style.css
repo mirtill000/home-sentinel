@@ -630,14 +630,7 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .radar-callout-label { font-size: 10px; font-weight: 600; fill: var(--text-primary); }
 .radar-callout-value { font-size: 9px; fill: var(--text-muted); }
 
-.iso-wall { stroke: var(--border-strong); stroke-width: 1; }
-.iso-wall-right { fill: var(--surface-2); }
-.iso-wall-left { fill: var(--surface-hover); }
-.iso-door { fill: var(--brand); opacity: .55; }
-.iso-roof { stroke: var(--border-strong); stroke-width: 1; }
-.iso-roof-right { fill: var(--status-serious); opacity: .85; }
-.iso-roof-left { fill: var(--status-serious); opacity: .65; }
-.iso-ridge { stroke: var(--border-strong); stroke-width: 1; }
+.iso-house-img { filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.35)); }
 
 /* ------------------------------------------------------------------ *
  * Alerts

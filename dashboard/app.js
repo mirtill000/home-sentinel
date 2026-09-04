@@ -1928,49 +1928,18 @@ const RADAR_CATEGORY_META = {
   ble: { label: "Dispositivi Bluetooth", color: "var(--cat-7)", icon: "bluetooth" },
 };
 
-/**
- * Geometria isometrica condivisa della casa: pura decorazione SVG, nessun
- * dato reale. Espone anche `routerPoint` (sulla soglia della porta), usato
- * come origine visiva delle linee guida e degli anelli di "copertura" —
- * anche questi decorativi, non una vera misura di copertura del segnale.
- */
+const HOUSE_IMAGE_W = 480, HOUSE_IMAGE_H = 333.3; // proporzioni dell'immagine house-isometric.png (900x625)
+
+/** Geometria della casa in stile isometrico (immagine fornita dall'utente, ritagliata a sfondo trasparente): pura decorazione. `routerPoint` (vicino alla scala, punto centrale della pianta) è l'origine visiva delle linee guida e degli anelli di "copertura" — anche questi decorativi, non una vera misura di copertura del segnale. */
 function computeHouseGeometry(cx, cy) {
-  const IX = { x: 0.866, y: 0.5 };
-  const IY = { x: -0.866, y: 0.5 };
-  const unit = 40;
-  const w = 1.7, d = 1.7, h = 1.25, roofRise = 1.0;
-  const iso = (a, b, c) => ({
-    x: cx + (a * IX.x + b * IY.x) * unit,
-    y: cy + (a * IX.y + b * IY.y) * unit - c * unit,
-  });
-  const A = iso(0, 0, 0), B = iso(w, 0, 0), D = iso(0, d, 0);
-  const EA = iso(0, 0, h), EB = iso(w, 0, h), ED = iso(0, d, h);
-  // Il colmo del tetto corre lungo la diagonale piena della base (a e b crescono insieme):
-  // con w=d proietta come una linea verticale al centro, il classico profilo "a casetta".
-  const ridgeFront = iso(0, 0, h + roofRise);
-  const ridgeBack = iso(w, d, h + roofRise);
-  const doorTop = iso(w * 0.32, 0, h * 0.55);
-  const doorBottom = iso(w * 0.32, 0, 0);
-  const doorTop2 = iso(w * 0.62, 0, h * 0.55);
-  const doorBottom2 = iso(w * 0.62, 0, 0);
-  const routerPoint = {
-    x: (doorTop.x + doorTop2.x + doorBottom.x + doorBottom2.x) / 4,
-    y: (doorTop.y + doorTop2.y + doorBottom.y + doorBottom2.y) / 4,
-  };
-  return { A, B, D, EA, EB, ED, ridgeFront, ridgeBack, doorTop, doorBottom, doorTop2, doorBottom2, routerPoint };
+  const imgX = cx - HOUSE_IMAGE_W / 2;
+  const imgY = cy - HOUSE_IMAGE_H / 2;
+  const routerPoint = { x: imgX + HOUSE_IMAGE_W * 0.48, y: imgY + HOUSE_IMAGE_H * 0.44 };
+  return { imgX, imgY, routerPoint };
 }
 
 function isoHouseSvg(geo) {
-  const pt = (p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-  const { A, B, D, EA, EB, ED, ridgeFront, ridgeBack, doorTop, doorBottom, doorTop2, doorBottom2 } = geo;
-  return `
-    <polygon points="${pt(A)} ${pt(B)} ${pt(EB)} ${pt(EA)}" class="iso-wall iso-wall-right"/>
-    <polygon points="${pt(A)} ${pt(D)} ${pt(ED)} ${pt(EA)}" class="iso-wall iso-wall-left"/>
-    <polygon points="${pt(doorBottom)} ${pt(doorBottom2)} ${pt(doorTop2)} ${pt(doorTop)}" class="iso-door"/>
-    <polygon points="${pt(EA)} ${pt(EB)} ${pt(ridgeBack)} ${pt(ridgeFront)}" class="iso-roof iso-roof-right"/>
-    <polygon points="${pt(EA)} ${pt(ED)} ${pt(ridgeBack)} ${pt(ridgeFront)}" class="iso-roof iso-roof-left"/>
-    <line x1="${ridgeFront.x.toFixed(1)}" y1="${ridgeFront.y.toFixed(1)}" x2="${ridgeBack.x.toFixed(1)}" y2="${ridgeBack.y.toFixed(1)}" class="iso-ridge"/>
-  `;
+  return `<image href="house-isometric.png" x="${geo.imgX.toFixed(1)}" y="${geo.imgY.toFixed(1)}" width="${HOUSE_IMAGE_W}" height="${HOUSE_IMAGE_H}" class="iso-house-img"/>`;
 }
 
 const DINTORNI_PANEL_ROWS = 6;
@@ -2110,7 +2079,7 @@ function signalTierColor(rssi) {
 }
 
 function renderHouseRadar(container, data) {
-  const W = 620, H = 460, cx = W / 2, cy = 230;
+  const W = 900, H = 680, cx = W / 2, cy = 340;
   const geo = computeHouseGeometry(cx, cy);
   const { routerPoint } = geo;
 
@@ -2131,7 +2100,8 @@ function renderHouseRadar(container, data) {
     return;
   }
 
-  const baseRadii = [120, 165, 210];
+  const baseRadii = [250, 300, 350];
+  const radiusSquash = 0.7; // rapporto larghezza/altezza dell'immagine della casa, per distribuire i riquadri fuori dai suoi bordi
   const cardW = 106, cardH = 34;
   const lines = [];
   const cards = [];
@@ -2148,7 +2118,7 @@ function renderHouseRadar(container, data) {
     const angle = baseAngle + i * angleStep;
     const radius = baseRadii[ring] + (i % 2) * 16;
     const x = cx + radius * Math.cos(angle);
-    const y = cy + radius * Math.sin(angle) * 0.62;
+    const y = cy + radius * Math.sin(angle) * radiusSquash;
     const meta = RADAR_CATEGORY_META[e.category];
     const label = e.label.length > 11 ? `${e.label.slice(0, 10)}…` : e.label;
     const valueText = e.category === "network"
