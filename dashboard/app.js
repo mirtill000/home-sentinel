@@ -180,7 +180,7 @@ async function fetchJsonl(url) {
     // HEAD/Range falliti (CORS, server che non li implementa, file://…): si ripiega sul fetch completo
   }
   const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status} su ${url}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return { rows: parseJsonl(await res.text()), truncated: false, totalBytes: null };
 }
 
@@ -287,7 +287,7 @@ async function loadAllOnce() {
 
   state.lastFetchOk = errors.length === 0;
   if (errors.length) showError(errors.join(" — "));
-  document.getElementById("last-updated").textContent = new Date().toLocaleTimeString("it-IT");
+  document.getElementById("last-updated").textContent = new Date().toLocaleTimeString("en-GB");
 
   updateStatusPill();
   renderCurrentRoute();
@@ -295,7 +295,7 @@ async function loadAllOnce() {
 
 function showError(msg) {
   const el = document.getElementById("error-banner");
-  el.textContent = `Impossibile caricare i dati. ${msg}`;
+  el.textContent = `Unable to load data. ${msg}`;
   el.classList.remove("hidden");
 }
 function hideError() {
@@ -323,7 +323,7 @@ function parseTs(value) {
 function formatTs(value) {
   const ts = parseTs(value);
   if (ts === null) return escapeHtml(value);
-  return new Date(ts).toLocaleString("it-IT");
+  return new Date(ts).toLocaleString("en-GB");
 }
 
 function formatPorts(ports) {
@@ -342,27 +342,27 @@ function avgRssi(rows) {
 
 /** Livello di segnale a 4 barre, più leggibile di un dBm negativo per un widget rapido. */
 function signalLevel(rssi) {
-  if (typeof rssi !== "number") return { bars: 0, label: "N/D" };
-  if (rssi >= -50) return { bars: 4, label: "Ottimo" };
-  if (rssi >= -65) return { bars: 3, label: "Buono" };
-  if (rssi >= -75) return { bars: 2, label: "Discreto" };
-  return { bars: 1, label: "Debole" };
+  if (typeof rssi !== "number") return { bars: 0, label: "N/A" };
+  if (rssi >= -50) return { bars: 4, label: "Excellent" };
+  if (rssi >= -65) return { bars: 3, label: "Good" };
+  if (rssi >= -75) return { bars: 2, label: "Fair" };
+  return { bars: 1, label: "Weak" };
 }
 function signalBarsHtml(rssi) {
   const { bars, label } = signalLevel(rssi);
   const cells = [1, 2, 3, 4].map((i) => `<span class="signal-bar ${i <= bars ? "on" : ""}" style="height:${i * 3 + 3}px"></span>`).join("");
-  const title = typeof rssi === "number" ? `${label} (${rssi} dBm)` : "Segnale non disponibile";
+  const title = typeof rssi === "number" ? `${label} (${rssi} dBm)` : "Signal not available";
   return `<span class="signal-bars" title="${escapeHtml(title)}">${cells}</span>`;
 }
 
 function formatRelativeTime(ts) {
   if (ts === null || Number.isNaN(ts)) return "—";
   const minutes = Math.round((Date.now() - ts) / 60000);
-  if (minutes < 1) return "adesso";
-  if (minutes < 60) return `${minutes} min fa`;
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h fa`;
-  return `${Math.round(hours / 24)} g fa`;
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
 }
 
 /* ---------------------------------------------------------------------- *
@@ -391,16 +391,16 @@ function paginate(rows, key) {
 function paginationHtml(key, info) {
   return `<div class="pagination-row">
     <div class="pagination-size">
-      <label for="page-size-${key}">Righe per pagina</label>
+      <label for="page-size-${key}">Rows per page</label>
       <select class="select-control" id="page-size-${key}" data-page-size="${key}">
         ${PAGE_SIZE_OPTIONS.map((n) => `<option value="${n}" ${info.pageSize === n ? "selected" : ""}>${n}</option>`).join("")}
-        <option value="all" ${info.pageSize === "all" ? "selected" : ""}>Tutte</option>
+        <option value="all" ${info.pageSize === "all" ? "selected" : ""}>All</option>
       </select>
     </div>
     <div class="pagination-nav">
-      <button class="btn btn-icon" data-page-nav="${key}" data-dir="prev" ${info.page <= 1 ? "disabled" : ""} aria-label="Pagina precedente">${ICON("chevron-left")}</button>
-      <span class="pagination-info">Pagina ${info.page} di ${info.totalPages} · ${info.total} righe</span>
-      <button class="btn btn-icon" data-page-nav="${key}" data-dir="next" ${info.page >= info.totalPages ? "disabled" : ""} aria-label="Pagina successiva">${ICON("chevron-right")}</button>
+      <button class="btn btn-icon" data-page-nav="${key}" data-dir="prev" ${info.page <= 1 ? "disabled" : ""} aria-label="Previous page">${ICON("chevron-left")}</button>
+      <span class="pagination-info">Page ${info.page} of ${info.totalPages} · ${info.total} rows</span>
+      <button class="btn btn-icon" data-page-nav="${key}" data-dir="next" ${info.page >= info.totalPages ? "disabled" : ""} aria-label="Next page">${ICON("chevron-right")}</button>
     </div>
   </div>`;
 }
@@ -423,7 +423,7 @@ function wirePagination(scope, key, onChange) {
 }
 
 function statusBadge(status) {
-  const labels = { online: "Online", new: "Nuovo", offline: "Offline" };
+  const labels = { online: "Online", new: "New", offline: "Offline" };
   const label = labels[status] || status;
   return `<span class="badge status-${escapeHtml(status)}"><span class="dot"></span>${escapeHtml(label)}</span>`;
 }
@@ -523,7 +523,7 @@ function displayName(mac, fallback) {
 
 function trustBadgeHtml(mac) {
   if (!getDeviceLabel(mac).trusted) return "";
-  return `<span class="badge trust-badge" title="Contrassegnato come fidato">${ICON("shield")}Fidato</span>`;
+  return `<span class="badge trust-badge" title="Marked as trusted">${ICON("shield")}Trusted</span>`;
 }
 
 /* ---------------------------------------------------------------------- *
@@ -554,15 +554,15 @@ function computeRiskScore(device, fingerprint, deviceAlerts) {
 }
 
 function riskLevel(score) {
-  if (score >= 70) return { label: "Critico", tone: "critical" };
-  if (score >= 40) return { label: "Alto", tone: "serious" };
-  if (score >= 15) return { label: "Medio", tone: "warning" };
-  return { label: "Basso", tone: "good" };
+  if (score >= 70) return { label: "Critical", tone: "critical" };
+  if (score >= 40) return { label: "High", tone: "serious" };
+  if (score >= 15) return { label: "Medium", tone: "warning" };
+  return { label: "Low", tone: "good" };
 }
 
 function riskBadgeHtml(score) {
   const level = riskLevel(score);
-  return `<span class="badge risk-badge tone-${level.tone}" title="Punteggio di rischio euristico 0-100, su porte esposte e alert collegati">${score} · ${level.label}</span>`;
+  return `<span class="badge risk-badge tone-${level.tone}" title="Heuristic risk score 0-100, based on exposed ports and linked alerts">${score} · ${level.label}</span>`;
 }
 
 /** Mappa mac -> alert collegati (da computeAlerts(), già calcolato dal chiamante). */
@@ -632,9 +632,9 @@ function periodDelta(rows, days) {
 }
 
 function trendSubLabel(d) {
-  if (d.prev === 0 && d.cur === 0) return "Nessun evento nel periodo";
+  if (d.prev === 0 && d.cur === 0) return "No events in this period";
   const arrow = d.deltaPct > 0 ? "▲" : d.deltaPct < 0 ? "▼" : "▬";
-  return `${arrow} ${Math.abs(d.deltaPct)}% vs periodo precedente`;
+  return `${arrow} ${Math.abs(d.deltaPct)}% vs previous period`;
 }
 
 /** Variante di renderBarChart con tick giornalieri invece che orari. */
@@ -656,14 +656,14 @@ function renderDayBarChart(container, buckets, days) {
   buckets.forEach((count, idx) => {
     const daysAgo = days - 1 - idx;
     const date = new Date(now.getTime() - daysAgo * 86400000);
-    const dateLabel = date.toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" });
+    const dateLabel = date.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
 
     const col = document.createElement("div");
     col.className = "bar-col";
     const bar = document.createElement("div");
     bar.className = "bar";
     bar.style.height = `${Math.max((count / max) * 100, count > 0 ? 3 : 0)}%`;
-    attachTooltip(bar, `${dateLabel} — ${count} evento${count === 1 ? "" : "i"}`);
+    attachTooltip(bar, `${dateLabel} — ${count} event${count === 1 ? "" : "s"}`);
     col.appendChild(bar);
     plot.appendChild(col);
 
@@ -688,32 +688,32 @@ function renderTrend(container) {
     <div class="page-section">
       <div class="filter-row" style="margin:0;">
         <select class="select-control" id="trend-range">
-          <option value="7">Ultimi 7 giorni</option>
-          <option value="30">Ultimi 30 giorni</option>
+          <option value="7">Last 7 days</option>
+          <option value="30">Last 30 days</option>
         </select>
       </div>
     </div>
     <div class="page-section kpi-row">
       ${kpiTile({
-        label: `Nuovi device (${range}g)`, icon: "monitor", tone: "violet",
+        label: `New devices (${range}d)`, icon: "monitor", tone: "violet",
         value: newDelta.cur, sub: trendSubLabel(newDelta), subTone: newDelta.deltaPct > 0 ? "critical" : "good",
       })}
       ${kpiTile({
-        label: `Alert generati (${range}g)`, icon: "shield", tone: "critical",
+        label: `Alerts generated (${range}d)`, icon: "shield", tone: "critical",
         value: alertDelta.cur, sub: trendSubLabel(alertDelta), subTone: alertDelta.deltaPct > 0 ? "critical" : "good",
       })}
     </div>
     <div class="page-section grid-2">
       <div class="card">
-        <div class="card-head"><h2>Nuovi dispositivi</h2><span class="card-sub">per giorno</span></div>
-        <div class="bar-chart" id="chart-trend-new" data-empty="Nessun dato"></div>
+        <div class="card-head"><h2>New devices</h2><span class="card-sub">per day</span></div>
+        <div class="bar-chart" id="chart-trend-new" data-empty="No data"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Alert generati</h2><span class="card-sub">per giorno</span></div>
-        <div class="bar-chart" id="chart-trend-alerts" data-empty="Nessun dato"></div>
+        <div class="card-head"><h2>Alerts generated</h2><span class="card-sub">per day</span></div>
+        <div class="bar-chart" id="chart-trend-alerts" data-empty="No data"></div>
       </div>
     </div>
-    <p class="field-hint">Calcolato lato browser sulla cronologia già caricata dai file di log — non richiede un server di query separato. Il daemon ruota i JSONL oltre una certa dimensione (<code>--max-log-size-mb</code>, default 20MB) e la dashboard, per restare veloce, scarica solo la coda più recente dei file più grandi (vedi eventuale avviso nella pagina WiFi/BLE): su 30 giorni il trend potrebbe quindi non coprire l'intero periodo se il log ha già ruotato o è stato troncato al caricamento.</p>
+    <p class="field-hint">Calculated in the browser from the log history already loaded — no separate query server needed. The daemon rotates the JSONL files past a certain size (<code>--max-log-size-mb</code>, default 20MB) and, to stay fast, the dashboard only downloads the most recent tail of the largest files (see the warning on the WiFi/BLE page, if shown): over 30 days the trend may therefore not cover the whole period if the log has already rotated or was truncated on load.</p>
   `;
 
   document.getElementById("trend-range").value = String(range);
@@ -763,7 +763,7 @@ function kpiTile({ label, icon, tone, value, valueSuffix, sub, subTone, sparkVal
 function renderDonut(container, segments, centerSub) {
   const total = segments.reduce((sum, s) => sum + s.value, 0);
   if (total === 0) {
-    container.innerHTML = `<p class="empty-state">Nessun dato</p>`;
+    container.innerHTML = `<p class="empty-state">No data</p>`;
     return;
   }
   const R = 50, C = 2 * Math.PI * R;
@@ -786,7 +786,7 @@ function renderDonut(container, segments, centerSub) {
     <div class="donut-body">
       <div class="donut-svg-wrap">
         <svg viewBox="0 0 120 120"><g transform="rotate(-90 60 60)">${circles}</g></svg>
-        <div class="donut-center"><strong>${total}</strong><span>${escapeHtml(centerSub || "Totale")}</span></div>
+        <div class="donut-center"><strong>${total}</strong><span>${escapeHtml(centerSub || "Total")}</span></div>
       </div>
       <div class="donut-legend">${legend}</div>
     </div>`;
@@ -816,7 +816,7 @@ function renderBarChart(container, buckets) {
     const bar = document.createElement("div");
     bar.className = "bar";
     bar.style.height = `${Math.max((count / max) * 100, count > 0 ? 3 : 0)}%`;
-    attachTooltip(bar, `${hourDate.getHours()}:00 — ${count} evento${count === 1 ? "" : "i"}`);
+    attachTooltip(bar, `${hourDate.getHours()}:00 — ${count} event${count === 1 ? "" : "s"}`);
     col.appendChild(bar);
     plot.appendChild(col);
 
@@ -869,21 +869,21 @@ function renderHBarChart(container, entries, color) {
 function vendorSegments(devices) {
   const counts = new Map();
   for (const d of devices) {
-    const v = (d.vendor || "").trim() || "Sconosciuto";
+    const v = (d.vendor || "").trim() || "Unknown";
     counts.set(v, (counts.get(v) || 0) + 1);
   }
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const top = sorted.slice(0, 5);
   const rest = sorted.slice(5).reduce((sum, [, c]) => sum + c, 0);
   const segs = top.map(([label, value], i) => ({ label, value, color: CAT_COLORS[i] }));
-  if (rest > 0) segs.push({ label: "Altro", value: rest, color: "var(--status-muted)" });
+  if (rest > 0) segs.push({ label: "Other", value: rest, color: "var(--status-muted)" });
   return segs;
 }
 
 function statusSegments(devices) {
   return [
     { label: "Online", value: devices.filter((d) => d.status === "online").length, color: "var(--status-good)" },
-    { label: "Nuovo", value: devices.filter((d) => d.status === "new").length, color: "var(--status-warning)" },
+    { label: "New", value: devices.filter((d) => d.status === "new").length, color: "var(--status-warning)" },
     { label: "Offline", value: devices.filter((d) => d.status === "offline").length, color: "var(--status-muted)" },
   ];
 }
@@ -891,16 +891,16 @@ function statusSegments(devices) {
 function riskSegments(devices) {
   const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
   const alertsByMac = groupAlertsByMac(computeAlerts());
-  const counts = { Basso: 0, Medio: 0, Alto: 0, Critico: 0 };
+  const counts = { Low: 0, Medium: 0, High: 0, Critical: 0 };
   for (const d of devices) {
     const score = computeRiskScore(d, fingerprintByMac.get(d.mac), alertsByMac.get(d.mac));
     counts[riskLevel(score).label] += 1;
   }
   return [
-    { label: "Basso", value: counts.Basso, color: "var(--status-good)" },
-    { label: "Medio", value: counts.Medio, color: "var(--status-warning)" },
-    { label: "Alto", value: counts.Alto, color: "var(--status-serious)" },
-    { label: "Critico", value: counts.Critico, color: "var(--status-critical)" },
+    { label: "Low", value: counts.Low, color: "var(--status-good)" },
+    { label: "Medium", value: counts.Medium, color: "var(--status-warning)" },
+    { label: "High", value: counts.High, color: "var(--status-serious)" },
+    { label: "Critical", value: counts.Critical, color: "var(--status-critical)" },
   ];
 }
 
@@ -944,21 +944,21 @@ function computeWifiSsidOverview(probeRows) {
 function renderWifiSsidTable(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>SSID cercati</h2>
-      <span class="card-sub">un riepilogo per nome di rete richiesto nei probe, su tutto lo storico caricato</span>
+      <h2>SSIDs requested</h2>
+      <span class="card-sub">a summary per network name requested in probes, across all loaded history</span>
       <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="wifi-ssid-search" placeholder="Cerca per SSID…"></div>
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-ssid-search" placeholder="Search by SSID…"></div>
       </div>
     </div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>SSID</th><th>Device che l'hanno cercata</th><th>Probe totali</th><th>Segnale medio</th><th>Ultimo avvistamento</th></tr></thead>
+        <thead><tr><th>SSID</th><th>Devices that requested it</th><th>Total probes</th><th>Average signal</th><th>Last seen</th></tr></thead>
         <tbody id="wifi-ssid-body"></tbody>
       </table>
-      <p class="empty-state hidden" id="wifi-ssid-empty">Nessun SSID cercato nei probe — controlla la sorgente dati in Impostazioni.</p>
+      <p class="empty-state hidden" id="wifi-ssid-empty">No SSIDs requested in probes — check the data source in Settings.</p>
       <div id="wifi-ssid-pagination"></div>
     </div>
-    <p class="field-hint"><strong>Non è un elenco di reti WiFi fisicamente presenti nei dintorni</strong>: sono i nomi di rete che i device nei dintorni hanno richiesto nei probe request, cioè le reti che hanno salvate — un telefono chiede contemporaneamente di decine di reti note (casa, lavoro, viaggi passati) indipendentemente da dove si trova davvero. Solo i probe che specificano un SSID compaiono qui: molti device moderni non lo fanno più per privacy.</p>
+    <p class="field-hint"><strong>This is not a list of WiFi networks physically present nearby</strong>: these are network names that devices nearby have requested in probe requests, i.e. the networks they have saved — a phone requests dozens of known networks at once (home, work, past trips) regardless of where it actually is. Only probes that specify an SSID appear here: many modern devices no longer do this for privacy.</p>
   `;
   document.getElementById("wifi-ssid-search").addEventListener("input", () => { getPagination("wifi-ssid").page = 1; renderWifiSsidTableBody(); });
   renderWifiSsidTableBody();
@@ -1035,10 +1035,10 @@ function nearbyCardHtml(d) {
   return `<div class="nearby-card">
     <span class="nearby-icon">${ICON(d.source === "ble" ? "bluetooth" : "wifi")}</span>
     <div class="nearby-body">
-      <div class="nearby-title">${escapeHtml(d.name || d.vendor || "Dispositivo sconosciuto")}</div>
+      <div class="nearby-title">${escapeHtml(d.name || d.vendor || "Unknown device")}</div>
       <div class="nearby-meta">
         ${signalBarsHtml(d.avgRssi)}
-        <span>${d.sightings} avvistamenti</span>
+        <span>${d.sightings} sightings</span>
         <span>${formatRelativeTime(d.lastTs)}</span>
       </div>
     </div>
@@ -1051,13 +1051,13 @@ function renderNearbySection(container) {
 
   container.innerHTML = `
     <div class="card-head">
-      <h2>Dispositivi nei dintorni</h2>
-      <span class="card-sub">segnale forte e presenza ripetuta nelle ultime 24h${all.length > shown.length ? ` — mostrati i ${shown.length} più vicini su ${all.length}` : ""}</span>
+      <h2>Nearby devices</h2>
+      <span class="card-sub">strong signal and repeated presence in the last 24h${all.length > shown.length ? ` — showing the ${shown.length} closest out of ${all.length}` : ""}</span>
     </div>
     ${shown.length
       ? `<div class="nearby-grid">${shown.map(nearbyCardHtml).join("")}</div>`
-      : `<p class="empty-state">Nessun dispositivo esterno rilevato in prossimità nelle ultime 24h.</p>`}
-    <p class="field-hint">Stima euristica su segnale forte e presenza ripetuta nei probe WiFi/BLE, non una vera localizzazione; esclude i dispositivi già noti sulla LAN. I MAC sono spesso randomizzati dai device moderni e volutamente non mostrati qui: nome/vendor e persistenza nel tempo sono indicatori più utili, ma non sempre affidabili al 100%.</p>
+      : `<p class="empty-state">No external devices detected nearby in the last 24h.</p>`}
+    <p class="field-hint">Heuristic estimate based on strong signal and repeated presence in WiFi/BLE probes, not a real location; excludes devices already known on the LAN. MACs are often randomized by modern devices and deliberately not shown here: name/vendor and persistence over time are more useful indicators, but not always 100% reliable.</p>
   `;
 }
 
@@ -1066,13 +1066,13 @@ const DETECTION_SEVERITY_MAP = { low: "info", medium: "serious", high: "critical
 
 /** Etichetta e icona per ogni tipo di alert: quelli del daemon (sentinel_detection.py) più i due calcolati lato client. */
 const ALERT_TYPE_META = {
-  possibile_arp_spoofing: { label: "Possibile ARP spoofing", icon: "shield" },
-  possibile_rogue_dhcp: { label: "Possibile rogue DHCP", icon: "server" },
-  possibile_evil_twin: { label: "Possibile evil twin WiFi", icon: "wifi" },
-  possibile_deauth_flood: { label: "Possibile attacco deauth/disassoc WiFi", icon: "wifi" },
-  nuova_porta: { label: "Nuova porta aperta su device noto", icon: "alert-triangle" },
-  nuovo_dispositivo: { label: "Nuovo dispositivo rilevato", icon: "monitor" },
-  porta_rischio: { label: "Porta a rischio aperta", icon: "alert-triangle" },
+  possibile_arp_spoofing: { label: "Possible ARP spoofing", icon: "shield" },
+  possibile_rogue_dhcp: { label: "Possible rogue DHCP", icon: "server" },
+  possibile_evil_twin: { label: "Possible WiFi evil twin", icon: "wifi" },
+  possibile_deauth_flood: { label: "Possible WiFi deauth/disassoc attack", icon: "wifi" },
+  nuova_porta: { label: "New port open on known device", icon: "alert-triangle" },
+  nuovo_dispositivo: { label: "New device detected", icon: "monitor" },
+  porta_rischio: { label: "Risky port open", icon: "alert-triangle" },
 };
 
 function computeAlerts() {
@@ -1108,7 +1108,7 @@ function computeAlerts() {
       severity: "info",
       title: ALERT_TYPE_META.nuovo_dispositivo.label,
       icon: ALERT_TYPE_META.nuovo_dispositivo.icon,
-      desc: `${row.hostname || row.mac} (${row.ip}) visto per la prima volta sulla rete.`,
+      desc: `${row.hostname || row.mac} (${row.ip}) seen for the first time on the network.`,
       mac: row.mac,
       ts,
     });
@@ -1126,7 +1126,7 @@ function computeAlerts() {
       severity: isCritical ? "critical" : "serious",
       title: ALERT_TYPE_META.porta_rischio.label,
       icon: ALERT_TYPE_META.porta_rischio.icon,
-      desc: `${dev.hostname || dev.mac} (${dev.ip}) espone ${risky.map((p) => `${p}/${RISK_PORTS[p]}`).join(", ")}.`,
+      desc: `${dev.hostname || dev.mac} (${dev.ip}) exposes ${risky.map((p) => `${p}/${RISK_PORTS[p]}`).join(", ")}.`,
       mac: dev.mac,
       ts: dev._ts,
     });
@@ -1195,7 +1195,7 @@ function computeTimeline() {
       ts, kind: "lan",
       icon: row.status === "new" ? "monitor" : "x",
       tone: row.status === "new" ? "good" : "muted",
-      title: row.status === "new" ? "Nuovo dispositivo" : "Dispositivo offline",
+      title: row.status === "new" ? "New device" : "Device offline",
       desc: `${row.hostname || row.mac} (${row.ip})`,
       mac: row.mac,
     });
@@ -1212,7 +1212,7 @@ function computeTimeline() {
     if (ts === null) continue;
     events.push({
       ts, kind: "fingerprint", icon: "search", tone: "blue",
-      title: `Device identificato: ${f.device_type || "Sconosciuto"}`,
+      title: `Device identified: ${f.device_type || "Unknown"}`,
       desc: f.ip || "", mac: f.mac,
     });
   }
@@ -1220,7 +1220,7 @@ function computeTimeline() {
   return events.sort((a, b) => b.ts - a.ts);
 }
 
-const TIMELINE_KIND_LABELS = { lan: "Dispositivi (nuovi/offline)", alert: "Alert", fingerprint: "Fingerprint" };
+const TIMELINE_KIND_LABELS = { lan: "Devices (new/offline)", alert: "Alert", fingerprint: "Fingerprint" };
 
 function timelineItemHtml(e) {
   return `<div class="timeline-item">
@@ -1238,9 +1238,9 @@ function renderTimeline(container) {
   container.innerHTML = `
     <div class="card">
       <div class="card-head">
-        <h2>Timeline eventi</h2>
+        <h2>Event timeline</h2>
         <select class="select-control" id="timeline-kind-filter">
-          <option value="all">Tutti gli eventi</option>
+          <option value="all">All events</option>
           <option value="lan">${TIMELINE_KIND_LABELS.lan}</option>
           <option value="alert">${TIMELINE_KIND_LABELS.alert}</option>
           <option value="fingerprint">${TIMELINE_KIND_LABELS.fingerprint}</option>
@@ -1259,7 +1259,7 @@ function renderTimeline(container) {
   function renderList() {
     const list = state.timelineKindFilter === "all" ? events : events.filter((e) => e.kind === state.timelineKindFilter);
     const el = document.getElementById("timeline-list");
-    if (!list.length) { el.innerHTML = '<p class="empty-state">Nessun evento in questa categoria.</p>'; return; }
+    if (!list.length) { el.innerHTML = '<p class="empty-state">No events in this category.</p>'; return; }
     el.innerHTML = list.map(timelineItemHtml).join("");
     el.querySelectorAll("[data-mac-link]").forEach((btn) => {
       btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
@@ -1275,13 +1275,13 @@ function renderHostSection(container) {
   const lanCurrent = latestLanByMac(state.lanRows);
   container.innerHTML = `
     <div class="card-head">
-      <h2>Host sulla rete <span class="card-sub">(${lanCurrent.length})</span></h2>
+      <h2>Hosts on the network <span class="card-sub">(${lanCurrent.length})</span></h2>
       <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="host-search" placeholder="Cerca per IP, MAC, hostname, vendor…"></div>
+        <div class="search-input">${ICON("search")}<input type="text" id="host-search" placeholder="Search by IP, MAC, hostname, vendor…"></div>
         <select class="select-control" id="host-status-filter">
-          <option value="all">Tutti gli stati</option>
+          <option value="all">All statuses</option>
           <option value="online">Online</option>
-          <option value="new">Nuovi</option>
+          <option value="new">New</option>
           <option value="offline">Offline</option>
         </select>
       </div>
@@ -1289,20 +1289,20 @@ function renderHostSection(container) {
     <div class="table-scroll">
       <table class="data-table" id="host-table">
         <thead><tr>
-          <th data-sort="status">Stato</th>
+          <th data-sort="status">Status</th>
           <th data-sort="ip">IP</th>
-          <th data-sort="hostname">Nome host</th>
-          <th data-sort="mac">Indirizzo MAC</th>
-          <th data-sort="vendor">Produttore</th>
-          <th>Tipo</th>
-          <th>Rischio</th>
-          <th data-sort="open_ports">Porte aperte</th>
-          <th data-sort="last_seen">Ultima attività</th>
+          <th data-sort="hostname">Hostname</th>
+          <th data-sort="mac">MAC address</th>
+          <th data-sort="vendor">Vendor</th>
+          <th>Type</th>
+          <th>Risk</th>
+          <th data-sort="open_ports">Open ports</th>
+          <th data-sort="last_seen">Last seen</th>
           <th></th>
         </tr></thead>
         <tbody id="host-table-body"></tbody>
       </table>
-      <p class="empty-state hidden" id="host-empty">Nessun dispositivo — controlla le sorgenti dati in Impostazioni.</p>
+      <p class="empty-state hidden" id="host-empty">No devices — check the data sources in Settings.</p>
       <div id="host-pagination"></div>
     </div>`;
 
@@ -1390,7 +1390,7 @@ function hostRowHtml(d, fingerprint, alerts) {
     <td>${statusBadge(d.status)}</td>
     <td class="mono">${escapeHtml(d.ip)}</td>
     <td>
-      <button class="link-cell" data-mac-link="${escapeHtml(d.mac)}" title="Apri profilo dispositivo">${escapeHtml(name)}</button>
+      <button class="link-cell" data-mac-link="${escapeHtml(d.mac)}" title="Open device profile">${escapeHtml(name)}</button>
       ${trustBadgeHtml(d.mac)}
     </td>
     <td class="mono">${escapeHtml(d.mac)}</td>
@@ -1401,12 +1401,12 @@ function hostRowHtml(d, fingerprint, alerts) {
     <td>${formatTs(d.timestamp)}</td>
     <td>
       <div class="row-menu">
-        <button class="kebab-btn" data-mac="${escapeHtml(d.mac)}" aria-label="Azioni">${ICON("kebab")}</button>
+        <button class="kebab-btn" data-mac="${escapeHtml(d.mac)}" aria-label="Actions">${ICON("kebab")}</button>
         ${menuOpen ? `<div class="row-menu-drop">
-          <button data-action="details" data-mac="${escapeHtml(d.mac)}">${ICON("eye")}Vedi dettagli</button>
-          <button data-mac-link="${escapeHtml(d.mac)}">${ICON("monitor")}Profilo completo</button>
-          <button data-action="trust" data-mac="${escapeHtml(d.mac)}">${ICON("shield")}${trusted ? "Rimuovi fiducia" : "Segna come fidato"}</button>
-          <button data-action="copy" data-mac="${escapeHtml(d.mac)}">${ICON("copy")}Copia MAC</button>
+          <button data-action="details" data-mac="${escapeHtml(d.mac)}">${ICON("eye")}View details</button>
+          <button data-mac-link="${escapeHtml(d.mac)}">${ICON("monitor")}Full profile</button>
+          <button data-action="trust" data-mac="${escapeHtml(d.mac)}">${ICON("shield")}${trusted ? "Remove trust" : "Mark as trusted"}</button>
+          <button data-action="copy" data-mac="${escapeHtml(d.mac)}">${ICON("copy")}Copy MAC</button>
         </div>` : ""}
       </div>
     </td>
@@ -1418,13 +1418,13 @@ function hostRowHtml(d, fingerprint, alerts) {
       <div class="detail-grid">
         <div><span>Hostname</span>${escapeHtml(d.hostname) || "—"}</div>
         <div><span>Vendor</span>${escapeHtml(d.vendor) || "—"}</div>
-        <div><span>Tipo dispositivo</span>${escapeHtml(deviceType) || "—"}</div>
-        <div><span>Punteggio di rischio</span>${riskBadgeHtml(risk)}</div>
-        <div><span>Porte aperte</span>${formatPorts(d.open_ports) || "—"}</div>
-        <div><span>Prima rilevazione</span>${formatTs(firstSeenTs(d.mac))}</div>
+        <div><span>Device type</span>${escapeHtml(deviceType) || "—"}</div>
+        <div><span>Risk score</span>${riskBadgeHtml(risk)}</div>
+        <div><span>Open ports</span>${formatPorts(d.open_ports) || "—"}</div>
+        <div><span>First seen</span>${formatTs(firstSeenTs(d.mac))}</div>
       </div>
       <div class="detail-history">
-        ${history.map((h) => `<div class="detail-history-row"><span class="mono">${formatTs(h.timestamp)}</span>${statusBadge(h.status)}<span>${escapeHtml(h.ip)}</span></div>`).join("") || '<p class="muted">Nessuna cronologia disponibile.</p>'}
+        ${history.map((h) => `<div class="detail-history-row"><span class="mono">${formatTs(h.timestamp)}</span>${statusBadge(h.status)}<span>${escapeHtml(h.ip)}</span></div>`).join("") || '<p class="muted">No history available.</p>'}
       </div>
     </td></tr>`;
   }
@@ -1438,10 +1438,10 @@ function hostRowHtml(d, fingerprint, alerts) {
 function renderWifiSection(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>Log probe grezzo</h2>
-      <span class="card-sub">un probe request per riga — per approfondimento o export</span>
+      <h2>Raw probe log</h2>
+      <span class="card-sub">one probe request per row — for deeper analysis or export</span>
       <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="wifi-search" placeholder="Cerca per MAC, SSID, vendor…"></div>
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-search" placeholder="Search by MAC, SSID, vendor…"></div>
       </div>
     </div>
     <div class="table-scroll">
@@ -1450,13 +1450,13 @@ function renderWifiSection(container) {
           <th data-sort="timestamp">Timestamp</th>
           <th data-sort="mac">MAC</th>
           <th data-sort="vendor">Vendor</th>
-          <th data-sort="ssid">SSID cercato</th>
-          <th data-sort="rssi">Segnale</th>
-          <th data-sort="channel">Canale</th>
+          <th data-sort="ssid">SSID requested</th>
+          <th data-sort="rssi">Signal</th>
+          <th data-sort="channel">Channel</th>
         </tr></thead>
         <tbody id="wifi-table-body"></tbody>
       </table>
-      <p class="empty-state hidden" id="wifi-empty">Nessun probe — controlla la sorgente dati in Impostazioni.</p>
+      <p class="empty-state hidden" id="wifi-empty">No probes — check the data source in Settings.</p>
       <div id="wifi-pagination"></div>
     </div>`;
 
@@ -1488,7 +1488,7 @@ function renderWifiTableBody() {
     <td>${formatTs(r.timestamp)}</td>
     <td class="mono">${escapeHtml(r.mac)}</td>
     <td>${escapeHtml(r.vendor) || '<span class="muted">—</span>'}</td>
-    <td>${escapeHtml(r.ssid) || '<span class="muted">nascosto/vuoto</span>'}</td>
+    <td>${escapeHtml(r.ssid) || '<span class="muted">hidden/empty</span>'}</td>
     <td>${signalBarsHtml(r.rssi)}</td>
     <td>${escapeHtml(r.channel)}</td>
   </tr>`).join("");
@@ -1509,39 +1509,39 @@ function renderWifiPage(container) {
     ${wifiStatus?.truncated ? `
       <div class="page-section info-banner">
         ${ICON("layers")}
-        <span>Log probe WiFi da ${formatBytes(wifiStatus.totalBytes)}: per restare veloce la dashboard carica solo gli ultimi ${formatBytes(TAIL_FETCH_BYTES)} (i più recenti). Le viste sotto — comprese le 24h — sono corrette, ma "Trend" su 30 giorni potrebbe non coprire l'intero periodo. Imposta <code>--max-log-size-mb</code>/<code>--log-backup-count</code> sul daemon per contenere la crescita del file.</span>
+        <span>WiFi probe log at ${formatBytes(wifiStatus.totalBytes)}: to stay fast the dashboard only loads the last ${formatBytes(TAIL_FETCH_BYTES)} (the most recent). The views below — including the 24h ones — are correct, but "Trend" over 30 days may not cover the whole period. Set <code>--max-log-size-mb</code>/<code>--log-backup-count</code> on the daemon to keep the file from growing unbounded.</span>
       </div>
     ` : ""}
     <div class="page-section kpi-row">
       ${kpiTile({
-        label: "Probe WiFi (24h)", icon: "wifi", tone: "blue",
-        value: wifiLast24h.length, sub: `${distinctMacs.size} MAC distinti`,
+        label: "WiFi probes (24h)", icon: "wifi", tone: "blue",
+        value: wifiLast24h.length, sub: `${distinctMacs.size} distinct MACs`,
         sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
       })}
       ${kpiTile({
-        label: "Probe con SSID cercato", icon: "search", tone: "blue",
+        label: "Probes with SSID requested", icon: "search", tone: "blue",
         value: withSsid.length,
-        sub: wifiLast24h.length ? `${Math.round((withSsid.length / wifiLast24h.length) * 100)}% del totale (24h)` : "Nessun dato",
+        sub: wifiLast24h.length ? `${Math.round((withSsid.length / wifiLast24h.length) * 100)}% of total (24h)` : "No data",
       })}
       ${kpiTile({
-        label: "RSSI medio (24h)", icon: "radar", tone: "blue",
+        label: "Average RSSI (24h)", icon: "radar", tone: "blue",
         value: avg === null ? "—" : avg, valueSuffix: avg === null ? "" : "dBm",
-        sub: "Più vicino a 0 = segnale più forte",
+        sub: "Closer to 0 = stronger signal",
       })}
       ${kpiTile({
-        label: "Vendor noti", icon: "users", tone: "blue",
-        value: knownVendors.size, sub: "Da OUI del MAC (24h)",
+        label: "Known vendors", icon: "users", tone: "blue",
+        value: knownVendors.size, sub: "From MAC OUI (24h)",
       })}
     </div>
 
     <div class="page-section grid-2">
       <div class="card">
-        <div class="card-head"><h2>Attività probe <span class="card-sub">ultime 24h</span></h2></div>
-        <div class="bar-chart" id="chart-wifi-activity" data-empty="Nessun dato"></div>
+        <div class="card-head"><h2>Probe activity <span class="card-sub">last 24h</span></h2></div>
+        <div class="bar-chart" id="chart-wifi-activity" data-empty="No data"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Canali WiFi</h2><span class="card-sub">probe per canale (24h)</span></div>
-        <div class="hbar-chart" id="chart-wifi-channel" data-empty="Nessun dato"></div>
+        <div class="card-head"><h2>WiFi channels</h2><span class="card-sub">probes per channel (24h)</span></div>
+        <div class="hbar-chart" id="chart-wifi-channel" data-empty="No data"></div>
       </div>
     </div>
 
@@ -1551,7 +1551,7 @@ function renderWifiPage(container) {
   `;
 
   renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
-  renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Canale ${ch}`, n]), "var(--cat-3)");
+  renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Channel ${ch}`, n]), "var(--cat-3)");
   renderWifiSsidTable(document.getElementById("wifi-ssid-mount"));
   renderWifiSection(document.getElementById("wifi-section-mount"));
 }
@@ -1569,30 +1569,30 @@ function renderBlePage(container) {
   container.innerHTML = `
     <div class="page-section kpi-row">
       ${kpiTile({
-        label: "Advertisement BLE (24h)", icon: "bluetooth", tone: "orange",
-        value: bleLast24h.length, sub: `${distinctMacs.size} MAC distinti`,
+        label: "BLE advertisements (24h)", icon: "bluetooth", tone: "orange",
+        value: bleLast24h.length, sub: `${distinctMacs.size} distinct MACs`,
         sparkValues: hourlyCounts(state.bleRows), sparkColor: "var(--cat-2)",
       })}
       ${kpiTile({
-        label: "Con nome pubblicizzato", icon: "eye", tone: "orange",
+        label: "With advertised name", icon: "eye", tone: "orange",
         value: named.length,
-        sub: bleLast24h.length ? `${Math.round((named.length / bleLast24h.length) * 100)}% del totale (24h)` : "Nessun dato",
+        sub: bleLast24h.length ? `${Math.round((named.length / bleLast24h.length) * 100)}% of total (24h)` : "No data",
       })}
       ${kpiTile({
-        label: "RSSI medio (24h)", icon: "wifi", tone: "orange",
+        label: "Average RSSI (24h)", icon: "wifi", tone: "orange",
         value: avg === null ? "—" : avg, valueSuffix: avg === null ? "" : "dBm",
-        sub: "Più vicino a 0 = segnale più forte",
+        sub: "Closer to 0 = stronger signal",
       })}
       ${kpiTile({
-        label: "Manufacturer noti", icon: "users", tone: "orange",
+        label: "Known manufacturers", icon: "users", tone: "orange",
         value: new Set(bleLast24h.flatMap((r) => (Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : []).filter((id) => BLE_COMPANY_IDS[id]))).size,
-        sub: "Su company ID Bluetooth SIG riconosciuti",
+        sub: "From recognized Bluetooth SIG company IDs",
       })}
     </div>
 
     <div class="page-section card">
-      <div class="card-head"><h2>Attività BLE <span class="card-sub">ultime 24h</span></h2></div>
-      <div class="bar-chart" id="chart-ble-activity" data-empty="Nessun dato"></div>
+      <div class="card-head"><h2>BLE activity <span class="card-sub">last 24h</span></h2></div>
+      <div class="bar-chart" id="chart-ble-activity" data-empty="No data"></div>
     </div>
 
     <div class="page-section card" id="ble-devices-mount"></div>
@@ -1636,18 +1636,18 @@ function computeBleDeviceOverview(rows) {
 function renderBleDevicesTable(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>Dispositivi BLE</h2>
-      <span class="card-sub">un riepilogo per MAC — nome, manufacturer, segnale e avvistamenti, su tutto lo storico caricato</span>
+      <h2>BLE devices</h2>
+      <span class="card-sub">a summary per MAC — name, manufacturer, signal and sightings, across all loaded history</span>
       <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="ble-devices-search" placeholder="Cerca per MAC, nome, manufacturer…"></div>
+        <div class="search-input">${ICON("search")}<input type="text" id="ble-devices-search" placeholder="Search by MAC, name, manufacturer…"></div>
       </div>
     </div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Dispositivo</th><th>Manufacturer</th><th>Segnale medio</th><th>Avvistamenti</th><th>Ultimo avvistamento</th></tr></thead>
+        <thead><tr><th>Device</th><th>Manufacturer</th><th>Average signal</th><th>Sightings</th><th>Last seen</th></tr></thead>
         <tbody id="ble-devices-body"></tbody>
       </table>
-      <p class="empty-state hidden" id="ble-devices-empty">Nessun advertisement BLE — controlla la sorgente dati in Impostazioni.</p>
+      <p class="empty-state hidden" id="ble-devices-empty">No BLE advertisements — check the data source in Settings.</p>
       <div id="ble-devices-pagination"></div>
     </div>`;
   document.getElementById("ble-devices-search").addEventListener("input", () => { getPagination("ble-devices").page = 1; renderBleDevicesTableBody(); });
@@ -1687,10 +1687,10 @@ function renderBleDevicesTableBody() {
 function renderBleSection(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>Log advertisement grezzo</h2>
-      <span class="card-sub">un advertisement per riga — per approfondimento o export</span>
+      <h2>Raw advertisement log</h2>
+      <span class="card-sub">one advertisement per row — for deeper analysis or export</span>
       <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="ble-search" placeholder="Cerca per MAC, nome, manufacturer…"></div>
+        <div class="search-input">${ICON("search")}<input type="text" id="ble-search" placeholder="Search by MAC, name, manufacturer…"></div>
       </div>
     </div>
     <div class="table-scroll">
@@ -1698,14 +1698,14 @@ function renderBleSection(container) {
         <thead><tr>
           <th data-sort="timestamp">Timestamp</th>
           <th data-sort="mac">MAC</th>
-          <th data-sort="name">Nome</th>
+          <th data-sort="name">Name</th>
           <th>Manufacturer</th>
-          <th data-sort="rssi">Segnale</th>
-          <th>Servizi</th>
+          <th data-sort="rssi">Signal</th>
+          <th>Services</th>
         </tr></thead>
         <tbody id="ble-table-body"></tbody>
       </table>
-      <p class="empty-state hidden" id="ble-empty">Nessun advertisement — abilita <code>--ble</code> sul daemon e controlla la sorgente dati in Impostazioni.</p>
+      <p class="empty-state hidden" id="ble-empty">No advertisements — enable <code>--ble</code> on the daemon and check the data source in Settings.</p>
       <div id="ble-pagination"></div>
     </div>`;
 
@@ -1757,7 +1757,7 @@ function renderBleTableBody() {
 function renderNetworkMap(container) {
   const lanCurrent = latestLanByMac(state.lanRows);
   if (!lanCurrent.length) {
-    container.innerHTML = '<p class="empty-state">Nessun dispositivo da mostrare. Esegui una discovery e ricarica i dati.</p>';
+    container.innerHTML = '<p class="empty-state">No devices to show. Run a discovery and reload the data.</p>';
     return;
   }
   const W = 640, H = 440, cx = W / 2, cy = H / 2, R = Math.min(cx, cy) - 70;
@@ -1775,14 +1775,14 @@ function renderNetworkMap(container) {
     const y = cy + R * Math.sin(angle);
     links.push(`<line class="netmap-link" x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}"/>`);
     const color = dev.status === "offline" ? "var(--status-muted)" : dev.status === "new" ? "var(--status-warning)" : "var(--status-good)";
-    const label = escapeHtml(dev.hostname || dev.vendor || "Dispositivo");
+    const label = escapeHtml(dev.hostname || dev.vendor || "Device");
     const shortLabel = label.length > 14 ? `${label.slice(0, 13)}…` : label;
     const risk = computeRiskScore(dev, fingerprintByMac.get(dev.mac), alertsByMac.get(dev.mac));
     const level = riskLevel(risk);
     const hasRiskRing = risk >= 15;
     const ringColor = hasRiskRing ? `var(--status-${level.tone})` : "var(--surface)";
     const ringWidth = hasRiskRing ? 3 : 2.5;
-    nodeEls.push(`<g class="netmap-node" data-mac="${escapeHtml(dev.mac)}" data-tip="${escapeHtml(dev.hostname || dev.mac)} — ${escapeHtml(dev.ip)} — ${escapeHtml(dev.status)} — Rischio: ${risk} (${escapeHtml(level.label)})" transform="translate(${x.toFixed(1)},${y.toFixed(1)})">
+    nodeEls.push(`<g class="netmap-node" data-mac="${escapeHtml(dev.mac)}" data-tip="${escapeHtml(dev.hostname || dev.mac)} — ${escapeHtml(dev.ip)} — ${escapeHtml(dev.status)} — Risk: ${risk} (${escapeHtml(level.label)})" transform="translate(${x.toFixed(1)},${y.toFixed(1)})">
       <circle r="9" style="fill:${color}" stroke="${ringColor}" stroke-width="${ringWidth}"/>
       <text y="20" text-anchor="middle">${shortLabel}</text>
       <text class="netmap-ip" y="31" text-anchor="middle">${escapeHtml(dev.ip)}</text>
@@ -1800,11 +1800,11 @@ function renderNetworkMap(container) {
   container.innerHTML = `<div class="netmap-wrap">${svg}</div>
     <div class="netmap-legend">
       <span><span class="dot" style="background:var(--status-good)"></span>Online</span>
-      <span><span class="dot" style="background:var(--status-warning)"></span>Nuovo</span>
+      <span><span class="dot" style="background:var(--status-warning)"></span>New</span>
       <span><span class="dot" style="background:var(--status-muted)"></span>Offline</span>
-      <span><span class="dot" style="background:var(--status-serious)"></span>Anello = rischio medio/alto</span>
+      <span><span class="dot" style="background:var(--status-serious)"></span>Ring = medium/high risk</span>
     </div>
-    <p class="field-hint">Clicca su un nodo per aprire il profilo completo del dispositivo.</p>`;
+    <p class="field-hint">Click a node to open the device's full profile.</p>`;
   container.querySelectorAll(".netmap-node").forEach((el) => {
     attachTooltip(el, el.dataset.tip);
     el.addEventListener("click", () => goToDevice(el.dataset.mac));
@@ -1894,9 +1894,9 @@ function computeHouseRadar() {
 }
 
 const RADAR_CATEGORY_META = {
-  network: { label: "SSID cercati", color: "var(--cat-1)", icon: "wifi" },
-  probe: { label: "Dispositivi WiFi", color: "var(--cat-2)", icon: "wifi" },
-  ble: { label: "Dispositivi Bluetooth", color: "var(--cat-7)", icon: "bluetooth" },
+  network: { label: "SSIDs requested", color: "var(--cat-1)", icon: "wifi" },
+  probe: { label: "WiFi devices", color: "var(--cat-2)", icon: "wifi" },
+  ble: { label: "Bluetooth devices", color: "var(--cat-7)", icon: "bluetooth" },
 };
 
 const HOUSE_IMAGE_W = 480, HOUSE_IMAGE_H = 333.3; // proporzioni dell'immagine house-isometric.png (900x625)
@@ -1920,8 +1920,8 @@ function renderHouseRadarPage(container) {
   container.innerHTML = `
     <div class="page-section card">
       <div class="card-head">
-        <h2>Dintorni di casa</h2>
-        <span class="card-sub">SSID cercati, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, per intensità di segnale</span>
+        <h2>Around the house</h2>
+        <span class="card-sub">SSIDs requested, WiFi and Bluetooth devices detected in the last 24h, by signal strength</span>
       </div>
       <div class="radar-legend" id="radar-legend"></div>
       <div class="dintorni-layout">
@@ -1929,7 +1929,7 @@ function renderHouseRadarPage(container) {
         <div class="dintorni-col dintorni-col-center" id="radar-mount"></div>
         <div class="dintorni-col" id="dintorni-col-right"></div>
       </div>
-      <p class="field-hint">Vista puramente illustrativa, non una mappa reale: la distanza dei riquadri dalla casa riflette solo il segnale medio (RSSI) nelle ultime 24 ore — segnale forte = più vicino, debole = più lontano — non una distanza fisica, e la disposizione attorno alla casa è casuale (nessun dato di direzione esiste). Gli anelli attorno al router sono decorativi, non una misura di copertura reale. I dispositivi già presenti sulla tua rete LAN non sono mostrati qui (non sono "esterni"); MAC WiFi/BLE spesso randomizzati dai device moderni possono far comparire lo stesso dispositivo più volte. <strong>"SSID cercati" non è l'elenco delle reti WiFi fisicamente presenti qui</strong>: sono i nomi di rete che i dispositivi nei dintorni hanno richiesto nei probe request, cioè le reti che hanno salvate — un telefono chiede contemporaneamente di decine di reti note (di casa, lavoro, viaggi passati) indipendentemente da dove si trova davvero; un nome che non riconosci non è necessariamente una rete nelle vicinanze.</p>
+      <p class="field-hint">Purely illustrative view, not a real map: the distance of the cards from the house only reflects the average signal (RSSI) over the last 24 hours — strong signal = closer, weak = farther — not a physical distance, and the arrangement around the house is random (no direction data exists). The rings around the router are decorative, not a real coverage measurement. Devices already present on your LAN are not shown here (they're not "external"); WiFi/BLE MACs are often randomized by modern devices and may make the same device appear more than once. <strong>"SSIDs requested" is not a list of WiFi networks physically present here</strong>: these are network names that devices nearby have requested in probe requests, i.e. the networks they have saved — a phone asks about dozens of known networks at once (home, work, past trips) regardless of where it actually is; a name you don't recognize isn't necessarily a network nearby.</p>
     </div>
   `;
   renderHouseRadarLegend(document.getElementById("radar-legend"));
@@ -1965,7 +1965,7 @@ function dintorniPanelHtml({ title, icon, color, rows, totalCount, rowHtml, empt
     <div class="dintorni-panel">
       <div class="dintorni-panel-head" style="color:${color}">${ICON(icon)}<span>${escapeHtml(title)}</span></div>
       ${shown.length
-        ? `<div class="dintorni-panel-rows">${shown.map(rowHtml).join("")}</div>${more > 0 ? `<div class="dintorni-panel-more">+ ${more} altri</div>` : ""}`
+        ? `<div class="dintorni-panel-rows">${shown.map(rowHtml).join("")}</div>${more > 0 ? `<div class="dintorni-panel-more">+ ${more} more</div>` : ""}`
         : `<p class="dintorni-panel-empty">${escapeHtml(emptyText)}</p>`}
     </div>`;
 }
@@ -1977,9 +1977,9 @@ function renderDintorniSidePanels(data) {
 
   left.innerHTML = [
     state.radarFilters.network ? dintorniPanelHtml({
-      title: "SSID cercati", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
+      title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
       rows: data.networks, totalCount: data.networks.length,
-      emptyText: "Nessun SSID cercato nei probe nelle ultime 24h.",
+      emptyText: "No SSIDs requested in probes in the last 24h.",
       rowHtml: (e) => `<div class="dintorni-row">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
@@ -1988,9 +1988,9 @@ function renderDintorniSidePanels(data) {
       </div>`,
     }) : "",
     state.radarFilters.probe ? dintorniPanelHtml({
-      title: "Probe WiFi", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
+      title: "WiFi probes", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
       rows: data.probes, totalCount: data.probes.length,
-      emptyText: "Nessun probe rilevato nelle ultime 24h.",
+      emptyText: "No probes detected in the last 24h.",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name mono" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
@@ -2001,19 +2001,19 @@ function renderDintorniSidePanels(data) {
 
   right.innerHTML = `
     <div class="dintorni-panel">
-      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Stato scansione</span></div>
+      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Scan status</span></div>
       <div class="dintorni-status-rows">
-        <div class="dintorni-status-row"><span>Ultimo aggiornamento</span><strong id="dintorni-last-updated">—</strong></div>
-        <div class="dintorni-status-row"><span>SSID cercati</span><strong>${data.networks.length}</strong></div>
-        <div class="dintorni-status-row"><span>Dispositivi WiFi</span><strong>${data.probes.length}</strong></div>
-        <div class="dintorni-status-row"><span>Dispositivi Bluetooth</span><strong>${data.ble.length}</strong></div>
+        <div class="dintorni-status-row"><span>Last updated</span><strong id="dintorni-last-updated">—</strong></div>
+        <div class="dintorni-status-row"><span>SSIDs requested</span><strong>${data.networks.length}</strong></div>
+        <div class="dintorni-status-row"><span>WiFi devices</span><strong>${data.probes.length}</strong></div>
+        <div class="dintorni-status-row"><span>Bluetooth devices</span><strong>${data.ble.length}</strong></div>
       </div>
-      <button type="button" class="btn btn-primary dintorni-refresh" id="dintorni-refresh">${ICON("refresh")}Aggiorna ora</button>
+      <button type="button" class="btn btn-primary dintorni-refresh" id="dintorni-refresh">${ICON("refresh")}Refresh now</button>
     </div>
     ${state.radarFilters.ble ? dintorniPanelHtml({
-      title: "Dispositivi Bluetooth", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
+      title: "Bluetooth devices", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
       rows: data.ble, totalCount: data.ble.length,
-      emptyText: "Nessun dispositivo Bluetooth rilevato nelle ultime 24h.",
+      emptyText: "No Bluetooth devices detected in the last 24h.",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
@@ -2021,12 +2021,12 @@ function renderDintorniSidePanels(data) {
       </button>`,
     }) : ""}
     <div class="dintorni-panel">
-      <div class="dintorni-panel-head"><span>Legenda</span></div>
+      <div class="dintorni-panel-head"><span>Legend</span></div>
       <div class="dintorni-legend-rows">
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-1)"></span>SSID cercato nei probe (non per forza presente qui)</div>
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-2)"></span>Dispositivo WiFi (probe)</div>
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-7)"></span>Dispositivo Bluetooth</div>
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--status-good)"></span>Segnale forte / <span class="dot" style="background:var(--status-warning)"></span>medio / <span class="dot" style="background:var(--status-critical)"></span>debole</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-1)"></span>SSID requested in probes (not necessarily present here)</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-2)"></span>WiFi device (probe)</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-7)"></span>Bluetooth device</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--status-good)"></span>Strong signal / <span class="dot" style="background:var(--status-warning)"></span>medium / <span class="dot" style="background:var(--status-critical)"></span>weak</div>
       </div>
     </div>
   `;
@@ -2067,7 +2067,7 @@ function renderHouseRadar(container, data) {
       ${isoHouseSvg(geo)}
       <circle cx="${routerPoint.x.toFixed(1)}" cy="${routerPoint.y.toFixed(1)}" r="5" class="radar-router-dot"/>
     </svg></div>
-    <p class="empty-state">Nessun dato nelle ultime 24h per le categorie selezionate.</p>`;
+    <p class="empty-state">No data in the last 24h for the selected categories.</p>`;
     return;
   }
 
@@ -2094,8 +2094,8 @@ function renderHouseRadar(container, data) {
     const label = e.label.length > 11 ? `${e.label.slice(0, 10)}…` : e.label;
     const valueText = e.category === "probe" ? formatRelativeTime(e.lastTs) : `${e.avgRssi} dBm`;
     const tip = e.category === "network"
-      ? `${e.label} — SSID cercato da ${e.macs.size} device — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)}`
-      : `${e.label} — ${e.avgRssi} dBm — ${e.sightings} avvistamenti — ${formatRelativeTime(e.lastTs)}`;
+      ? `${e.label} — SSID requested by ${e.macs.size} devices — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)}`
+      : `${e.label} — ${e.avgRssi} dBm — ${e.sightings} sightings — ${formatRelativeTime(e.lastTs)}`;
 
     lines.push(`<line x1="${routerPoint.x.toFixed(1)}" y1="${routerPoint.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" class="radar-callout-line"/>`);
     cards.push(`<g class="radar-callout" data-tip="${escapeHtml(tip)}" ${e.mac ? `data-mac="${escapeHtml(e.mac)}"` : ""} transform="translate(${(x - cardW / 2).toFixed(1)},${(y - cardH / 2).toFixed(1)})">
@@ -2128,10 +2128,10 @@ function renderRecentAlertsWidget(container) {
   const alerts = computeAlerts().filter((a) => !isDismissed(a.id)).slice(0, 5);
   container.innerHTML = `
     <div class="card-head">
-      <h2>Ultimi avvisi</h2>
-      <button class="btn btn-icon" id="recent-alerts-all" title="Vedi tutti gli avvisi" aria-label="Vedi tutti gli avvisi">${ICON("bell")}</button>
+      <h2>Latest alerts</h2>
+      <button class="btn btn-icon" id="recent-alerts-all" title="View all alerts" aria-label="View all alerts">${ICON("bell")}</button>
     </div>
-    <div class="alert-list">${alerts.length ? alerts.map(alertItemHtml).join("") : '<p class="empty-state">Nessun avviso attivo.</p>'}</div>
+    <div class="alert-list">${alerts.length ? alerts.map(alertItemHtml).join("") : '<p class="empty-state">No active alerts.</p>'}</div>
   `;
   document.getElementById("recent-alerts-all").addEventListener("click", () => { window.location.hash = "#/avvisi"; });
   container.querySelectorAll("[data-dismiss]").forEach((btn) => {
@@ -2150,33 +2150,33 @@ function renderDashboard(container) {
   container.innerHTML = `
     <div class="page-section kpi-row">
       ${kpiTile({
-        label: "Host attivi", icon: "monitor", tone: "good",
+        label: "Active hosts", icon: "monitor", tone: "good",
         value: online, valueSuffix: `/ ${total}`,
-        sub: `${total ? Math.round((online / total) * 100) : 0}% attivi`,
+        sub: `${total ? Math.round((online / total) * 100) : 0}% active`,
         sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
       })}
       ${kpiTile({
-        label: "Probe WiFi (24h)", icon: "wifi", tone: "blue",
+        label: "WiFi probes (24h)", icon: "wifi", tone: "blue",
         value: wifiLast24h.length,
-        sub: `${new Set(wifiLast24h.map((r) => r.mac)).size} MAC distinti`,
+        sub: `${new Set(wifiLast24h.map((r) => r.mac)).size} distinct MACs`,
         sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
       })}
       ${kpiTile({
-        label: "Dispositivi nuovi", icon: "users", tone: "violet",
-        value: newLast24h, sub: "Nelle ultime 24h",
+        label: "New devices", icon: "users", tone: "violet",
+        value: newLast24h, sub: "In the last 24h",
         sparkValues: hourlyCounts(state.lanRows.filter((r) => r.status === "new")), sparkColor: "var(--series-violet)",
       })}
       ${kpiTile({
-        label: "Alert attivi", icon: "shield", tone: "critical",
+        label: "Active alerts", icon: "shield", tone: "critical",
         value: activeAlerts.length,
-        sub: activeAlerts.length ? "Richiedono attenzione" : "Nessun avviso attivo",
+        sub: activeAlerts.length ? "Need attention" : "No active alerts",
         subTone: activeAlerts.length ? "critical" : "good",
       })}
     </div>
 
     <div class="page-section grid-2">
       <div class="card">
-        <div class="card-head"><h2>Distribuzione per rischio</h2><span class="card-sub">su porte esposte e alert collegati</span></div>
+        <div class="card-head"><h2>Risk distribution</h2><span class="card-sub">based on exposed ports and linked alerts</span></div>
         <div id="donut-risk"></div>
       </div>
       <div class="card" id="recent-alerts-mount"></div>
@@ -2188,26 +2188,26 @@ function renderDashboard(container) {
 
     <div class="page-section grid-3">
       <div class="card">
-        <div class="card-head"><h2>Distribuzione per vendor</h2></div>
+        <div class="card-head"><h2>Vendor distribution</h2></div>
         <div id="donut-vendor"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Stato host</h2></div>
+        <div class="card-head"><h2>Host status</h2></div>
         <div id="donut-status"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Attività rete <span class="card-sub">ultime 24h</span></h2></div>
-        <div class="bar-chart" id="chart-lan-activity" data-empty="Nessun dato"></div>
+        <div class="card-head"><h2>Network activity <span class="card-sub">last 24h</span></h2></div>
+        <div class="bar-chart" id="chart-lan-activity" data-empty="No data"></div>
       </div>
     </div>
   `;
 
-  renderDonut(document.getElementById("donut-risk"), riskSegments(lanCurrent), "Dispositivi");
+  renderDonut(document.getElementById("donut-risk"), riskSegments(lanCurrent), "Devices");
   renderRecentAlertsWidget(document.getElementById("recent-alerts-mount"));
   renderNearbySection(document.getElementById("nearby-section-mount"));
   renderHostSection(document.getElementById("host-section-mount"));
-  renderDonut(document.getElementById("donut-vendor"), vendorSegments(lanCurrent), "Totale");
-  renderDonut(document.getElementById("donut-status"), statusSegments(lanCurrent), "Totale");
+  renderDonut(document.getElementById("donut-vendor"), vendorSegments(lanCurrent), "Total");
+  renderDonut(document.getElementById("donut-status"), statusSegments(lanCurrent), "Total");
   renderBarChart(document.getElementById("chart-lan-activity"), hourlyCounts(state.lanRows));
 }
 
@@ -2218,7 +2218,7 @@ function renderHost(container) {
 
 function renderMappa(container) {
   container.innerHTML = `<div class="card">
-    <div class="card-head"><h2>Mappa rete</h2><span class="card-sub">Topologia schematica basata sui dispositivi noti</span></div>
+    <div class="card-head"><h2>Network map</h2><span class="card-sub">Schematic topology based on known devices</span></div>
     <div id="netmap-mount"></div>
   </div>`;
   renderNetworkMap(document.getElementById("netmap-mount"));
@@ -2240,12 +2240,12 @@ function renderDeviceProfile(container, mac) {
   const deviceAlerts = computeAlerts().filter((a) => a.mac === mac);
 
   const backButton = `<div class="page-section" style="margin-bottom:10px;">
-    <button class="btn btn-icon" id="device-back" title="Torna a Host">${ICON("arrow-left")}</button>
+    <button class="btn btn-icon" id="device-back" title="Back to Host">${ICON("arrow-left")}</button>
   </div>`;
 
   if (!lanCurrent && !history.length && !wifiHits.length && !bleHits.length) {
     container.innerHTML = `${backButton}<div class="card">
-      <p class="empty-state">Nessun dato per il MAC <span class="mono">${escapeHtml(mac)}</span>. Potrebbe non essere mai stato rilevato, oppure non comparire più nei log caricati.</p>
+      <p class="empty-state">No data for MAC <span class="mono">${escapeHtml(mac)}</span>. It may have never been detected, or no longer appears in the loaded logs.</p>
     </div>`;
     document.getElementById("device-back").addEventListener("click", () => { window.location.hash = "#/host"; });
     return;
@@ -2261,68 +2261,68 @@ function renderDeviceProfile(container, mac) {
       <div class="device-profile-title">
         <h2>${escapeHtml(title)}</h2>
         <span class="mono">${escapeHtml(mac)}</span>
-        ${lanCurrent ? statusBadge(lanCurrent.status) : '<span class="badge status-offline"><span class="dot"></span>Non su LAN</span>'}
+        ${lanCurrent ? statusBadge(lanCurrent.status) : '<span class="badge status-offline"><span class="dot"></span>Not on LAN</span>'}
         ${risk !== null ? riskBadgeHtml(risk) : ""}
         ${trustBadgeHtml(mac)}
       </div>
       <div class="detail-grid">
         <div><span>IP</span>${lanCurrent ? escapeHtml(lanCurrent.ip) : "—"}</div>
         <div><span>Vendor</span>${escapeHtml(lanCurrent?.vendor) || "—"}</div>
-        <div><span>Tipo dispositivo</span>${escapeHtml(fingerprint?.device_type) || "—"}</div>
-        <div><span>Porte aperte</span>${formatPorts(lanCurrent?.open_ports) || "—"}</div>
-        <div><span>Prima rilevazione</span>${formatTs(firstSeenTs(mac))}</div>
-        <div><span>Ultima attività LAN</span>${lanCurrent ? formatTs(lanCurrent.timestamp) : "—"}</div>
+        <div><span>Device type</span>${escapeHtml(fingerprint?.device_type) || "—"}</div>
+        <div><span>Open ports</span>${formatPorts(lanCurrent?.open_ports) || "—"}</div>
+        <div><span>First seen</span>${formatTs(firstSeenTs(mac))}</div>
+        <div><span>Last LAN activity</span>${lanCurrent ? formatTs(lanCurrent.timestamp) : "—"}</div>
       </div>
       <div class="device-label-editor">
         <div class="field">
-          <label for="device-name-input">Nome personalizzato</label>
-          <input type="text" id="device-name-input" value="${escapeHtml(label.name)}" placeholder="es. iPhone di Marco">
+          <label for="device-name-input">Custom name</label>
+          <input type="text" id="device-name-input" value="${escapeHtml(label.name)}" placeholder="e.g. John's iPhone">
         </div>
         <button class="btn ${label.trusted ? "btn-primary" : ""}" id="device-trust-toggle">
-          ${ICON("shield")}${label.trusted ? "Fidato — rimuovi" : "Segna come fidato"}
+          ${ICON("shield")}${label.trusted ? "Trusted — remove" : "Mark as trusted"}
         </button>
       </div>
     </div>
 
     <div class="page-section grid-2">
       <div class="card">
-        <div class="card-head"><h2>Cronologia LAN</h2><span class="card-sub">${history.length} rilevazioni</span></div>
+        <div class="card-head"><h2>LAN history</h2><span class="card-sub">${history.length} sightings</span></div>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Timestamp</th><th>Stato</th><th>IP</th><th>Porte</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Timestamp</th><th>Status</th><th>IP</th><th>Ports</th></tr></thead>
           <tbody>${history.slice(-30).reverse().map((h) => `<tr>
             <td>${formatTs(h.timestamp)}</td><td>${statusBadge(h.status)}</td>
             <td class="mono">${escapeHtml(h.ip)}</td><td>${formatPorts(h.open_ports) || '<span class="muted">—</span>'}</td>
-          </tr>`).join("") || '<tr><td colspan="4"><p class="empty-state">Nessuna cronologia LAN.</p></td></tr>'}</tbody></table>
+          </tr>`).join("") || '<tr><td colspan="4"><p class="empty-state">No LAN history.</p></td></tr>'}</tbody></table>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Alert collegati</h2><span class="card-sub">${deviceAlerts.length} totali</span></div>
-        <div class="alert-list">${deviceAlerts.length ? deviceAlerts.slice(0, 20).map(alertItemHtml).join("") : '<p class="empty-state">Nessun alert per questo dispositivo.</p>'}</div>
+        <div class="card-head"><h2>Linked alerts</h2><span class="card-sub">${deviceAlerts.length} total</span></div>
+        <div class="alert-list">${deviceAlerts.length ? deviceAlerts.slice(0, 20).map(alertItemHtml).join("") : '<p class="empty-state">No alerts for this device.</p>'}</div>
       </div>
     </div>
 
     <div class="page-section grid-2">
       <div class="card">
-        <div class="card-head"><h2>Probe WiFi</h2><span class="card-sub">${wifiHits.length} catturati</span></div>
+        <div class="card-head"><h2>WiFi probes</h2><span class="card-sub">${wifiHits.length} captured</span></div>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Timestamp</th><th>SSID</th><th>RSSI</th><th>Canale</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Timestamp</th><th>SSID</th><th>RSSI</th><th>Channel</th></tr></thead>
           <tbody>${wifiHits.slice(0, 30).map((r) => `<tr>
-            <td>${formatTs(r.timestamp)}</td><td>${escapeHtml(r.ssid) || '<span class="muted">nascosto/vuoto</span>'}</td>
+            <td>${formatTs(r.timestamp)}</td><td>${escapeHtml(r.ssid) || '<span class="muted">hidden/empty</span>'}</td>
             <td>${r.rssi ?? '<span class="muted">—</span>'}</td><td>${escapeHtml(r.channel)}</td>
-          </tr>`).join("") || '<tr><td colspan="4"><p class="empty-state">Nessun probe WiFi per questo MAC.</p></td></tr>'}</tbody></table>
+          </tr>`).join("") || '<tr><td colspan="4"><p class="empty-state">No WiFi probes for this MAC.</p></td></tr>'}</tbody></table>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Advertisement BLE</h2><span class="card-sub">${bleHits.length} catturati</span></div>
+        <div class="card-head"><h2>BLE advertisements</h2><span class="card-sub">${bleHits.length} captured</span></div>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Timestamp</th><th>Nome</th><th>RSSI</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Timestamp</th><th>Name</th><th>RSSI</th></tr></thead>
           <tbody>${bleHits.slice(0, 30).map((r) => `<tr>
             <td>${formatTs(r.timestamp)}</td><td>${escapeHtml(r.name) || '<span class="muted">—</span>'}</td><td>${r.rssi ?? '<span class="muted">—</span>'}</td>
-          </tr>`).join("") || '<tr><td colspan="3"><p class="empty-state">Nessun advertisement BLE per questo MAC.</p></td></tr>'}</tbody></table>
+          </tr>`).join("") || '<tr><td colspan="3"><p class="empty-state">No BLE advertisements for this MAC.</p></td></tr>'}</tbody></table>
         </div>
       </div>
     </div>
-    <p class="field-hint">I MAC dei probe WiFi e degli advertisement BLE sono spesso randomizzati dai dispositivi moderni e possono non coincidere con il MAC dell'interfaccia LAN dello stesso device: le sezioni sopra restano vuote in quel caso, non è un errore.</p>
+    <p class="field-hint">MACs in WiFi probes and BLE advertisements are often randomized by modern devices and may not match the LAN interface MAC of the same device: the sections above stay empty in that case, it's not an error.</p>
   `;
   document.getElementById("device-back").addEventListener("click", () => { window.location.hash = "#/host"; });
   document.getElementById("device-name-input").addEventListener("change", (e) => {
@@ -2344,10 +2344,10 @@ function renderScansioniBody(container) {
   const cycles = computeScanCycles();
   const info = paginate(cycles, "scansioni");
   container.innerHTML = `
-    <div class="card-head"><h2>Cronologia scansioni LAN</h2><span class="card-sub">${cycles.length} cicli ricostruiti dal log di discovery</span></div>
+    <div class="card-head"><h2>LAN scan history</h2><span class="card-sub">${cycles.length} cycles reconstructed from the discovery log</span></div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Orario</th><th>Dispositivi visti</th><th>Nuovi</th><th>Offline</th></tr></thead>
+        <thead><tr><th>Time</th><th>Devices seen</th><th>New</th><th>Offline</th></tr></thead>
         <tbody>
           ${info.pageRows.map((c) => `<tr>
             <td>${formatTs(new Date(c.startTs).toISOString())}</td>
@@ -2357,7 +2357,7 @@ function renderScansioniBody(container) {
           </tr>`).join("")}
         </tbody>
       </table>
-      ${cycles.length ? "" : '<p class="empty-state">Nessun ciclo di scansione nel log caricato.</p>'}
+      ${cycles.length ? "" : '<p class="empty-state">No scan cycles in the loaded log.</p>'}
       <div id="scansioni-pagination"></div>
     </div>
   `;
@@ -2371,12 +2371,12 @@ function alertItemHtml(a) {
   return `<div class="alert-item ${dismissed ? "is-dismissed" : ""}">
     <span class="alert-icon sev-${a.severity}">${ICON(a.icon || "alert-triangle")}</span>
     <div class="alert-body">
-      <div class="alert-title">${escapeHtml(a.title)}${a.source === "detect" ? `<span class="source-tag">${ICON("shield")}Rilevato dal daemon</span>` : ""}</div>
+      <div class="alert-title">${escapeHtml(a.title)}${a.source === "detect" ? `<span class="source-tag">${ICON("shield")}Detected by daemon</span>` : ""}</div>
       <div class="alert-desc">${escapeHtml(a.desc)}</div>
       <div class="alert-meta"><span>${formatTs(a.ts ? new Date(a.ts).toISOString() : "")}</span>${identifier ? `<span>${identifier}</span>` : ""}</div>
     </div>
     <div class="alert-actions">
-      <button class="btn btn-icon" data-dismiss="${escapeHtml(a.id)}" title="${dismissed ? "Ripristina" : "Ignora"}">${ICON(dismissed ? "refresh" : "x")}</button>
+      <button class="btn btn-icon" data-dismiss="${escapeHtml(a.id)}" title="${dismissed ? "Restore" : "Dismiss"}">${ICON(dismissed ? "refresh" : "x")}</button>
     </div>
   </div>`;
 }
@@ -2392,24 +2392,24 @@ function renderAvvisi(container) {
 
   const typesPresent = [...new Set(all.map((a) => a.type).filter(Boolean))]
     .map((type) => ({ type, label: ALERT_TYPE_META[type]?.label || type.replace(/_/g, " ") }))
-    .sort((a, b) => a.label.localeCompare(b.label, "it"));
+    .sort((a, b) => a.label.localeCompare(b.label, "en"));
   if (!typesPresent.some((t) => t.type === state.alertsTypeFilter) && state.alertsTypeFilter !== "all") {
-    state.alertsTypeFilter = "all"; // il tipo selezionato non compare più tra gli alert correnti
+    state.alertsTypeFilter = "all"; // the selected type no longer appears among the current alerts
   }
 
   container.innerHTML = `
     <div class="card">
       <div class="card-head">
-        <h2>Avvisi</h2>
+        <h2>Alerts</h2>
         <div class="filter-row" style="margin:0;">
           <select class="select-control" id="alerts-type-filter">
-            <option value="all">Tutte le tipologie</option>
+            <option value="all">All types</option>
             ${typesPresent.map((t) => `<option value="${escapeHtml(t.type)}">${escapeHtml(t.label)}</option>`).join("")}
           </select>
           <select class="select-control" id="alerts-filter">
-            <option value="active">Attivi</option>
-            <option value="all">Tutti</option>
-            <option value="dismissed">Ignorati</option>
+            <option value="active">Active</option>
+            <option value="all">All</option>
+            <option value="dismissed">Dismissed</option>
           </select>
         </div>
       </div>
@@ -2438,7 +2438,7 @@ function renderAvvisi(container) {
     if (state.alertsFilter === "dismissed") list = list.filter((a) => isDismissed(a.id));
     if (state.alertsTypeFilter !== "all") list = list.filter((a) => a.type === state.alertsTypeFilter);
     const el = document.getElementById("alert-list");
-    if (!list.length) { el.innerHTML = '<p class="empty-state">Nessun avviso in questa categoria.</p>'; return; }
+    if (!list.length) { el.innerHTML = '<p class="empty-state">No alerts in this category.</p>'; return; }
     el.innerHTML = list.map(alertItemHtml).join("");
     el.querySelectorAll("[data-dismiss]").forEach((btn) => {
       btn.addEventListener("click", () => { toggleDismiss(btn.dataset.dismiss); renderAlertList(); updateNavBadge(); });
@@ -2452,7 +2452,7 @@ function renderAvvisi(container) {
       ${presets.map((p, i) => `<button class="preset-chip ${state.alertsFilter === p.statusFilter && state.alertsTypeFilter === p.typeFilter ? "active" : ""}" data-preset="${i}">
         ${escapeHtml(p.name)}<span class="preset-chip-x" data-preset-del="${i}">${ICON("x")}</span>
       </button>`).join("")}
-      <button class="preset-chip preset-chip-add" id="preset-add">${ICON("bell")}Salva filtro attuale</button>
+      <button class="preset-chip preset-chip-add" id="preset-add">${ICON("bell")}Save current filter</button>
     `;
     row.querySelectorAll("[data-preset]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
@@ -2476,7 +2476,7 @@ function renderAvvisi(container) {
       });
     });
     document.getElementById("preset-add").addEventListener("click", () => {
-      const name = prompt('Nome per questo filtro (es. "Solo critici attivi"):');
+      const name = prompt('Name for this filter (e.g. "Active critical only"):');
       if (!name || !name.trim()) return;
       const list = getAlertPresets();
       list.push({ name: name.trim(), statusFilter: state.alertsFilter, typeFilter: state.alertsTypeFilter });
@@ -2495,16 +2495,16 @@ function formatBytes(bytes) {
 
 function moduleStatusRow(label, key) {
   const s = state.sourceStatus[key];
-  let tone = "muted", text = "Non ancora caricato";
+  let tone = "muted", text = "Not loaded yet";
   if (s) {
     if (s.ok && s.count > 0) {
       tone = "good";
-      text = `Attivo — ${s.count} righe caricate`;
-      if (s.truncated) text += ` (solo le più recenti — file da ${formatBytes(s.totalBytes)}, limitate le ultime ${formatBytes(TAIL_FETCH_BYTES)})`;
+      text = `Active — ${s.count} rows loaded`;
+      if (s.truncated) text += ` (most recent only — ${formatBytes(s.totalBytes)} file, limited to the last ${formatBytes(TAIL_FETCH_BYTES)})`;
     } else if (s.ok && s.count === 0) {
-      tone = "warning"; text = "Sorgente raggiungibile, nessuna riga ancora";
+      tone = "warning"; text = "Source reachable, no rows yet";
     } else {
-      tone = "muted"; text = "Non rilevato (file assente o modulo non attivo sul daemon)";
+      tone = "muted"; text = "Not detected (file missing or module not active on the daemon)";
     }
   }
   return `<div class="module-status-row">
@@ -2517,59 +2517,59 @@ function renderImpostazioni(container) {
   const themeMode = getSetting("theme");
   container.innerHTML = `
     <div class="page-section card">
-      <div class="card-head"><h2>Stato moduli</h2><span class="card-sub">dedotto dai dati effettivamente caricati, non da un endpoint di stato</span></div>
+      <div class="card-head"><h2>Module status</h2><span class="card-sub">inferred from the data actually loaded, not from a status endpoint</span></div>
       <div class="module-status-list">
-        ${moduleStatusRow("Discovery LAN", "lan")}
-        ${moduleStatusRow("Probe WiFi (--wifi-iface)", "wifi")}
-        ${moduleStatusRow("Scan BLE (--ble)", "ble")}
+        ${moduleStatusRow("LAN discovery", "lan")}
+        ${moduleStatusRow("WiFi probes (--wifi-iface)", "wifi")}
+        ${moduleStatusRow("BLE scan (--ble)", "ble")}
         ${moduleStatusRow("Fingerprinting (--fingerprint)", "fingerprint")}
-        ${moduleStatusRow("Traffico WiFi stimato", "wifiTraffic")}
-        ${moduleStatusRow("Alert di detection", "alerts")}
+        ${moduleStatusRow("Estimated WiFi traffic", "wifiTraffic")}
+        ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
     </div>
 
     <div class="page-section card">
-      <div class="card-head"><h2>Sorgenti dati</h2></div>
+      <div class="card-head"><h2>Data sources</h2></div>
       <div class="settings-grid">
-        <div class="field"><label for="set-lan-url">Log discovery LAN (.jsonl)</label><input type="text" id="set-lan-url" value="${escapeHtml(getSetting("lanUrl"))}"></div>
-        <div class="field"><label for="set-lan-file">Oppure carica file locale</label><input type="file" id="set-lan-file" accept=".jsonl,.ndjson,.json,.txt"></div>
-        <div class="field"><label for="set-wifi-url">Log probe WiFi (.jsonl)</label><input type="text" id="set-wifi-url" value="${escapeHtml(getSetting("wifiUrl"))}"></div>
-        <div class="field"><label for="set-wifi-file">Oppure carica file locale</label><input type="file" id="set-wifi-file" accept=".jsonl,.ndjson,.json,.txt"></div>
-        <div class="field"><label for="set-ble-url">Log scan BLE (.jsonl)</label><input type="text" id="set-ble-url" value="${escapeHtml(getSetting("bleUrl"))}"></div>
-        <div class="field"><label for="set-ble-file">Oppure carica file locale</label><input type="file" id="set-ble-file" accept=".jsonl,.ndjson,.json,.txt"></div>
-        <div class="field"><label for="set-alerts-url">Log alert di detection (.jsonl)</label><input type="text" id="set-alerts-url" value="${escapeHtml(getSetting("alertsUrl"))}"></div>
-        <div class="field"><label for="set-fingerprint-url">Log fingerprint device (.jsonl)</label><input type="text" id="set-fingerprint-url" value="${escapeHtml(getSetting("fingerprintUrl"))}"></div>
-        <div class="field"><label for="set-wifi-traffic-url">Log traffico WiFi (.jsonl)</label><input type="text" id="set-wifi-traffic-url" value="${escapeHtml(getSetting("wifiTrafficUrl"))}"></div>
+        <div class="field"><label for="set-lan-url">LAN discovery log (.jsonl)</label><input type="text" id="set-lan-url" value="${escapeHtml(getSetting("lanUrl"))}"></div>
+        <div class="field"><label for="set-lan-file">Or load a local file</label><input type="file" id="set-lan-file" accept=".jsonl,.ndjson,.json,.txt"></div>
+        <div class="field"><label for="set-wifi-url">WiFi probe log (.jsonl)</label><input type="text" id="set-wifi-url" value="${escapeHtml(getSetting("wifiUrl"))}"></div>
+        <div class="field"><label for="set-wifi-file">Or load a local file</label><input type="file" id="set-wifi-file" accept=".jsonl,.ndjson,.json,.txt"></div>
+        <div class="field"><label for="set-ble-url">BLE scan log (.jsonl)</label><input type="text" id="set-ble-url" value="${escapeHtml(getSetting("bleUrl"))}"></div>
+        <div class="field"><label for="set-ble-file">Or load a local file</label><input type="file" id="set-ble-file" accept=".jsonl,.ndjson,.json,.txt"></div>
+        <div class="field"><label for="set-alerts-url">Detection alert log (.jsonl)</label><input type="text" id="set-alerts-url" value="${escapeHtml(getSetting("alertsUrl"))}"></div>
+        <div class="field"><label for="set-fingerprint-url">Device fingerprint log (.jsonl)</label><input type="text" id="set-fingerprint-url" value="${escapeHtml(getSetting("fingerprintUrl"))}"></div>
+        <div class="field"><label for="set-wifi-traffic-url">WiFi traffic log (.jsonl)</label><input type="text" id="set-wifi-traffic-url" value="${escapeHtml(getSetting("wifiTrafficUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
-            <option value="0">Disattivato</option>
-            <option value="1000">Ogni 1s</option>
-            <option value="5000">Ogni 5s</option>
-            <option value="15000">Ogni 15s</option>
-            <option value="30000">Ogni 30s</option>
-            <option value="60000">Ogni 60s</option>
+            <option value="0">Off</option>
+            <option value="1000">Every 1s</option>
+            <option value="5000">Every 5s</option>
+            <option value="15000">Every 15s</option>
+            <option value="30000">Every 30s</option>
+            <option value="60000">Every 60s</option>
           </select>
         </div>
       </div>
-      <p class="field-hint">Se la dashboard è aperta come file locale (<code>file://</code>) il fetch via URL non funziona per motivi di sicurezza del browser: usa i campi "carica file locale", oppure servi questa cartella con <code>python3 -m http.server</code>. Con log molto grandi, intervalli di 1-5s rileggono l'intero file ad ogni ciclo: se noti rallentamenti, alza l'intervallo. I log di alert/fingerprint sono opzionali: se i moduli di detection corrispondenti non sono attivi sul daemon, l'assenza del file non genera errori.</p>
+      <p class="field-hint">If the dashboard is opened as a local file (<code>file://</code>) fetching via URL won't work due to browser security restrictions: use the "load a local file" fields, or serve this folder with <code>python3 -m http.server</code>. With very large logs, 1-5s intervals re-read the whole file every cycle: if you notice slowdowns, increase the interval. The alert/fingerprint logs are optional: if the corresponding detection modules aren't active on the daemon, the missing file doesn't cause errors.</p>
     </div>
 
     <div class="page-section card">
-      <div class="card-head"><h2>Informazioni rete</h2><span class="card-sub">etichetta del gateway per la Mappa rete (pagina momentaneamente nascosta)</span></div>
+      <div class="card-head"><h2>Network information</h2><span class="card-sub">gateway label for the Network map (page currently hidden)</span></div>
       <div class="settings-grid">
-        <div class="field"><label for="set-net-label">Nome rete</label><input type="text" id="set-net-label" value="${escapeHtml(getSetting("netLabel"))}" placeholder="Casa_Network"></div>
+        <div class="field"><label for="set-net-label">Network name</label><input type="text" id="set-net-label" value="${escapeHtml(getSetting("netLabel"))}" placeholder="Home_Network"></div>
         <div class="field"><label for="set-net-gateway">Gateway</label><input type="text" id="set-net-gateway" value="${escapeHtml(getSetting("netGateway"))}" placeholder="192.168.1.1"></div>
       </div>
-      <p class="field-hint">Home Sentinel non rileva automaticamente questi valori: inseriscili manualmente (es. l'IP del router). Il gateway ha priorità sul nome rete se sono entrambi impostati.</p>
+      <p class="field-hint">Home Sentinel doesn't detect these values automatically: enter them manually (e.g. the router's IP). The gateway takes priority over the network name if both are set.</p>
     </div>
 
     <div class="page-section card">
-      <div class="card-head"><h2>Aspetto</h2><span class="card-sub">"Sistema" segue il tema del sistema operativo</span></div>
+      <div class="card-head"><h2>Appearance</h2><span class="card-sub">"System" follows the operating system theme</span></div>
       <div class="theme-choice">
-        <button type="button" data-theme-choice="light" class="${themeMode === "light" ? "active" : ""}">${ICON("sun")}Chiaro</button>
-        <button type="button" data-theme-choice="dark" class="${themeMode === "dark" ? "active" : ""}">${ICON("moon")}Scuro</button>
-        <button type="button" data-theme-choice="system" class="${themeMode === "system" ? "active" : ""}">${ICON("monitor")}Sistema</button>
+        <button type="button" data-theme-choice="light" class="${themeMode === "light" ? "active" : ""}">${ICON("sun")}Light</button>
+        <button type="button" data-theme-choice="dark" class="${themeMode === "dark" ? "active" : ""}">${ICON("moon")}Dark</button>
+        <button type="button" data-theme-choice="system" class="${themeMode === "system" ? "active" : ""}">${ICON("monitor")}System</button>
       </div>
     </div>
   `;
@@ -2608,13 +2608,13 @@ function renderEsporta(container) {
   const lanCurrent = latestLanByMac(state.lanRows);
   const alerts = computeAlerts();
   container.innerHTML = `<div class="export-grid">
-    ${exportCardHtml("Dispositivi LAN (stato attuale)", `${lanCurrent.length} dispositivi`, "lan-current")}
-    ${exportCardHtml("Log completo discovery LAN", `${state.lanRows.length} righe`, "lan-log")}
-    ${exportCardHtml("Probe WiFi", `${state.wifiRows.length} righe`, "wifi")}
-    ${exportCardHtml("Scan BLE", `${state.bleRows.length} righe`, "ble")}
-    ${exportCardHtml("Fingerprint device", `${state.fingerprintRows.length} righe`, "fingerprint")}
-    ${exportCardHtml("Traffico WiFi stimato", `${state.wifiTrafficRows.length} righe`, "wifi-traffic")}
-    ${exportCardHtml("Avvisi", `${alerts.length} avvisi`, "alerts")}
+    ${exportCardHtml("LAN devices (current status)", `${lanCurrent.length} devices`, "lan-current")}
+    ${exportCardHtml("Full LAN discovery log", `${state.lanRows.length} rows`, "lan-log")}
+    ${exportCardHtml("WiFi probes", `${state.wifiRows.length} rows`, "wifi")}
+    ${exportCardHtml("BLE scan", `${state.bleRows.length} rows`, "ble")}
+    ${exportCardHtml("Device fingerprints", `${state.fingerprintRows.length} rows`, "fingerprint")}
+    ${exportCardHtml("Estimated WiFi traffic", `${state.wifiTrafficRows.length} rows`, "wifi-traffic")}
+    ${exportCardHtml("Alerts", `${alerts.length} alerts`, "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
     btn.addEventListener("click", () => doExport(btn.dataset.export, btn.dataset.format));
@@ -2662,45 +2662,45 @@ function doExport(key, format) {
 function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
-      <h3>Come funziona</h3>
-      <p>Home Sentinel è composto da un daemon Python (<code>home_sentinel.py</code>) che scrive file JSON Lines in continuo — <code>lan_discovery.jsonl</code> per la discovery LAN, <code>wifi_probes.jsonl</code> per i probe request WiFi, <code>ble_discovery.jsonl</code> per lo scan BLE, <code>fingerprint_discovery.jsonl</code> per il tipo di device rilevato e <code>alerts_detection.jsonl</code> per gli alert dei moduli di detection (un oggetto JSON per riga, tutti opzionali tranne LAN; scrivono di default in <code>/var/log/home-sentinel/</code>) — e da questa dashboard statica che li legge e li visualizza. Configura le sorgenti in <strong>Impostazioni</strong>.</p>
+      <h3>How it works</h3>
+      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
     </div>
     <div class="card help-section">
-      <h3>Stato dei dispositivi</h3>
+      <h3>Device status</h3>
       <div class="legend-strip">
-        <span>${statusBadge("online")} rilevato nell'ultimo ciclo di scan</span>
-        <span>${statusBadge("new")} visto per la prima volta</span>
-        <span>${statusBadge("offline")} non risponde più al momento</span>
+        <span>${statusBadge("online")} detected in the last scan cycle</span>
+        <span>${statusBadge("new")} seen for the first time</span>
+        <span>${statusBadge("offline")} not currently responding</span>
       </div>
     </div>
     <div class="card help-section">
-      <h3>Pagine</h3>
+      <h3>Pages</h3>
       <ul>
-        <li><strong>Dashboard</strong> — panoramica: host attivi, probe WiFi, dispositivi nuovi, avvisi, distribuzione per vendor e stato, attività 24h.</li>
-        <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device e punteggio di rischio (0-100, su porte esposte e alert collegati); il nome host è un link al profilo completo del dispositivo. Da lì, o dal menu azioni di una riga, puoi assegnare un nome personalizzato e contrassegnare un device come fidato (riduce il rumore: punteggio di rischio più basso, alert collegati meno severi).</li>
-        <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
-        <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
-        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "SSID cercati" — un riepilogo per nome di rete richiesto nei probe, non un elenco di reti fisicamente presenti — e in fondo il log probe grezzo per l'analisi riga per riga. Il traffico WiFi stimato per device non è più mostrato qui: resta nell'export CSV e nel report email periodico.</li>
-        <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: KPI e attività 24h in alto, poi la tabella "Dispositivi BLE" — un riepilogo per MAC con nome, manufacturer, segnale e numero di avvistamenti — e in fondo il log advertisement grezzo per l'analisi riga per riga.</li>
-        <li><strong>Dintorni</strong> — casetta isometrica al centro con riquadri collegati da linee guida per SSID cercati nei probe, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h (più vicini = segnale più forte, non posizione reale); pannelli laterali con l'elenco completo di ciascuna categoria, stato scansione e legenda. Gli "SSID cercati" sono le reti salvate sui device nei dintorni, non necessariamente reti presenti qui — vedi il disclaimer nella pagina. Clicca un riquadro o una riga per il dettaglio, usa i filtri in alto per nascondere una categoria (ovunque compaia).</li>
-        <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
-        <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
-        <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), tema.</li>
-        <li><strong>Esporta</strong> — scarica i dati correnti in CSV o JSON.</li>
+        <li><strong>Dashboard</strong> — overview: active hosts, WiFi probes, new devices, alerts, distribution by vendor and status, 24h activity.</li>
+        <li><strong>Host</strong> — full list of known LAN devices, with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. From there, or from a row's action menu, you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
+        <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
+        <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
+        <li><strong>WiFi</strong> — 802.11 probe requests nearby: KPIs and channel distribution at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks — and at the bottom the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is no longer shown here: it remains in the CSV export and the periodic email report.</li>
+        <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
+        <li><strong>Around the house</strong> — isometric house at the center with cards connected by guide lines for SSIDs requested in probes, WiFi and Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); side panels with the full list for each category, scan status and legend. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here — see the disclaimer on the page. Click a card or a row for details, use the filters at the top to hide a category (wherever it appears).</li>
+        <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
+        <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
+        <li><strong>Settings</strong> — daemon module status (inferred from loaded data), data sources (JSON Lines), theme.</li>
+        <li><strong>Export</strong> — download the current data as CSV or JSON.</li>
       </ul>
-      <p class="field-hint">Premi <strong>Ctrl+K</strong> (o <strong>⌘K</strong>) in qualsiasi momento per la ricerca globale su pagine, dispositivi e avvisi.</p>
+      <p class="field-hint">Press <strong>Ctrl+K</strong> (or <strong>⌘K</strong>) at any time for global search across pages, devices and alerts.</p>
     </div>
     <div class="card help-section">
-      <h3>Limiti da conoscere</h3>
+      <h3>Known limitations</h3>
       <ul>
-        <li>Il traffico WiFi stimato non è banda reale (Mbps): il Pi non è il gateway, quindi conta solo i byte dei frame dati catturati durante il channel hopping su un'interfaccia in monitor mode — una frazione parziale del traffico reale, utile come indicatore relativo (chi trasmette di più rispetto agli altri device) ma non come misura di banda assoluta.</li>
-        <li>I MAC dei probe WiFi e gli indirizzi BLE sono spesso randomizzati dai dispositivi moderni: vanno letti come indicatore di attività nei dintorni, non come identificativo univoco nel tempo.</li>
-        <li>I nomi dei manufacturer BLE derivano da un elenco parziale e curato dei company ID Bluetooth SIG più comuni: un ID non riconosciuto viene mostrato come "ID 0x...".</li>
-        <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale; contrassegnare un device come fidato lo attenua (punteggio ridotto, alert collegati un livello meno severo) ma non lo nasconde né lo esclude dai controlli.</li>
-        <li>Il rilevamento di deauth/disassoc flood è a soglia (numero di frame in una finestra temporale): reti WiFi molto affollate o con roaming aggressivo possono generare falsi positivi occasionali, e un attacco molto lento/distribuito nel tempo può restare sotto soglia.</li>
-        <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: la rotazione automatica dei log sul daemon (<code>--max-log-size-mb</code>) e il caricamento "solo coda" della dashboard sui file più grandi (>4MB) riducono di conseguenza la cronologia disponibile, specie oltre i 7-30 giorni.</li>
-        <li>La pagina "Dintorni" è puramente illustrativa: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24h, non una distanza fisica reale, e l'angolo attorno alla casa è casuale (nessun dato di direzione esiste). Non è una localizzazione, solo un colpo d'occhio su "quanto c'è intorno".</li>
-        <li>"SSID cercati" (in Dintorni e nella pagina WiFi) non è un elenco di reti WiFi fisicamente presenti nei dintorni: sono i nomi di rete richiesti nei probe request dai device nei dintorni, cioè le reti che quei device hanno salvate — un telefono può cercare contemporaneamente decine di reti note ovunque le abbia usate in passato, indipendentemente da dove si trova ora. Il canale di una rete cercata non è mai mostrato: nel probe request non esiste, solo quello del proprio sniffer al momento della cattura.</li>
+        <li>Estimated WiFi traffic is not real bandwidth (Mbps): the Pi is not the gateway, so it only counts the bytes of data frames captured during channel hopping on a monitor-mode interface — a partial fraction of the real traffic, useful as a relative indicator (who transmits more compared to other devices) but not as an absolute bandwidth measurement.</li>
+        <li>WiFi probe MACs and BLE addresses are often randomized by modern devices: they should be read as an indicator of activity nearby, not as a unique identifier over time.</li>
+        <li>BLE manufacturer names come from a partial, curated list of the most common Bluetooth SIG company IDs: an unrecognized ID is shown as "ID 0x...".</li>
+        <li>The risk score (the "Risk" column in Host) is a heuristic based on exposed ports and linked alerts, not a formal security assessment; marking a device as trusted attenuates it (reduced score, linked alerts one level less severe) but doesn't hide it or exclude it from checks.</li>
+        <li>Deauth/disassoc flood detection is threshold-based (number of frames in a time window): very crowded WiFi networks or aggressive roaming can generate occasional false positives, and a very slow/distributed attack over time can stay under the threshold.</li>
+        <li>"Trend" and "Timeline" are calculated in the browser from the already-loaded JSONL files: automatic log rotation on the daemon (<code>--max-log-size-mb</code>) and the dashboard's "tail only" loading for larger files (>4MB) reduce the available history accordingly, especially beyond 7-30 days.</li>
+        <li>The "Around the house" page is purely illustrative: the distance from the center only reflects the average signal (RSSI) in the last 24h, not a real physical distance, and the angle around the house is random (no direction data exists). It's not a location, just an at-a-glance view of "how much is around".</li>
+        <li>"SSIDs requested" (in Around the house and the WiFi page) is not a list of WiFi networks physically present nearby: these are network names requested in probe requests by devices nearby, i.e. the networks those devices have saved — a phone can request dozens of known networks at once, regardless of where it has used them in the past or where it is now. The channel of a requested network is never shown: it doesn't exist in the probe request, only the sniffer's own channel at capture time.</li>
       </ul>
     </div>
   `;
@@ -2716,18 +2716,18 @@ function renderAiuto(container) {
 // quando avrà senso (subnet/VLAN multiple, routing reale) — va solo
 // riaggiunta qui sotto per riabilitarla in sidebar/ricerca globale.
 const ROUTES = [
-  { id: "dashboard", label: "Dashboard", icon: "grid", title: "Dashboard", subtitle: "Panoramica della rete locale", render: renderDashboard },
-  { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Elenco completo dei dispositivi LAN", render: renderHost },
-  { id: "scansioni", label: "Scansioni", icon: "radar", title: "Scansioni", subtitle: "Cronologia dei cicli di discovery LAN", render: renderScansioni },
-  { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Feed cronologico unificato di tutti gli eventi", render: renderTimeline },
-  { id: "wifi", label: "WiFi", icon: "wifi", title: "Probe WiFi", subtitle: "Probe request 802.11 rilevati nei dintorni", render: renderWifiPage },
-  { id: "ble", label: "BLE", icon: "bluetooth", title: "Dispositivi BLE", subtitle: "Scan passivo Bluetooth Low Energy nei dintorni", render: renderBlePage },
-  { id: "dintorni", label: "Dintorni", icon: "home", title: "Dintorni di casa", subtitle: "Vista radar isometrica di SSID cercati, dispositivi WiFi e Bluetooth nei dintorni", render: renderHouseRadarPage },
-  { id: "avvisi", label: "Avvisi", icon: "bell", title: "Avvisi", subtitle: "Eventi che richiedono attenzione", render: renderAvvisi },
-  { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Andamento storico di dispositivi e alert", render: renderTrend },
-  { id: "impostazioni", label: "Impostazioni", icon: "sliders", title: "Impostazioni", subtitle: "Sorgenti dati, rete e aspetto", render: renderImpostazioni },
-  { id: "esporta", label: "Esporta", icon: "download", title: "Esporta", subtitle: "Scarica i dati raccolti", render: renderEsporta },
-  { id: "aiuto", label: "Aiuto", icon: "help", title: "Aiuto", subtitle: "Guida rapida a Home Sentinel", render: renderAiuto },
+  { id: "dashboard", label: "Dashboard", icon: "grid", title: "Dashboard", subtitle: "Local network overview", render: renderDashboard },
+  { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Full list of LAN devices", render: renderHost },
+  { id: "scansioni", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
+  { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
+  { id: "wifi", label: "WiFi", icon: "wifi", title: "WiFi probes", subtitle: "802.11 probe requests detected nearby", render: renderWifiPage },
+  { id: "ble", label: "BLE", icon: "bluetooth", title: "BLE devices", subtitle: "Passive Bluetooth Low Energy scan nearby", render: renderBlePage },
+  { id: "dintorni", label: "Around the house", icon: "home", title: "Around the house", subtitle: "Isometric radar view of SSIDs requested, WiFi and Bluetooth devices nearby", render: renderHouseRadarPage },
+  { id: "avvisi", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
+  { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Historical trend of devices and alerts", render: renderTrend },
+  { id: "impostazioni", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
+  { id: "esporta", label: "Export", icon: "download", title: "Export", subtitle: "Download the collected data", render: renderEsporta },
+  { id: "aiuto", label: "Help", icon: "help", title: "Help", subtitle: "Quick guide to Home Sentinel", render: renderAiuto },
 ];
 
 function getRouteById(id) { return ROUTES.find((r) => r.id === id) || ROUTES[0]; }
@@ -2762,7 +2762,7 @@ function onRouteChange() {
     state.route = "device";
     state.deviceProfileMac = decodeURIComponent(param);
     document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
-    document.getElementById("page-title").textContent = "Profilo dispositivo";
+    document.getElementById("page-title").textContent = "Device profile";
     document.getElementById("page-subtitle").textContent = state.deviceProfileMac;
     document.getElementById("page-icon").innerHTML = ICON("monitor");
     renderCurrentRoute();
@@ -2822,19 +2822,19 @@ function updateStatusPill() {
   const dropdown = document.getElementById("status-dropdown");
   const ok = state.lastFetchOk;
   pill.classList.toggle("is-down", ok === false);
-  text.textContent = ok === false ? "Errore" : ok === true ? "Online" : "In attesa";
+  text.textContent = ok === false ? "Error" : ok === true ? "Online" : "Waiting";
   dropdown.innerHTML = `
-    <div><strong>Sorgente LAN</strong><br>${escapeHtml(state.lanFile ? `${state.lanFile.name} (file locale)` : getSetting("lanUrl"))}</div>
-    <div><strong>Sorgente WiFi</strong><br>${escapeHtml(state.wifiFile ? `${state.wifiFile.name} (file locale)` : getSetting("wifiUrl"))}</div>
-    <div><strong>Sorgente BLE</strong><br>${escapeHtml(state.bleFile ? `${state.bleFile.name} (file locale)` : getSetting("bleUrl"))}</div>
-    <div><strong>Righe caricate</strong><br>${state.lanRows.length} LAN · ${state.wifiRows.length} WiFi · ${state.bleRows.length} BLE · ${state.alertsRows.length} alert · ${state.fingerprintRows.length} fingerprint</div>
+    <div><strong>LAN source</strong><br>${escapeHtml(state.lanFile ? `${state.lanFile.name} (local file)` : getSetting("lanUrl"))}</div>
+    <div><strong>WiFi source</strong><br>${escapeHtml(state.wifiFile ? `${state.wifiFile.name} (local file)` : getSetting("wifiUrl"))}</div>
+    <div><strong>BLE source</strong><br>${escapeHtml(state.bleFile ? `${state.bleFile.name} (local file)` : getSetting("bleUrl"))}</div>
+    <div><strong>Rows loaded</strong><br>${state.lanRows.length} LAN · ${state.wifiRows.length} WiFi · ${state.bleRows.length} BLE · ${state.alertsRows.length} alerts · ${state.fingerprintRows.length} fingerprints</div>
   `;
 }
 
 const THEME_OPTIONS = [
-  { key: "light", label: "Chiaro", icon: "sun" },
-  { key: "dark", label: "Scuro", icon: "moon" },
-  { key: "system", label: "Sistema", icon: "monitor" },
+  { key: "light", label: "Light", icon: "sun" },
+  { key: "dark", label: "Dark", icon: "moon" },
+  { key: "system", label: "System", icon: "monitor" },
 ];
 
 function resolveSystemTheme() {
@@ -2887,7 +2887,7 @@ function readUrlParams() {
  * Command palette (Ctrl+K): ricerca globale su pagine, dispositivi, alert
  * ---------------------------------------------------------------------- */
 
-const CMDK_TYPE_LABELS = { page: "Pagine", device: "Dispositivi", alert: "Avvisi" };
+const CMDK_TYPE_LABELS = { page: "Pages", device: "Devices", alert: "Alerts" };
 let cmdkResults = [];
 let cmdkActiveIndex = 0;
 
@@ -2898,7 +2898,7 @@ function computeSearchIndex() {
   }
   for (const d of latestLanByMac(state.lanRows)) {
     items.push({
-      type: "device", label: d.hostname || d.mac, sub: `${d.ip} · ${d.vendor || "vendor sconosciuto"}`, icon: "monitor",
+      type: "device", label: d.hostname || d.mac, sub: `${d.ip} · ${d.vendor || "unknown vendor"}`, icon: "monitor",
       keywords: `${d.ip} ${d.mac} ${d.hostname || ""} ${d.vendor || ""}`, action: () => goToDevice(d.mac),
     });
   }
@@ -2939,7 +2939,7 @@ function renderCmdkResults(query) {
     : index.filter((i) => `${i.label} ${i.sub || ""} ${i.keywords || ""}`.toLowerCase().includes(q)).slice(0, 30);
 
   const el = document.getElementById("cmdk-results");
-  if (!cmdkResults.length) { el.innerHTML = '<p class="empty-state">Nessun risultato.</p>'; return; }
+  if (!cmdkResults.length) { el.innerHTML = '<p class="empty-state">No results.</p>'; return; }
 
   let lastType = null;
   el.innerHTML = cmdkResults.map((r, i) => {
