@@ -50,6 +50,7 @@ const SETTINGS_KEYS = {
   alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl", wifiTrafficUrl: "hs.wifiTrafficUrl",
   wifiNetworksUrl: "hs.wifiNetworksUrl",
   dhcpEventsUrl: "hs.dhcpEventsUrl", osFingerprintUrl: "hs.osFingerprintUrl", dhcpLeasesUrl: "hs.dhcpLeasesUrl",
+  trendDailyUrl: "hs.trendDailyUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
@@ -57,6 +58,7 @@ const SETTINGS_DEFAULTS = {
   alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl", wifiTrafficUrl: "wifi_traffic.jsonl",
   wifiNetworksUrl: "wifi_networks.jsonl",
   dhcpEventsUrl: "dhcp_events.jsonl", osFingerprintUrl: "os_fingerprint.jsonl", dhcpLeasesUrl: "dhcp_leases.jsonl",
+  trendDailyUrl: "trend_daily.jsonl",
 };
 
 function getSetting(key) {
@@ -101,6 +103,7 @@ const state = {
   dhcpEventsRows: [],
   osFingerprintRows: [],
   dhcpLeasesRows: [],
+  trendDailyRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -323,6 +326,14 @@ async function loadAllOnce() {
   } catch {
     state.dhcpLeasesRows = state.dhcpLeasesRows || [];
     state.sourceStatus.dhcpLeases = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("trendDailyUrl"));
+    state.trendDailyRows = r.rows;
+    state.sourceStatus.trendDaily = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.trendDailyRows = state.trendDailyRows || [];
+    state.sourceStatus.trendDaily = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -826,6 +837,68 @@ function trendSubLabel(d) {
   return `${arrow} ${Math.abs(d.deltaPct)}% vs previous period`;
 }
 
+/* ---------------------------------------------------------------------- *
+ * Trend: preferisce il rollup giornaliero del daemon (trend_daily.jsonl,
+ * calcolato dal daemon sull'intero storico in SQLite) al posto di ricontare
+ * dalle righe JSONL grezze già caricate in pagina — quelle, oltre una certa
+ * dimensione, sono solo la coda scaricata dalla dashboard (TAIL_FETCH_BYTES)
+ * o quanto non ancora ruotato lato daemon (--max-log-size-mb): su una rete
+ * affollata un Trend a 30 giorni calcolato così può risultare tagliato ben
+ * prima che i dati siano davvero scomparsi. Il rollup non ha questo limite,
+ * ma è un modulo opzionale (richiede lo specchio SQLite lato daemon, attivo
+ * di default ma disattivabile con --no-db/--no-trend-rollup): se assente o
+ * non ancora popolato per il periodo richiesto, si ricade sul calcolo dalle
+ * righe già caricate, come prima.
+ * ---------------------------------------------------------------------- */
+
+/** Ultima riga per data dal rollup (il file è append-only e in ordine cronologico: l'ultima vince). */
+function latestRollupByDate() {
+  const byDate = new Map();
+  for (const row of state.trendDailyRows) {
+    if (row.date) byDate.set(row.date, row);
+  }
+  return byDate;
+}
+
+function isoDateDaysAgo(daysAgo) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - daysAgo);
+  return d.toISOString().slice(0, 10);
+}
+
+/** true se il rollup copre almeno una parte degli ultimi `days` giorni (altrimenti meglio il fallback). */
+function hasRollupCoverage(days) {
+  const byDate = latestRollupByDate();
+  if (!byDate.size) return false;
+  for (let daysAgo = 0; daysAgo < days; daysAgo++) {
+    if (byDate.has(isoDateDaysAgo(daysAgo))) return true;
+  }
+  return false;
+}
+
+function dailyCountsFromRollup(field, days) {
+  const byDate = latestRollupByDate();
+  const buckets = [];
+  for (let daysAgo = days - 1; daysAgo >= 0; daysAgo--) {
+    const row = byDate.get(isoDateDaysAgo(daysAgo));
+    buckets.push(row ? (row[field] || 0) : 0);
+  }
+  return buckets;
+}
+
+function periodDeltaFromRollup(field, days) {
+  const byDate = latestRollupByDate();
+  let cur = 0, prev = 0;
+  for (let daysAgo = 0; daysAgo < 2 * days; daysAgo++) {
+    const row = byDate.get(isoDateDaysAgo(daysAgo));
+    const n = row ? (row[field] || 0) : 0;
+    if (daysAgo < days) cur += n; else prev += n;
+  }
+  const deltaPct = prev > 0 ? Math.round(((cur - prev) / prev) * 100) : (cur > 0 ? 100 : 0);
+  return { cur, prev, deltaPct };
+}
+
 /** Variante di renderBarChart con tick giornalieri invece che orari. */
 function renderDayBarChart(container, buckets, days) {
   container.innerHTML = "";
@@ -867,11 +940,22 @@ function renderDayBarChart(container, buckets, days) {
 
 function renderTrend(container) {
   const range = state.trendRangeDays || 7;
-  const newDevices = state.lanRows.filter((r) => r.status === "new");
-  const alertRows = computeAlerts().filter((a) => a.ts !== null).map((a) => ({ timestamp: new Date(a.ts).toISOString() }));
+  const useRollup = hasRollupCoverage(range);
 
-  const newDelta = periodDelta(newDevices, range);
-  const alertDelta = periodDelta(alertRows, range);
+  let newDelta, alertDelta, newBuckets, alertBuckets;
+  if (useRollup) {
+    newDelta = periodDeltaFromRollup("new_devices", range);
+    alertDelta = periodDeltaFromRollup("alerts", range);
+    newBuckets = dailyCountsFromRollup("new_devices", range);
+    alertBuckets = dailyCountsFromRollup("alerts", range);
+  } else {
+    const newDevices = state.lanRows.filter((r) => r.status === "new");
+    const alertRows = computeAlerts().filter((a) => a.ts !== null).map((a) => ({ timestamp: new Date(a.ts).toISOString() }));
+    newDelta = periodDelta(newDevices, range);
+    alertDelta = periodDelta(alertRows, range);
+    newBuckets = dailyCounts(newDevices, range);
+    alertBuckets = dailyCounts(alertRows, range);
+  }
 
   container.innerHTML = `
     <div class="page-section">
@@ -902,7 +986,9 @@ function renderTrend(container) {
         <div class="bar-chart" id="chart-trend-alerts" data-empty="No data"></div>
       </div>
     </div>
-    <p class="field-hint">Calculated in the browser from the log history already loaded — no separate query server needed. The daemon rotates the JSONL files past a certain size (<code>--max-log-size-mb</code>, default 20MB) and, to stay fast, the dashboard only downloads the most recent tail of the largest files (see the warning on the WiFi/BLE page, if shown): over 30 days the trend may therefore not cover the whole period if the log has already rotated or was truncated on load.</p>
+    <p class="field-hint">${useRollup
+      ? `Calculated from the daemon's daily rollup (<code>trend_daily.jsonl</code>, built from the full SQLite history) — accurate over the whole ${range}-day period regardless of how large the raw JSONL logs have grown.`
+      : `Calculated in the browser from the log history already loaded — no separate query server needed. The daemon rotates the JSONL files past a certain size (<code>--max-log-size-mb</code>, default 20MB) and, to stay fast, the dashboard only downloads the most recent tail of the largest files (see the warning on the WiFi/BLE page, if shown): over 30 days the trend may therefore not cover the whole period if the log has already rotated or was truncated on load. Enable the daemon's daily rollup (on by default, needs the SQLite mirror) for an accurate trend regardless of log size.`}</p>
   `;
 
   document.getElementById("trend-range").value = String(range);
@@ -910,8 +996,8 @@ function renderTrend(container) {
     state.trendRangeDays = Number(e.target.value);
     renderTrend(container);
   });
-  renderDayBarChart(document.getElementById("chart-trend-new"), dailyCounts(newDevices, range), range);
-  renderDayBarChart(document.getElementById("chart-trend-alerts"), dailyCounts(alertRows, range), range);
+  renderDayBarChart(document.getElementById("chart-trend-new"), newBuckets, range);
+  renderDayBarChart(document.getElementById("chart-trend-alerts"), alertBuckets, range);
 }
 
 function attachTooltip(el, text) {
@@ -2817,6 +2903,7 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("DHCP client discovery (--dhcp-discovery)", "dhcpEvents")}
         ${moduleStatusRow("Passive OS fingerprint (--os-fingerprint)", "osFingerprint")}
         ${moduleStatusRow("DHCP lease cross-check (--dhcp-lease-source)", "dhcpLeases")}
+        ${moduleStatusRow("Daily trend rollup (--no-trend-rollup to disable)", "trendDaily")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
     </div>
@@ -2837,6 +2924,7 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-dhcp-events-url">DHCP client discovery log (.jsonl)</label><input type="text" id="set-dhcp-events-url" value="${escapeHtml(getSetting("dhcpEventsUrl"))}"></div>
         <div class="field"><label for="set-os-fingerprint-url">Passive OS fingerprint log (.jsonl)</label><input type="text" id="set-os-fingerprint-url" value="${escapeHtml(getSetting("osFingerprintUrl"))}"></div>
         <div class="field"><label for="set-dhcp-leases-url">DHCP lease cross-check log (.jsonl)</label><input type="text" id="set-dhcp-leases-url" value="${escapeHtml(getSetting("dhcpLeasesUrl"))}"></div>
+        <div class="field"><label for="set-trend-daily-url">Daily trend rollup log (.jsonl)</label><input type="text" id="set-trend-daily-url" value="${escapeHtml(getSetting("trendDailyUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -2885,6 +2973,7 @@ function renderImpostazioni(container) {
   document.getElementById("set-dhcp-events-url").addEventListener("change", (e) => { setSetting("dhcpEventsUrl", e.target.value.trim() || SETTINGS_DEFAULTS.dhcpEventsUrl); loadAll(); });
   document.getElementById("set-os-fingerprint-url").addEventListener("change", (e) => { setSetting("osFingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.osFingerprintUrl); loadAll(); });
   document.getElementById("set-dhcp-leases-url").addEventListener("change", (e) => { setSetting("dhcpLeasesUrl", e.target.value.trim() || SETTINGS_DEFAULTS.dhcpLeasesUrl); loadAll(); });
+  document.getElementById("set-trend-daily-url").addEventListener("change", (e) => { setSetting("trendDailyUrl", e.target.value.trim() || SETTINGS_DEFAULTS.trendDailyUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -2919,6 +3008,7 @@ function renderEsporta(container) {
     ${exportCardHtml("DHCP client discovery", `${state.dhcpEventsRows.length} rows`, "dhcp-events")}
     ${exportCardHtml("Passive OS fingerprint", `${state.osFingerprintRows.length} rows`, "os-fingerprint")}
     ${exportCardHtml("DHCP lease cross-check", `${state.dhcpLeasesRows.length} rows`, "dhcp-leases")}
+    ${exportCardHtml("Daily trend rollup", `${state.trendDailyRows.length} rows`, "trend-daily")}
     ${exportCardHtml("Alerts", `${alerts.length} alerts`, "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
@@ -2961,6 +3051,7 @@ function doExport(key, format) {
   else if (key === "dhcp-events") { rows = state.dhcpEventsRows; filename = "dhcp_events"; }
   else if (key === "os-fingerprint") { rows = state.osFingerprintRows; filename = "os_fingerprint"; }
   else if (key === "dhcp-leases") { rows = state.dhcpLeasesRows; filename = "dhcp_leases"; }
+  else if (key === "trend-daily") { rows = state.trendDailyRows; filename = "trend_daily"; }
   else if (key === "alerts") {
     rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
     filename = "alerts";
@@ -2972,7 +3063,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>How it works</h3>
-      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
+      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, <code>trend_daily.jsonl</code> for the daily rollup behind the Trend page, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Device status</h3>

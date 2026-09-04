@@ -168,6 +168,22 @@ supportato, può convertire le proprie lease in questo formato e
 pubblicarle su un file letto dal Pi via rete o URL), `auto` (default,
 indovina dal contenuto).
 
+**`trend_daily.jsonl`** (attivo di default se lo specchio SQLite lo è,
+`--no-trend-rollup` per disabilitarlo): `{date, new_devices, alerts}`
+Conteggi giornalieri (nuovi device, alert) ricalcolati ogni
+`--trend-rollup-interval` secondi (default 3600) dall'intero storico in
+SQLite, non dai soli JSONL grezzi. Esiste per un motivo preciso: oltre una
+certa dimensione la dashboard scarica solo la coda dei JSONL
+(`TAIL_FETCH_BYTES` lato dashboard) e il daemon li ruota oltre
+`--max-log-size-mb` — su una rete affollata (`wifi_probes.jsonl` in
+particolare) il grafico "Trend" a 30 giorni può quindi risultare
+incompleto ben prima che quei dati siano davvero scomparsi, solo non più
+nella coda scaricata. Una riga per data per ogni giro in cui il conteggio
+di quel giorno è cambiato (un giorno passato, una volta scritto, non
+cambia più: solo "oggi" viene riscritto finché il conteggio cresce) — la
+dashboard prende l'ultima riga per data, il file resta piccolo (poche
+righe al giorno) anche su mesi di storico.
+
 **`alerts_detection.jsonl`**:
 `{timestamp, severity, type, mac, ip, message, details}`
 Una riga per ogni alert generato dai moduli di detection (vedi sotto).
@@ -376,8 +392,12 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   vengono mostrati con severità ridotta di un livello. Nessun dato è
   inventato.
 - **Trend** — andamento di nuovi dispositivi e alert negli ultimi 7/30
-  giorni (grafici giornalieri + variazione % vs periodo precedente),
-  calcolato lato browser sulla cronologia già caricata dai JSONL.
+  giorni (grafici giornalieri + variazione % vs periodo precedente). Usa il
+  rollup giornaliero del daemon (`trend_daily.jsonl`, vedi sopra) quando
+  disponibile — accurato sull'intero periodo indipendentemente da quanto
+  sono cresciuti i log grezzi — altrimenti ricade sul calcolo lato browser
+  dalla cronologia già caricata dai JSONL (limitata dal troncamento "solo
+  coda" oltre una certa dimensione, vedi sopra).
 - **Impostazioni** — pannello di stato dei moduli daemon (dedotto dai dati
   effettivamente caricati: attivo / nessun dato / non rilevato), sorgenti
   dati JSON Lines (URL o file locale), tema (Chiaro/Scuro/Sistema),
