@@ -770,9 +770,9 @@ class BleScanMonitor:
 # grezza, non un'identificazione: più sistemi operativi condividono lo stesso
 # valore (64 è il default sia di Linux sia di macOS/Android/iOS moderni).
 TTL_OS_BUCKETS = [
-    (64, "Linux / Android / macOS / iOS (TTL iniziale tipico 64)"),
-    (128, "Windows (TTL iniziale tipico 128)"),
-    (255, "Apparato di rete o Unix legacy (TTL iniziale tipico 255)"),
+    (64, "Linux / Android / macOS / iOS (typical initial TTL 64)"),
+    (128, "Windows (typical initial TTL 128)"),
+    (255, "Network appliance or legacy Unix (typical initial TTL 255)"),
 ]
 
 
@@ -782,7 +782,7 @@ def guess_os_from_ttl(ttl: int | None) -> str:
     for value, label in TTL_OS_BUCKETS:
         if ttl <= value:
             return label
-    return f"TTL {ttl} (fuori dai bucket noti)"
+    return f"TTL {ttl} (outside the known buckets)"
 
 
 class OsFingerprintMonitor:

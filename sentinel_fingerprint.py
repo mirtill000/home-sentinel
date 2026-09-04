@@ -274,28 +274,28 @@ def classify_device(
     if has("airplay", "raop"):
         return "Apple TV / AirPlay"
     if has("homekit", "_hap", "hap._tcp"):
-        return "Dispositivo HomeKit"
+        return "HomeKit device"
     if has("hue"):
         return "Hue Bridge / smart lighting"
     if has("sonos"):
         return "Sonos speaker"
     if has("ipp", "printer", "pdl-datastream") or 631 in open_ports or 9100 in open_ports:
-        return "Stampante"
+        return "Printer"
     if has("mediaserver", "camera", "urn:schemas-upnp-org:device:mediaserver"):
-        return "Telecamera IP / Media server"
+        return "IP camera / media server"
     if netbios_name or 445 in open_ports or 139 in open_ports:
-        return "PC/Server Windows (SMB)"
+        return "Windows PC/server (SMB)"
     if "raspberry pi" in vendor_blob:
         return "Raspberry Pi"
     if "apple" in vendor_blob:
-        return "Dispositivo Apple"
+        return "Apple device"
     if 22 in open_ports and ("openssh" in banner_blob or has("_ssh._tcp", "_sftp-ssh._tcp")):
-        return "Server/dispositivo Linux (SSH)"
+        return "Linux server/device (SSH)"
     if 80 in open_ports or 8080 in open_ports or has("_http._tcp"):
-        return "Dispositivo con interfaccia web (IoT?)"
+        return "Device with web interface (IoT?)"
     if not services and not ssdp_info and not open_ports and not netbios_name:
-        return "Sconosciuto"
-    return "Dispositivo generico"
+        return "Unknown"
+    return "Generic device"
 
 
 def fingerprint_device(ip: str, open_ports: list[int], vendor: str = "") -> dict:
