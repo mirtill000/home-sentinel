@@ -181,7 +181,7 @@ a posteriori:
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 11 sezioni, tutte basate sui dati reali dei log
+utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
 e alert di detection. In qualsiasi punto della dashboard, **Ctrl+K** (⌘K su
 Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni tabella
@@ -218,14 +218,22 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
 - **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
   device, offline, alert, fingerprint), filtrabile per categoria.
 - **WiFi** — KPI (probe 24h, MAC distinti, % con SSID, RSSI medio, vendor
-  noti), attività oraria, distribuzione per canale, top vendor, **traffico
-  WiFi stimato per device** (se `wifi_traffic.jsonl` è disponibile —
-  indicatore relativo, non banda esatta, vedi sopra), dispositivi che
-  cercano una rete specifica (aggregato), log probe grezzo.
+  noti), attività oraria, distribuzione per canale, poi un'unica tabella
+  **"Dispositivi WiFi"** — un riepilogo per MAC con traffico stimato (se
+  `wifi_traffic.jsonl` è disponibile — indicatore relativo, non banda
+  esatta, vedi sopra), SSID cercati e probe totali, ricercabile e
+  paginata — e in fondo il log probe grezzo per l'analisi riga per riga.
 - **BLE** — KPI (advertisement 24h, MAC distinti, % con nome, RSSI medio,
-  manufacturer noti), attività oraria, top manufacturer, **top 10
-  dispositivi più ricorrenti** (per numero di avvistamenti), log
-  advertisement grezzo.
+  manufacturer noti), attività oraria, poi la tabella **"Dispositivi
+  BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e
+  avvistamenti, ricercabile e paginata — e in fondo il log advertisement
+  grezzo.
+- **Dintorni** — vista radar isometrica: una casetta al centro circondata
+  da reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, su
+  anelli concentrici in base al segnale medio (RSSI) — non alla posizione
+  reale, vedi il disclaimer nella pagina stessa. Filtri per categoria in
+  alto, click su un pallino per aprire il profilo del device (dove
+  disponibile).
 - **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
   RDP, SMB, VNC, FTP) aperte sui device correnti, calcolati dalla dashboard
   stessa; più gli alert generati dai moduli di detection del daemon

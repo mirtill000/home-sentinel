@@ -33,6 +33,7 @@ const ICON_PATHS = {
   "chevron-left": `<path d="M15 6l-6 6 6 6"/>`,
   "chevron-right": `<path d="M9 6l6 6-6 6"/>`,
   layers: `<path d="M12 3 2.5 8 12 13l9.5-5L12 3z"/><path d="M2.5 13 12 18l9.5-5"/><path d="M2.5 18 12 23l9.5-5"/>`,
+  home: `<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v10h12V10"/><path d="M10 20v-6h4v6"/>`,
 };
 
 function ICON(name) {
@@ -111,6 +112,7 @@ const state = {
   trendRangeDays: 7,
   deviceProfileMac: null,
   timelineKindFilter: "all",
+  radarFilters: { network: true, probe: true, ble: true },
   pagination: {},
 };
 
@@ -1831,6 +1833,211 @@ function renderNetworkMap(container) {
 }
 
 /* ---------------------------------------------------------------------- *
+ * Dintorni di casa: vista radar isometrica. Non è una vera mappa: la
+ * distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime
+ * 24h — non una distanza fisica reale — e l'angolo attorno alla casa è
+ * puramente decorativo (nessun dato di direzione è disponibile dal
+ * daemon). Serve solo a farsi un'idea colpo d'occhio di "quanta roba c'è
+ * intorno", non a localizzare alcunché.
+ * ---------------------------------------------------------------------- */
+
+const RADAR_LOOKBACK_MS = 24 * 3600 * 1000;
+const RADAR_MAX_PER_CATEGORY = 30;
+
+/** Angolo pseudo-casuale ma deterministico (stessa chiave = stesso angolo tra un refresh e l'altro), solo per distribuire i pallini attorno alla casa. */
+function radarHashAngle(key) {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return (h % 360) * (Math.PI / 180);
+}
+
+/** 3 fasce di segnale (stessa logica di signalLevel, semplificata per il radar). 0 = anello più vicino (segnale forte), 2 = anello più esterno (debole/assente). */
+function radarRing(rssi) {
+  if (typeof rssi !== "number") return 2;
+  if (rssi >= -60) return 0;
+  if (rssi >= -75) return 1;
+  return 2;
+}
+
+function computeHouseRadar() {
+  const cutoff = Date.now() - RADAR_LOOKBACK_MS;
+  const knownLanMacs = new Set(latestLanByMac(state.lanRows).map((d) => d.mac));
+  const networks = new Map();
+  const probes = new Map();
+  const ble = new Map();
+
+  for (const r of state.wifiRows) {
+    const ts = parseTs(r.timestamp);
+    if (ts === null || ts < cutoff) continue;
+    const rssi = typeof r.rssi === "number" ? r.rssi : null;
+
+    if (r.ssid && r.ssid.trim()) {
+      const key = r.ssid.trim();
+      if (!networks.has(key)) networks.set(key, { key, label: key, macs: new Set(), rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
+      const e = networks.get(key);
+      e.sightings += 1;
+      e.macs.add(r.mac);
+      if (rssi !== null) { e.rssiSum += rssi; e.rssiCount += 1; }
+      if (ts > e.lastTs) e.lastTs = ts;
+    }
+
+    if (!knownLanMacs.has(r.mac)) {
+      if (!probes.has(r.mac)) probes.set(r.mac, { key: r.mac, mac: r.mac, label: displayName(r.mac, "") || r.vendor || r.mac, vendor: r.vendor || "", rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
+      const e = probes.get(r.mac);
+      e.sightings += 1;
+      if (rssi !== null) { e.rssiSum += rssi; e.rssiCount += 1; }
+      if (ts > e.lastTs) e.lastTs = ts;
+    }
+  }
+
+  for (const r of state.bleRows) {
+    const ts = parseTs(r.timestamp);
+    if (ts === null || ts < cutoff) continue;
+    const rssi = typeof r.rssi === "number" ? r.rssi : null;
+    if (!ble.has(r.mac)) {
+      const ids = Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : [];
+      const vendor = ids.length ? bleCompanyLabel(ids[0]) : "";
+      ble.set(r.mac, { key: r.mac, mac: r.mac, label: displayName(r.mac, "") || r.name || vendor || r.mac, vendor, rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
+    }
+    const e = ble.get(r.mac);
+    e.sightings += 1;
+    if (rssi !== null) { e.rssiSum += rssi; e.rssiCount += 1; }
+    if (ts > e.lastTs) e.lastTs = ts;
+  }
+
+  const finalize = (map) => [...map.values()]
+    .filter((e) => e.rssiCount > 0)
+    .map((e) => ({ ...e, avgRssi: Math.round(e.rssiSum / e.rssiCount) }))
+    .sort((a, b) => b.avgRssi - a.avgRssi)
+    .slice(0, RADAR_MAX_PER_CATEGORY);
+
+  return { networks: finalize(networks), probes: finalize(probes), ble: finalize(ble) };
+}
+
+const RADAR_CATEGORY_META = {
+  network: { label: "Reti WiFi", color: "var(--cat-1)", icon: "wifi" },
+  probe: { label: "Dispositivi WiFi", color: "var(--cat-2)", icon: "wifi" },
+  ble: { label: "Dispositivi Bluetooth", color: "var(--cat-7)", icon: "bluetooth" },
+};
+
+/** Casa in stile isometrico: pura decorazione SVG, nessun dato reale — solo un punto di riferimento visivo al centro del radar. */
+function isoHouseSvg(cx, cy) {
+  const s = 1; // unità isometrica in px, applicata dentro iso()
+  const IX = { x: 0.866, y: 0.5 };
+  const IY = { x: -0.866, y: 0.5 };
+  const unit = 34;
+  const w = 1.7, d = 1.7, h = 1.25, roofRise = 1.0;
+  const iso = (a, b, c) => ({
+    x: cx + (a * IX.x + b * IY.x) * unit,
+    y: cy + (a * IX.y + b * IY.y) * unit - c * unit,
+  });
+  const A = iso(0, 0, 0), B = iso(w, 0, 0), D = iso(0, d, 0);
+  const EA = iso(0, 0, h), EB = iso(w, 0, h), ED = iso(0, d, h);
+  // Il colmo del tetto corre lungo la diagonale piena della base (a e b crescono insieme):
+  // con w=d proietta come una linea verticale al centro, il classico profilo "a casetta".
+  const ridgeFront = iso(0, 0, h + roofRise);
+  const ridgeBack = iso(w, d, h + roofRise);
+  const doorTop = iso(w * 0.32, 0, h * 0.55);
+  const doorBottom = iso(w * 0.32, 0, 0);
+  const doorTop2 = iso(w * 0.62, 0, h * 0.55);
+  const doorBottom2 = iso(w * 0.62, 0, 0);
+  const pt = (p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+
+  return `
+    <polygon points="${pt(A)} ${pt(B)} ${pt(EB)} ${pt(EA)}" class="iso-wall iso-wall-right"/>
+    <polygon points="${pt(A)} ${pt(D)} ${pt(ED)} ${pt(EA)}" class="iso-wall iso-wall-left"/>
+    <polygon points="${pt(doorBottom)} ${pt(doorBottom2)} ${pt(doorTop2)} ${pt(doorTop)}" class="iso-door"/>
+    <polygon points="${pt(EA)} ${pt(EB)} ${pt(ridgeBack)} ${pt(ridgeFront)}" class="iso-roof iso-roof-right"/>
+    <polygon points="${pt(EA)} ${pt(ED)} ${pt(ridgeBack)} ${pt(ridgeFront)}" class="iso-roof iso-roof-left"/>
+    <line x1="${ridgeFront.x.toFixed(1)}" y1="${ridgeFront.y.toFixed(1)}" x2="${ridgeBack.x.toFixed(1)}" y2="${ridgeBack.y.toFixed(1)}" class="iso-ridge"/>
+  `;
+}
+
+function renderHouseRadarPage(container) {
+  container.innerHTML = `
+    <div class="page-section card">
+      <div class="card-head">
+        <h2>Dintorni di casa</h2>
+        <span class="card-sub">reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, per intensità di segnale</span>
+      </div>
+      <div class="radar-legend" id="radar-legend"></div>
+      <div id="radar-mount"></div>
+      <p class="field-hint">Vista puramente illustrativa, non una mappa reale: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24 ore — segnale forte = anello interno, debole = anello esterno — non una distanza fisica. L'angolo attorno alla casa è casuale (nessun dato di direzione esiste), quindi non indica dove si trova davvero un dispositivo. I dispositivi già presenti sulla tua rete LAN non sono mostrati qui (non sono "esterni"); MAC WiFi/BLE spesso randomizzati dai device moderni possono far comparire lo stesso dispositivo più volte.</p>
+    </div>
+  `;
+  renderHouseRadarLegend(document.getElementById("radar-legend"));
+  renderHouseRadar(document.getElementById("radar-mount"));
+}
+
+function renderHouseRadarLegend(container) {
+  container.innerHTML = Object.entries(RADAR_CATEGORY_META).map(([key, meta]) => `
+    <button type="button" class="radar-legend-item ${state.radarFilters[key] ? "active" : ""}" data-radar-toggle="${key}">
+      <span class="dot" style="background:${meta.color}"></span>${escapeHtml(meta.label)}
+    </button>
+  `).join("");
+  container.querySelectorAll("[data-radar-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.radarToggle;
+      state.radarFilters[key] = !state.radarFilters[key];
+      renderHouseRadarLegend(container);
+      renderHouseRadar(document.getElementById("radar-mount"));
+    });
+  });
+}
+
+function renderHouseRadar(container) {
+  const data = computeHouseRadar();
+  const W = 760, H = 640, cx = W / 2, cy = H / 2 + 40;
+  const ringGap = 90, houseClearance = 70;
+  const ringRadii = [houseClearance + ringGap, houseClearance + ringGap * 2, houseClearance + ringGap * 3];
+
+  const items = [];
+  if (state.radarFilters.network) for (const e of data.networks) items.push({ ...e, category: "network" });
+  if (state.radarFilters.probe) for (const e of data.probes) items.push({ ...e, category: "probe" });
+  if (state.radarFilters.ble) for (const e of data.ble) items.push({ ...e, category: "ble" });
+
+  if (!items.length) {
+    container.innerHTML = `<div class="radar-wrap"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+      ${ringRadii.map((r) => `<circle cx="${cx}" cy="${cy}" r="${r}" class="radar-ring"/>`).join("")}
+      ${isoHouseSvg(cx, cy)}
+    </svg></div>
+    <p class="empty-state">Nessun dato nelle ultime 24h per le categorie selezionate.</p>`;
+    return;
+  }
+
+  // Distribuisce più nodi sullo stesso anello/categoria su raggi leggermente diversi, per non sovrapporli.
+  const ringSlots = new Map();
+  const nodeEls = items.map((e) => {
+    const ring = radarRing(e.avgRssi);
+    const slotKey = `${e.category}:${ring}`;
+    const slot = (ringSlots.get(slotKey) || 0);
+    ringSlots.set(slotKey, slot + 1);
+    const angle = radarHashAngle(e.key) + (slot % 3) * 0.12;
+    const jitter = (slot % 3) * 14;
+    const radius = ringRadii[ring] - 30 + jitter;
+    const x = cx + radius * Math.cos(angle);
+    const y = cy + radius * Math.sin(angle) * 0.62; // schiaccia verticalmente per restare coerente con la prospettiva isometrica della casa
+    const meta = RADAR_CATEGORY_META[e.category];
+    const countLabel = e.category === "network" ? ` — ${e.macs.size} device` : "";
+    const tip = `${e.label}${countLabel} — ${e.avgRssi} dBm — ${e.sightings} avvistamenti — ${formatRelativeTime(e.lastTs)}`;
+    return `<g class="radar-node" data-tip="${escapeHtml(tip)}" ${e.mac ? `data-mac="${escapeHtml(e.mac)}"` : ""} transform="translate(${x.toFixed(1)},${y.toFixed(1)})">
+      <circle r="7" style="fill:${meta.color}"/>
+    </g>`;
+  });
+
+  container.innerHTML = `<div class="radar-wrap"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+    ${ringRadii.map((r, i) => `<ellipse cx="${cx}" cy="${cy}" rx="${r}" ry="${(r * 0.62).toFixed(1)}" class="radar-ring"/><text x="${cx}" y="${(cy - r * 0.62 - 6).toFixed(1)}" text-anchor="middle" class="radar-ring-label">${["segnale forte", "medio", "debole"][i]}</text>`).join("")}
+    ${nodeEls.join("")}
+    ${isoHouseSvg(cx, cy)}
+  </svg></div>`;
+
+  container.querySelectorAll(".radar-node").forEach((el) => {
+    attachTooltip(el, el.dataset.tip);
+    if (el.dataset.mac) el.addEventListener("click", () => goToDevice(el.dataset.mac));
+  });
+}
+
+/* ---------------------------------------------------------------------- *
  * Pages
  * ---------------------------------------------------------------------- */
 
@@ -2392,6 +2599,7 @@ function renderAiuto(container) {
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "Dispositivi WiFi" — un riepilogo per MAC con traffico stimato, SSID cercati e probe totali — e in fondo il log probe grezzo per l'analisi riga per riga.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: KPI e attività 24h in alto, poi la tabella "Dispositivi BLE" — un riepilogo per MAC con nome, manufacturer, segnale e numero di avvistamenti — e in fondo il log advertisement grezzo per l'analisi riga per riga.</li>
+        <li><strong>Dintorni</strong> — vista radar isometrica con una casetta al centro: reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, disposti su anelli concentrici in base al segnale medio (non alla posizione reale). Clicca un pallino per il dettaglio, usa i filtri in alto per nascondere una categoria.</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
         <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), tema.</li>
@@ -2408,6 +2616,7 @@ function renderAiuto(container) {
         <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale; contrassegnare un device come fidato lo attenua (punteggio ridotto, alert collegati un livello meno severo) ma non lo nasconde né lo esclude dai controlli.</li>
         <li>Il rilevamento di deauth/disassoc flood è a soglia (numero di frame in una finestra temporale): reti WiFi molto affollate o con roaming aggressivo possono generare falsi positivi occasionali, e un attacco molto lento/distribuito nel tempo può restare sotto soglia.</li>
         <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: la rotazione automatica dei log sul daemon (<code>--max-log-size-mb</code>) e il caricamento "solo coda" della dashboard sui file più grandi (>4MB) riducono di conseguenza la cronologia disponibile, specie oltre i 7-30 giorni.</li>
+        <li>La pagina "Dintorni" è puramente illustrativa: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24h, non una distanza fisica reale, e l'angolo attorno alla casa è casuale (nessun dato di direzione esiste). Non è una localizzazione, solo un colpo d'occhio su "quanto c'è intorno".</li>
       </ul>
     </div>
   `;
@@ -2429,6 +2638,7 @@ const ROUTES = [
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Feed cronologico unificato di tutti gli eventi", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "Probe WiFi", subtitle: "Probe request 802.11 rilevati nei dintorni", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "Dispositivi BLE", subtitle: "Scan passivo Bluetooth Low Energy nei dintorni", render: renderBlePage },
+  { id: "dintorni", label: "Dintorni", icon: "home", title: "Dintorni di casa", subtitle: "Vista radar isometrica di reti WiFi, dispositivi WiFi e Bluetooth nei dintorni", render: renderHouseRadarPage },
   { id: "avvisi", label: "Avvisi", icon: "bell", title: "Avvisi", subtitle: "Eventi che richiedono attenzione", render: renderAvvisi },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Andamento storico di dispositivi e alert", render: renderTrend },
   { id: "impostazioni", label: "Impostazioni", icon: "sliders", title: "Impostazioni", subtitle: "Sorgenti dati, rete e aspetto", render: renderImpostazioni },
