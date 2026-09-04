@@ -339,19 +339,32 @@ ripiega in automatico sul download completo, senza errori, solo senza il
 vantaggio di velocità). Quando succede, un avviso compare nella pagina
 interessata e nel pannello "Stato moduli" in Impostazioni.
 
-- **Host** — elenco completo dei dispositivi LAN, con tipo di device (se
-  `--fingerprint` è attivo) e punteggio di rischio 0-100 (euristica su porte
-  esposte e alert collegati); il nome host apre il **profilo completo** del
-  dispositivo (cronologia LAN, probe WiFi, advertisement BLE, alert e
-  fingerprint riuniti in un'unica vista, più — se le relative fonti dati
-  sono disponibili — nome mDNS ed euristica del sistema operativo, e un
-  badge se il device compare nella tabella lease del router ma non risponde
-  all'ultimo ARP scan). Da qui, o dal menu azioni di una riga, puoi
-  assegnare un **nome personalizzato** a un device e contrassegnarlo come
-  **fidato**: riduce il punteggio di rischio e la severità degli alert
-  collegati (di un livello), senza nasconderli. Dal profilo del device puoi
-  anche collegare **più MAC alla stessa identità fisica** ("stesso device
-  come"), utile per un device con interfacce WiFi ed Ethernet separate o
+- **Host** — riga KPI (host totali, nuovi dispositivi, alert attivi, a
+  rischio alto/critico), poi l'elenco completo dei dispositivi LAN, con tipo
+  di device (se `--fingerprint` è attivo) e punteggio di rischio 0-100
+  (euristica su porte esposte e alert collegati). Filtri per stato, tipo,
+  vendor, livello di rischio, fidato/non fidato e presenza di porte aperte,
+  più un interruttore **"Stale only"** per isolare i device offline da oltre
+  30 giorni (evidenziati anche in tabella, attenuati con un badge "Stale").
+  Il pulsante **"Columns"** aggiunge colonne opzionali — OS guess, nome
+  mDNS, stato ARP (silenzioso sull'ultimo scan pur presente nella tabella
+  lease del router), Uptime % e traffico WiFi stimato nelle ultime 24h —
+  nascoste di default per non affollare la tabella. **"Group by identity"**
+  unisce in un'unica riga i MAC collegati come stesso device fisico (con un
+  chip "+N" sul MAC canonico). Le combinazioni di filtri sono salvabili come
+  preset (come già per gli Avvisi); le caselle di selezione permettono di
+  contrassegnare come fidati o esportare in CSV più host insieme. Il nome
+  host apre il **profilo completo** del dispositivo (cronologia LAN, probe
+  WiFi, advertisement BLE, alert e fingerprint riuniti in un'unica vista,
+  più — se le relative fonti dati sono disponibili — nome mDNS ed euristica
+  del sistema operativo, e un badge se il device compare nella tabella
+  lease del router ma non risponde all'ultimo ARP scan). Da qui, o dal menu
+  azioni di una riga, puoi assegnare un **nome personalizzato** a un device
+  e contrassegnarlo come **fidato**: riduce il punteggio di rischio e la
+  severità degli alert collegati (di un livello), senza nasconderli. Dal
+  profilo del device puoi anche collegare **più MAC alla stessa identità
+  fisica** ("stesso device come"), utile per un device con interfacce WiFi
+  ed Ethernet separate o
   con MAC randomizzati: nome e stato "fidato" si condividono tra i MAC
   collegati; se un altro MAC ha lo stesso hostname e non è ancora
   collegato, un suggerimento scartabile propone l'unione (mai automatica).

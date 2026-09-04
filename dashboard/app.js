@@ -124,6 +124,10 @@ const state = {
   timelineKindFilter: "all",
   radarFilters: { network: true, probe: true, ap: true, ble: true },
   radarPanelsExpanded: {},
+  hostFilters: { type: "all", vendor: "all", risk: "all", trust: "all", ports: "all" },
+  hostStaleOnly: false,
+  hostGroupByIdentity: false,
+  hostSelectedMacs: new Set(),
   pagination: {},
 };
 
@@ -1430,7 +1434,17 @@ function renderTimeline(container) {
  * ---------------------------------------------------------------------- */
 
 function renderHostSection(container) {
+  state.hostSelectedMacs = new Set();
   const lanCurrent = latestLanByMac(state.lanRows);
+  const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
+
+  const typesPresent = [...new Set(lanCurrent.map((d) => fingerprintByMac.get(d.mac)?.device_type).filter(Boolean))].sort((a, b) => a.localeCompare(b, "en"));
+  const vendorsPresent = [...new Set(lanCurrent.map((d) => d.vendor).filter((v) => v && v.trim()))].sort((a, b) => a.localeCompare(b, "en"));
+  if (!typesPresent.includes(state.hostFilters.type) && !["all", "unknown"].includes(state.hostFilters.type)) state.hostFilters.type = "all";
+  if (!vendorsPresent.includes(state.hostFilters.vendor) && !["all", "unknown"].includes(state.hostFilters.vendor)) state.hostFilters.vendor = "all";
+
+  const visibleColumns = getHostVisibleColumns();
+
   container.innerHTML = `
     <div class="card-head">
       <h2>Hosts on the network <span class="card-sub">(${lanCurrent.length})</span></h2>
@@ -1442,120 +1456,331 @@ function renderHostSection(container) {
           <option value="new">New</option>
           <option value="offline">Offline</option>
         </select>
+        <select class="select-control" id="host-type-filter">
+          <option value="all">All types</option>
+          <option value="unknown">Unknown type</option>
+          ${typesPresent.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")}
+        </select>
+        <select class="select-control" id="host-vendor-filter">
+          <option value="all">All vendors</option>
+          <option value="unknown">Unknown vendor</option>
+          ${vendorsPresent.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("")}
+        </select>
+        <select class="select-control" id="host-risk-filter">
+          <option value="all">All risk levels</option>
+          <option value="Critical">Critical</option>
+          <option value="High">High</option>
+          <option value="Medium">Medium</option>
+          <option value="Low">Low</option>
+        </select>
+        <select class="select-control" id="host-trust-filter">
+          <option value="all">Trusted &amp; not</option>
+          <option value="trusted">Trusted only</option>
+          <option value="untrusted">Not trusted</option>
+        </select>
+        <select class="select-control" id="host-ports-filter">
+          <option value="all">Any ports</option>
+          <option value="open">With open ports</option>
+          <option value="none">No open ports</option>
+        </select>
+        <button type="button" class="btn ${state.hostStaleOnly ? "btn-primary" : ""}" id="host-stale-toggle" title="Show only devices offline for more than ${STALE_OFFLINE_DAYS} days">${ICON("clock")}Stale only</button>
+        <button type="button" class="btn ${state.hostGroupByIdentity ? "btn-primary" : ""}" id="host-group-toggle" title="Merge MACs linked as the same physical device into one row">${ICON("users")}Group by identity</button>
+        <div class="dropdown-wrap host-columns-wrap">
+          <button type="button" class="btn" id="host-columns-btn">${ICON("sliders")}Columns</button>
+          <div class="host-columns-menu hidden" id="host-columns-menu">
+            ${HOST_OPTIONAL_COLUMNS.map((c) => `<label><input type="checkbox" data-column-toggle="${c.key}" ${visibleColumns.has(c.key) ? "checked" : ""}>${escapeHtml(c.label)}</label>`).join("")}
+          </div>
+        </div>
       </div>
     </div>
+    <div class="preset-row" id="host-preset-row"></div>
+    <div id="host-bulk-bar"></div>
     <div class="table-scroll">
       <table class="data-table" id="host-table">
-        <thead><tr>
-          <th data-sort="status">Status</th>
-          <th data-sort="ip">IP</th>
-          <th data-sort="hostname">Hostname</th>
-          <th data-sort="mac">MAC address</th>
-          <th data-sort="vendor">Vendor</th>
-          <th>Type</th>
-          <th>Risk</th>
-          <th data-sort="open_ports">Open ports</th>
-          <th data-sort="last_seen">Last seen</th>
-          <th></th>
-        </tr></thead>
+        <thead id="host-thead"></thead>
         <tbody id="host-table-body"></tbody>
       </table>
       <p class="empty-state hidden" id="host-empty">No devices — check the data sources in Settings.</p>
       <div id="host-pagination"></div>
     </div>`;
 
-  document.getElementById("host-search").addEventListener("input", () => { getPagination("host").page = 1; renderHostTableBody(); });
-  document.getElementById("host-status-filter").addEventListener("change", () => { getPagination("host").page = 1; renderHostTableBody(); });
-  container.querySelectorAll("#host-table thead th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
-      const key = th.dataset.sort;
-      if (state.lanSort.key === key) state.lanSort.dir *= -1;
-      else { state.lanSort.key = key; state.lanSort.dir = 1; }
-      renderHostTableBody();
+  document.getElementById("host-search").addEventListener("input", () => { getPagination("host").page = 1; renderHostTable(); });
+  document.getElementById("host-status-filter").addEventListener("change", () => { getPagination("host").page = 1; renderHostTable(); });
+  document.getElementById("host-type-filter").value = state.hostFilters.type;
+  document.getElementById("host-type-filter").addEventListener("change", (e) => { state.hostFilters.type = e.target.value; getPagination("host").page = 1; renderHostTable(); });
+  document.getElementById("host-vendor-filter").value = state.hostFilters.vendor;
+  document.getElementById("host-vendor-filter").addEventListener("change", (e) => { state.hostFilters.vendor = e.target.value; getPagination("host").page = 1; renderHostTable(); });
+  document.getElementById("host-risk-filter").value = state.hostFilters.risk;
+  document.getElementById("host-risk-filter").addEventListener("change", (e) => { state.hostFilters.risk = e.target.value; getPagination("host").page = 1; renderHostTable(); });
+  document.getElementById("host-trust-filter").value = state.hostFilters.trust;
+  document.getElementById("host-trust-filter").addEventListener("change", (e) => { state.hostFilters.trust = e.target.value; getPagination("host").page = 1; renderHostTable(); });
+  document.getElementById("host-ports-filter").value = state.hostFilters.ports;
+  document.getElementById("host-ports-filter").addEventListener("change", (e) => { state.hostFilters.ports = e.target.value; getPagination("host").page = 1; renderHostTable(); });
+  document.getElementById("host-stale-toggle").addEventListener("click", () => {
+    state.hostStaleOnly = !state.hostStaleOnly;
+    getPagination("host").page = 1;
+    renderHostSection(container);
+  });
+  document.getElementById("host-group-toggle").addEventListener("click", () => {
+    state.hostGroupByIdentity = !state.hostGroupByIdentity;
+    getPagination("host").page = 1;
+    renderHostSection(container);
+  });
+  document.getElementById("host-columns-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.getElementById("host-columns-menu").classList.toggle("hidden");
+  });
+  container.querySelectorAll("[data-column-toggle]").forEach((cb) => {
+    cb.addEventListener("click", (e) => e.stopPropagation());
+    cb.addEventListener("change", () => {
+      const cols = getHostVisibleColumns();
+      if (cb.checked) cols.add(cb.dataset.columnToggle); else cols.delete(cb.dataset.columnToggle);
+      saveHostVisibleColumns(cols);
+      renderHostTable();
     });
   });
-  renderHostTableBody();
+
+  renderHostPresetChips();
+  renderHostTable();
+
+  function renderHostPresetChips() {
+    const presets = getHostPresets();
+    const row = document.getElementById("host-preset-row");
+    const matches = (p) => p.statusFilter === document.getElementById("host-status-filter").value
+      && p.staleOnly === state.hostStaleOnly && p.groupByIdentity === state.hostGroupByIdentity
+      && JSON.stringify(p.hostFilters) === JSON.stringify(state.hostFilters);
+    row.innerHTML = `
+      ${presets.map((p, i) => `<button class="preset-chip ${matches(p) ? "active" : ""}" data-preset="${i}">
+        ${escapeHtml(p.name)}<span class="preset-chip-x" data-preset-del="${i}">${ICON("x")}</span>
+      </button>`).join("")}
+      <button class="preset-chip preset-chip-add" id="host-preset-add">${ICON("monitor")}Save current filter</button>
+    `;
+    row.querySelectorAll("[data-preset]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        if (e.target.closest("[data-preset-del]")) return;
+        const p = presets[Number(btn.dataset.preset)];
+        document.getElementById("host-status-filter").value = p.statusFilter;
+        state.hostFilters = { ...state.hostFilters, ...p.hostFilters };
+        state.hostStaleOnly = !!p.staleOnly;
+        state.hostGroupByIdentity = !!p.groupByIdentity;
+        getPagination("host").page = 1;
+        renderHostSection(container);
+      });
+    });
+    row.querySelectorAll("[data-preset-del]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const list = getHostPresets();
+        list.splice(Number(btn.dataset.presetDel), 1);
+        saveHostPresets(list);
+        renderHostPresetChips();
+      });
+    });
+    document.getElementById("host-preset-add").addEventListener("click", () => {
+      const name = prompt('Name for this filter (e.g. "Untrusted with open ports"):');
+      if (!name || !name.trim()) return;
+      const list = getHostPresets();
+      list.push({
+        name: name.trim(),
+        statusFilter: document.getElementById("host-status-filter").value,
+        hostFilters: { ...state.hostFilters },
+        staleOnly: state.hostStaleOnly,
+        groupByIdentity: state.hostGroupByIdentity,
+      });
+      saveHostPresets(list);
+      renderHostPresetChips();
+    });
+  }
+
+  function renderHostTable() {
+    const search = document.getElementById("host-search").value.trim().toLowerCase();
+    const statusFilter = document.getElementById("host-status-filter").value;
+    const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
+    const alertsByMac = groupAlertsByMac(computeAlerts());
+    const osFingerprintByMac = latestFingerprintByMac(state.osFingerprintRows);
+    const dhcpLeaseByMac = latestFingerprintByMac(state.dhcpLeasesRows);
+    const trafficByMac = trafficBytesByMac(state.wifiTrafficRows);
+    const maxTraffic = Math.max(1, ...[...trafficByMac.values()]);
+    const visibleColumns = getHostVisibleColumns();
+
+    const base = state.hostGroupByIdentity ? groupHostsByIdentity(latestLanByMac(state.lanRows)) : latestLanByMac(state.lanRows).map((d) => ({ ...d, _members: [d] }));
+
+    let rows = base.filter((d) => {
+      if (statusFilter !== "all" && d.status !== statusFilter) return false;
+      if (state.hostStaleOnly && !isHostStale(d)) return false;
+      if (state.hostFilters.type !== "all") {
+        const type = fingerprintByMac.get(d.mac)?.device_type || "";
+        if (state.hostFilters.type === "unknown" ? !!type : type !== state.hostFilters.type) return false;
+      }
+      if (state.hostFilters.vendor !== "all") {
+        if (state.hostFilters.vendor === "unknown" ? !!(d.vendor && d.vendor.trim()) : d.vendor !== state.hostFilters.vendor) return false;
+      }
+      if (state.hostFilters.risk !== "all") {
+        if (riskLevel(rowRiskScore(d, fingerprintByMac, alertsByMac)).label !== state.hostFilters.risk) return false;
+      }
+      if (state.hostFilters.trust !== "all") {
+        const trusted = getDeviceLabel(d.mac).trusted;
+        if (state.hostFilters.trust === "trusted" ? !trusted : trusted) return false;
+      }
+      if (state.hostFilters.ports !== "all") {
+        const hasPorts = Array.isArray(d.open_ports) && d.open_ports.length > 0;
+        if (state.hostFilters.ports === "open" ? !hasPorts : hasPorts) return false;
+      }
+      if (!search) return true;
+      return hostSearchText(d).includes(search);
+    });
+    rows = sortRows(rows, state.lanSort.key, state.lanSort.dir);
+
+    const info = paginate(rows, "host");
+    const colCount = 2 + 9 + visibleColumns.size;
+
+    document.getElementById("host-thead").innerHTML = `<tr>
+      <th><input type="checkbox" id="host-select-all" ${info.pageRows.length && info.pageRows.every((d) => state.hostSelectedMacs.has(d.mac)) ? "checked" : ""}></th>
+      <th data-sort="status">Status</th>
+      <th data-sort="ip">IP</th>
+      <th data-sort="hostname">Hostname</th>
+      <th data-sort="mac">MAC address</th>
+      <th data-sort="vendor">Vendor</th>
+      <th>Type</th>
+      <th>Risk</th>
+      <th data-sort="open_ports">Open ports</th>
+      ${visibleColumns.has("osGuess") ? "<th>OS guess</th>" : ""}
+      ${visibleColumns.has("mdns") ? "<th>mDNS name</th>" : ""}
+      ${visibleColumns.has("arp") ? "<th>ARP status</th>" : ""}
+      ${visibleColumns.has("uptime") ? "<th>Uptime %</th>" : ""}
+      ${visibleColumns.has("traffic") ? "<th>WiFi traffic (24h)</th>" : ""}
+      <th data-sort="last_seen">Last seen</th>
+      <th></th>
+    </tr>`;
+    document.getElementById("host-thead").querySelectorAll("th[data-sort]").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort;
+        if (state.lanSort.key === key) state.lanSort.dir *= -1;
+        else { state.lanSort.key = key; state.lanSort.dir = 1; }
+        renderHostTable();
+      });
+    });
+    document.getElementById("host-select-all").addEventListener("change", (e) => {
+      for (const d of info.pageRows) {
+        if (e.target.checked) state.hostSelectedMacs.add(d.mac); else state.hostSelectedMacs.delete(d.mac);
+      }
+      renderHostTable();
+    });
+
+    const body = document.getElementById("host-table-body");
+    body.innerHTML = info.pageRows.map((d) => hostRowHtml(d, {
+      fingerprint: fingerprintByMac.get(d.mac), alerts: alertsByMac.get(d.mac),
+      fingerprintByMac, alertsByMac, osFingerprint: osFingerprintByMac.get(d.mac),
+      dhcpLease: dhcpLeaseByMac.get(d.mac), trafficBytes: trafficByMac.get(d.mac),
+      maxTraffic, visibleColumns, colCount, selected: state.hostSelectedMacs.has(d.mac),
+    })).join("");
+    document.getElementById("host-empty").classList.toggle("hidden", rows.length > 0);
+    document.getElementById("host-pagination").innerHTML = rows.length ? paginationHtml("host", info) : "";
+    wirePagination(document.getElementById("host-pagination"), "host", renderHostTable);
+    renderHostBulkBar();
+
+    body.querySelectorAll("[data-row-select]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.hostSelectedMacs.add(cb.dataset.rowSelect); else state.hostSelectedMacs.delete(cb.dataset.rowSelect);
+        renderHostTable();
+      });
+    });
+    body.querySelectorAll(".kebab-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.openMenuMac = state.openMenuMac === btn.dataset.mac ? null : btn.dataset.mac;
+        renderHostTable();
+      });
+    });
+    body.querySelectorAll('[data-action="copy"]').forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        navigator.clipboard?.writeText(btn.dataset.mac).catch(() => {});
+        state.openMenuMac = null;
+        renderHostTable();
+      });
+    });
+    body.querySelectorAll('[data-action="details"]').forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.expandedMac = state.expandedMac === btn.dataset.mac ? null : btn.dataset.mac;
+        state.openMenuMac = null;
+        renderHostTable();
+      });
+    });
+    body.querySelectorAll('[data-action="trust"]').forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setDeviceLabel(btn.dataset.mac, { trusted: !getDeviceLabel(btn.dataset.mac).trusted });
+        state.openMenuMac = null;
+        renderHostTable();
+      });
+    });
+    body.querySelectorAll("[data-mac-link]").forEach((btn) => {
+      btn.addEventListener("click", (e) => { e.stopPropagation(); goToDevice(btn.dataset.macLink); });
+    });
+  }
+
+  function renderHostBulkBar() {
+    const bar = document.getElementById("host-bulk-bar");
+    const n = state.hostSelectedMacs.size;
+    if (!n) { bar.innerHTML = ""; return; }
+    bar.innerHTML = `<div class="host-bulk-bar">
+      <span><strong>${n}</strong> selected</span>
+      <button type="button" class="btn btn-primary" id="host-bulk-trust">${ICON("shield")}Mark trusted</button>
+      <button type="button" class="btn" id="host-bulk-untrust">Remove trust</button>
+      <button type="button" class="btn" id="host-bulk-export">${ICON("download")}Export CSV</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-icon" id="host-bulk-clear" title="Clear selection">${ICON("x")}</button>
+    </div>`;
+    document.getElementById("host-bulk-trust").addEventListener("click", () => {
+      for (const mac of state.hostSelectedMacs) setDeviceLabel(mac, { trusted: true });
+      renderHostTable();
+    });
+    document.getElementById("host-bulk-untrust").addEventListener("click", () => {
+      for (const mac of state.hostSelectedMacs) setDeviceLabel(mac, { trusted: false });
+      renderHostTable();
+    });
+    document.getElementById("host-bulk-export").addEventListener("click", () => {
+      const rows = latestLanByMac(state.lanRows).filter((d) => state.hostSelectedMacs.has(d.mac)).map(stripInternal);
+      downloadBlob(toCsvBlob(rows), "hosts_selection.csv");
+    });
+    document.getElementById("host-bulk-clear").addEventListener("click", () => {
+      state.hostSelectedMacs.clear();
+      renderHostTable();
+    });
+  }
 }
 
-function renderHostTableBody() {
-  const searchEl = document.getElementById("host-search");
-  const body = document.getElementById("host-table-body");
-  if (!searchEl || !body) return; // section not mounted on the current page
-
-  const search = searchEl.value.trim().toLowerCase();
-  const statusFilter = document.getElementById("host-status-filter").value;
-  const lanCurrent = latestLanByMac(state.lanRows);
-
-  let rows = lanCurrent.filter((d) => {
-    if (statusFilter !== "all" && d.status !== statusFilter) return false;
-    if (!search) return true;
-    return `${d.ip} ${d.mac} ${d.hostname} ${d.vendor} ${getDeviceLabel(d.mac).name}`.toLowerCase().includes(search);
-  });
-  rows = sortRows(rows, state.lanSort.key, state.lanSort.dir);
-  const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
-  const alertsByMac = groupAlertsByMac(computeAlerts());
-
-  const info = paginate(rows, "host");
-  body.innerHTML = info.pageRows.map((d) => hostRowHtml(d, fingerprintByMac.get(d.mac), alertsByMac.get(d.mac))).join("");
-  document.getElementById("host-empty").classList.toggle("hidden", rows.length > 0);
-  document.getElementById("host-pagination").innerHTML = rows.length ? paginationHtml("host", info) : "";
-  wirePagination(document.getElementById("host-pagination"), "host", renderHostTableBody);
-
-  body.querySelectorAll(".kebab-btn").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      state.openMenuMac = state.openMenuMac === btn.dataset.mac ? null : btn.dataset.mac;
-      renderHostTableBody();
-    });
-  });
-  body.querySelectorAll('[data-action="copy"]').forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      navigator.clipboard?.writeText(btn.dataset.mac).catch(() => {});
-      state.openMenuMac = null;
-      renderHostTableBody();
-    });
-  });
-  body.querySelectorAll('[data-action="details"]').forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      state.expandedMac = state.expandedMac === btn.dataset.mac ? null : btn.dataset.mac;
-      state.openMenuMac = null;
-      renderHostTableBody();
-    });
-  });
-  body.querySelectorAll('[data-action="trust"]').forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      setDeviceLabel(btn.dataset.mac, { trusted: !getDeviceLabel(btn.dataset.mac).trusted });
-      state.openMenuMac = null;
-      renderHostTableBody();
-    });
-  });
-  body.querySelectorAll("[data-mac-link]").forEach((btn) => {
-    btn.addEventListener("click", (e) => { e.stopPropagation(); goToDevice(btn.dataset.macLink); });
-  });
-}
-
-function hostRowHtml(d, fingerprint, alerts) {
+function hostRowHtml(d, ctx) {
+  const { fingerprint, alerts, fingerprintByMac, alertsByMac, osFingerprint, dhcpLease, trafficBytes, maxTraffic, visibleColumns, colCount, selected } = ctx;
   const menuOpen = state.openMenuMac === d.mac;
   const expanded = state.expandedMac === d.mac;
   const deviceType = fingerprint?.device_type || "";
-  const risk = computeRiskScore(d, fingerprint, alerts);
+  const risk = rowRiskScore(d, fingerprintByMac, alertsByMac);
   const trusted = getDeviceLabel(d.mac).trusted;
   const name = displayName(d.mac, d.hostname || d.mac);
-  let html = `<tr>
-    <td>${statusBadge(d.status)}</td>
+  const linkedCount = (d._members || [d]).length - 1;
+  const stale = isHostStale(d);
+
+  let html = `<tr class="${stale ? "host-row-stale" : ""}">
+    <td><input type="checkbox" data-row-select="${escapeHtml(d.mac)}" ${selected ? "checked" : ""}></td>
+    <td>${statusBadge(d.status)}${stale ? `<span class="badge risk-badge tone-muted" title="Offline for more than ${STALE_OFFLINE_DAYS} days — may no longer be present on this network">Stale</span>` : ""}</td>
     <td class="mono">${escapeHtml(d.ip)}</td>
     <td>
       <button class="link-cell" data-mac-link="${escapeHtml(d.mac)}" title="Open device profile">${escapeHtml(name)}</button>
       ${trustBadgeHtml(d.mac)}
     </td>
-    <td class="mono">${escapeHtml(d.mac)}</td>
+    <td class="mono">${escapeHtml(d.mac)}${linkedCount > 0 ? `<span class="host-group-chip" title="${linkedCount} other MAC linked as the same physical device">+${linkedCount}</span>` : ""}</td>
     <td>${escapeHtml(d.vendor) || '<span class="muted">—</span>'}</td>
     <td>${escapeHtml(deviceType) || '<span class="muted">—</span>'}</td>
     <td>${riskBadgeHtml(risk)}</td>
     <td>${formatPorts(d.open_ports) || '<span class="muted">—</span>'}</td>
+    ${visibleColumns.has("osGuess") ? `<td>${escapeHtml(osFingerprint?.os_guess) || '<span class="muted">—</span>'}</td>` : ""}
+    ${visibleColumns.has("mdns") ? `<td>${escapeHtml(fingerprint?.mdns_name) || '<span class="muted">—</span>'}</td>` : ""}
+    ${visibleColumns.has("arp") ? `<td>${!dhcpLease ? '<span class="muted">—</span>' : !dhcpLease.arp_confirmed ? `<span class="badge risk-badge tone-warning" title="Seen in the router's DHCP lease table but silent on the last ARP scan — may just be asleep or firewalled">Silent on ARP</span>` : '<span class="badge risk-badge tone-good">Confirmed</span>'}</td>` : ""}
+    ${visibleColumns.has("uptime") ? (() => { const u = computeUptimeSummary(d.mac); return `<td>${u ? `${u.pct}%` : '<span class="muted">—</span>'}</td>`; })() : ""}
+    ${visibleColumns.has("traffic") ? `<td>${trafficBytes ? `<span class="host-traffic-cell"><span class="host-traffic-bar" style="width:${Math.max((trafficBytes / maxTraffic) * 100, 4)}%"></span>${formatBytes(trafficBytes)}</span>` : '<span class="muted">—</span>'}</td>` : ""}
     <td>${formatTs(d.timestamp)}</td>
     <td>
       <div class="row-menu">
@@ -1572,7 +1797,7 @@ function hostRowHtml(d, fingerprint, alerts) {
 
   if (expanded) {
     const history = sightingsForMac(d.mac).slice(-15).reverse();
-    html += `<tr class="detail-row"><td colspan="10">
+    html += `<tr class="detail-row"><td colspan="${colCount}">
       <div class="detail-grid">
         <div><span>Hostname</span>${escapeHtml(d.hostname) || "—"}</div>
         <div><span>Vendor</span>${escapeHtml(d.vendor) || "—"}</div>
@@ -1580,6 +1805,7 @@ function hostRowHtml(d, fingerprint, alerts) {
         <div><span>Risk score</span>${riskBadgeHtml(risk)}</div>
         <div><span>Open ports</span>${formatPorts(d.open_ports) || "—"}</div>
         <div><span>First seen</span>${formatTs(firstSeenTs(d.mac))}</div>
+        ${linkedCount > 0 ? `<div><span>Linked MACs</span>${(d._members || []).map((m) => escapeHtml(m.mac)).join(", ")}</div>` : ""}
       </div>
       <div class="detail-history">
         ${history.map((h) => `<div class="detail-history-row"><span class="mono">${formatTs(h.timestamp)}</span>${statusBadge(h.status)}<span>${escapeHtml(h.ip)}</span></div>`).join("") || '<p class="muted">No history available.</p>'}
@@ -2379,9 +2605,135 @@ function topKpiRowHtml() {
   `;
 }
 
+/* ---------------------------------------------------------------------- *
+ * Host page: helpers per le migliorie (KPI, filtri, colonne opzionali,
+ * raggruppamento per identità, host "stale", traffico WiFi, preset e
+ * azioni bulk).
+ * ---------------------------------------------------------------------- */
+
+const HOST_OPTIONAL_COLUMNS = [
+  { key: "osGuess", label: "OS guess" },
+  { key: "mdns", label: "mDNS name" },
+  { key: "arp", label: "ARP status" },
+  { key: "uptime", label: "Uptime %" },
+  { key: "traffic", label: "WiFi traffic (24h)" },
+];
+const HOST_COLUMNS_KEY = "hs.host.visibleColumns";
+
+function getHostVisibleColumns() {
+  try { return new Set(JSON.parse(localStorage.getItem(HOST_COLUMNS_KEY) || "[]")); } catch { return new Set(); }
+}
+function saveHostVisibleColumns(set) { localStorage.setItem(HOST_COLUMNS_KEY, JSON.stringify([...set])); }
+
+const HOST_PRESETS_KEY = "hs.host.presets";
+function getHostPresets() {
+  try { return JSON.parse(localStorage.getItem(HOST_PRESETS_KEY) || "[]"); } catch { return []; }
+}
+function saveHostPresets(list) { localStorage.setItem(HOST_PRESETS_KEY, JSON.stringify(list)); }
+
+/** Un host offline da più di questa soglia è considerato "stale": probabilmente non più presente in rete. */
+const STALE_OFFLINE_DAYS = 30;
+function isHostStale(d) {
+  if (d.status !== "offline") return false;
+  const ts = parseTs(d.timestamp);
+  return ts !== null && (Date.now() - ts) > STALE_OFFLINE_DAYS * 24 * 3600 * 1000;
+}
+
+/** Punteggio di rischio di una riga, che sia un device singolo o un gruppo di identità
+ * (in quel caso il peggiore tra i MAC collegati, così un rischio non sparisce raggruppando). */
+function rowRiskScore(d, fingerprintByMac, alertsByMac) {
+  const members = d._members || [d];
+  let max = 0;
+  for (const m of members) {
+    const score = computeRiskScore(m, fingerprintByMac.get(m.mac), alertsByMac.get(m.mac));
+    if (score > max) max = score;
+  }
+  return max;
+}
+
+/** Testo ricercabile di una riga: per un gruppo, l'unione di IP/MAC/hostname/vendor/nome di tutti i MAC collegati. */
+function hostSearchText(d) {
+  const members = d._members || [d];
+  return members.map((m) => `${m.ip} ${m.mac} ${m.hostname} ${m.vendor} ${getDeviceLabel(m.mac).name}`).join(" ").toLowerCase();
+}
+
+/** Raggruppa i device correnti per identità (macsInIdentity/canonicalMac): i MAC collegati come
+ * "stesso device fisico" diventano una sola riga. Stato = il migliore tra i membri (new > online >
+ * offline, per non nascondere che almeno un'interfaccia è attiva), porte = unione, `_members` porta
+ * con sé i device originali per rischio/ricerca/dettaglio. Un device non collegato a nessun altro
+ * forma semplicemente un gruppo da solo, stesso risultato di prima. */
+function groupHostsByIdentity(lanCurrent) {
+  const groups = new Map();
+  for (const d of lanCurrent) {
+    const canonical = canonicalMac(d.mac);
+    if (!groups.has(canonical)) groups.set(canonical, []);
+    groups.get(canonical).push(d);
+  }
+  const statusRank = { new: 3, online: 2, offline: 0 };
+  return [...groups.values()].map((members) => {
+    if (members.length === 1) return { ...members[0], _members: members };
+    const sorted = [...members].sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
+    const primary = sorted[0];
+    const bestStatus = members.reduce((best, d) => (statusRank[d.status] > statusRank[best] ? d.status : best), members[0].status);
+    const allPorts = [...new Set(members.flatMap((d) => (Array.isArray(d.open_ports) ? d.open_ports : [])))].sort((a, b) => a - b);
+    return { ...primary, status: bestStatus, open_ports: allPorts, _members: members };
+  });
+}
+
+/** Somma byte catturati per MAC nelle ultime 24h (wifi_traffic.jsonl) — indicatore relativo di
+ * "chi genera più traffico", non una banda esatta (vedi nota nel daemon). */
+function trafficBytesByMac(rows) {
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  const map = new Map();
+  for (const r of rows) {
+    const ts = parseTs(r.timestamp);
+    if (ts === null || ts < cutoff) continue;
+    map.set(r.mac, (map.get(r.mac) || 0) + (Number(r.bytes) || 0));
+  }
+  return map;
+}
+
 function renderHost(container) {
-  container.innerHTML = `<div class="card" id="host-section-mount"></div>`;
+  container.innerHTML = `
+    <div class="page-section kpi-row" id="host-kpi-row"></div>
+    <div class="page-section card" id="host-section-mount"></div>
+  `;
+  renderHostKpiRow(document.getElementById("host-kpi-row"));
   renderHostSection(document.getElementById("host-section-mount"));
+}
+
+function renderHostKpiRow(container) {
+  const lanCurrent = latestLanByMac(state.lanRows);
+  const total = lanCurrent.length;
+  const online = lanCurrent.filter((d) => d.status === "online").length;
+  const offline = lanCurrent.filter((d) => d.status === "offline").length;
+  const newCount = lanCurrent.filter((d) => d.status === "new").length;
+  const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id));
+  const segments = riskSegments(lanCurrent);
+  const critical = segments.find((s) => s.label === "Critical")?.value || 0;
+  const high = segments.find((s) => s.label === "High")?.value || 0;
+  const atRisk = critical + high;
+
+  container.innerHTML = `
+    ${kpiTile({
+      label: "Total hosts", icon: "monitor", tone: "blue",
+      value: total, sub: `${online} online · ${offline} offline`,
+    })}
+    ${kpiTile({
+      label: "New devices", icon: "users", tone: "blue",
+      value: newCount, sub: newCount ? "Seen for the first time in this scan" : "None in this scan",
+    })}
+    ${kpiTile({
+      label: "Active alerts", icon: "bell", tone: "critical",
+      value: activeAlerts.length, sub: activeAlerts.length ? "Need attention" : "No active alerts",
+      subTone: activeAlerts.length ? "critical" : "good",
+    })}
+    ${kpiTile({
+      label: "At risk (High/Critical)", icon: "shield", tone: atRisk ? "critical" : "good",
+      value: atRisk, sub: `${critical} critical · ${high} high`,
+      subTone: atRisk ? "critical" : "good",
+    })}
+  `;
 }
 
 function renderMappa(container) {
@@ -2946,7 +3298,7 @@ function renderAiuto(container) {
       <h3>Pages</h3>
       <ul>
         <li><strong>Dashboard</strong> (home) — active hosts and active alerts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with the full list for each category — each capped at a handful of rows with a "View all" button to expand it. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
-        <li><strong>Host</strong> — full list of known LAN devices, with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. From there, or from a row's action menu, you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
+        <li><strong>Host</strong> — KPI row (total hosts, new devices, active alerts, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>WiFi</strong> — 802.11 probe requests nearby: KPIs and channel distribution at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks — and at the bottom the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is no longer shown here: it remains in the CSV export and the periodic email report.</li>
@@ -3264,7 +3616,8 @@ function init() {
   updateStatusPill();
 
   document.addEventListener("click", (e) => {
-    if (state.openMenuMac && !e.target.closest(".row-menu")) { state.openMenuMac = null; renderHostTableBody(); }
+    if (state.openMenuMac && !e.target.closest(".row-menu")) { state.openMenuMac = null; renderCurrentRoute(); }
+    if (!e.target.closest(".host-columns-wrap")) document.getElementById("host-columns-menu")?.classList.add("hidden");
   });
   window.addEventListener("hashchange", onRouteChange);
 

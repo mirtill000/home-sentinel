@@ -509,6 +509,35 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .risk-badge.tone-warning { background: var(--status-warning-wash); color: var(--status-warning); }
 .risk-badge.tone-serious { background: var(--status-serious-wash); color: var(--status-serious); }
 .risk-badge.tone-critical { background: var(--status-critical-wash); color: var(--status-critical); }
+.risk-badge.tone-muted { background: var(--status-muted-wash); color: var(--text-muted); }
+
+/* Host page: colonne opzionali, raggruppamento identità, host stale, traffico, azioni bulk */
+.dropdown-wrap, .host-columns-wrap { position: relative; }
+.host-columns-menu {
+  position: absolute; right: 0; top: calc(100% + 6px);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow); padding: 10px 12px; min-width: 180px; z-index: 40;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.host-columns-menu label { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; }
+.host-columns-menu input[type="checkbox"] { accent-color: var(--brand); width: 14px; height: 14px; }
+#host-table thead th:first-child, #host-table tbody td:first-child { padding-right: 4px; }
+.data-table input[type="checkbox"] { accent-color: var(--brand); width: 14px; height: 14px; cursor: pointer; }
+.host-row-stale td { opacity: 0.6; }
+.host-group-chip {
+  font-size: 0.66rem; color: var(--text-muted); margin-left: 5px; padding: 1px 5px;
+  border: 1px solid var(--border); border-radius: 999px; cursor: help;
+}
+.host-traffic-cell { position: relative; display: inline-flex; align-items: center; }
+.host-traffic-bar {
+  position: absolute; left: 0; bottom: -3px; height: 2px; background: var(--brand); border-radius: 2px; max-width: 100%;
+}
+.host-bulk-bar {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px; margin-bottom: 12px;
+  background: var(--brand-wash); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 0.82rem; color: var(--text-primary); flex-wrap: wrap;
+}
+.host-bulk-bar .spacer { flex: 1; }
 
 .link-cell {
   background: none; border: none; padding: 0; margin: 0;
