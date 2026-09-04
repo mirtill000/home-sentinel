@@ -123,12 +123,12 @@ const state = {
   deviceProfileMac: null,
   timelineKindFilter: "all",
   radarFilters: { network: true, probe: true, ap: true, ble: true },
-  radarPanelsExpanded: {},
   hostFilters: { type: "all", vendor: "all", risk: "all", trust: "all", ports: "all" },
   hostStaleOnly: false,
   hostGroupByIdentity: false,
   hostSelectedMacs: new Set(),
   wifiSsidExpanded: null,
+  pageScrollTarget: null,
   pagination: {},
 };
 
@@ -1177,6 +1177,43 @@ function computeWifiSsidOverview(probeRows) {
   return [...byKey.values()].map((e) => ({ ...e, avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null }));
 }
 
+/** Elenco completo (tutta la cronologia caricata, non solo le ultime 24h come nel radar della
+ * Dashboard) dei device WiFi esterni rilevati via probe request — esclude i MAC già noti sulla
+ * LAN, così come il pannello "WiFi devices" del radar, ma senza il tetto di 30 elementi: è la
+ * vista di dettaglio completa a cui rimanda quel pannello. */
+function computeWifiDeviceOverview() {
+  const knownLanMacs = new Set(latestLanByMac(state.lanRows).map((d) => d.mac));
+  const byMac = new Map();
+  for (const r of state.wifiRows) {
+    if (!r.mac || knownLanMacs.has(r.mac)) continue;
+    if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, vendor: r.vendor || "", sightings: 0, rssiSum: 0, rssiCount: 0, lastTs: 0 });
+    const e = byMac.get(r.mac);
+    e.sightings += 1;
+    if (typeof r.rssi === "number") { e.rssiSum += r.rssi; e.rssiCount += 1; }
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts > e.lastTs) e.lastTs = ts;
+  }
+  return [...byMac.values()].map((e) => ({ ...e, avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null }));
+}
+
+/** Come sopra ma per le reti WiFi adiacenti (wifi_networks.jsonl), raggruppate per BSSID: la
+ * vista di dettaglio completa a cui rimanda il pannello "Adjacent networks" del radar. */
+function computeWifiApOverview() {
+  const byBssid = new Map();
+  for (const r of state.wifiNetworksRows || []) {
+    if (!r.bssid) continue;
+    if (!byBssid.has(r.bssid)) byBssid.set(r.bssid, { bssid: r.bssid, label: "(hidden network)", vendor: r.vendor || "", channel: null, sightings: 0, rssiSum: 0, rssiCount: 0, lastTs: 0 });
+    const e = byBssid.get(r.bssid);
+    e.sightings += 1;
+    if (r.ssid && r.ssid.trim()) e.label = r.ssid.trim();
+    if (typeof r.channel === "number") e.channel = r.channel;
+    if (typeof r.rssi === "number") { e.rssiSum += r.rssi; e.rssiCount += 1; }
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts > e.lastTs) e.lastTs = ts;
+  }
+  return [...byBssid.values()].map((e) => ({ ...e, avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null }));
+}
+
 /** Per un SSID richiesto, il dettaglio dei singoli device che l'hanno chiesto: MAC, vendor,
  * numero di probe, segnale medio e ultimo avvistamento (solo per quell'SSID, non l'intera cronologia del device). */
 function computeSsidDeviceDetail(ssid) {
@@ -1273,6 +1310,106 @@ function renderWifiSsidTableBody() {
   body.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); goToDevice(btn.dataset.macLink); });
   });
+}
+
+/** Tabella di dettaglio completa dei device WiFi esterni (non sulla LAN) rilevati via probe —
+ * a cui rimanda il pannello "WiFi devices" del radar nella Dashboard ("View all"). */
+function renderWifiDevicesTable(container) {
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Nearby WiFi devices</h2>
+      <span class="card-sub">devices detected via probe requests, not on this LAN, across all loaded history</span>
+      <div class="filter-row" style="margin:0;">
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-devices-search" placeholder="Search by MAC or vendor…"></div>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr><th>Device</th><th>Vendor</th><th>Probes</th><th>Average signal</th><th>Last seen</th></tr></thead>
+        <tbody id="wifi-devices-body"></tbody>
+      </table>
+      <p class="empty-state hidden" id="wifi-devices-empty">No external WiFi devices detected — check the data source in Settings.</p>
+      <div id="wifi-devices-pagination"></div>
+    </div>
+  `;
+  document.getElementById("wifi-devices-search").addEventListener("input", () => { getPagination("wifi-devices").page = 1; renderWifiDevicesTableBody(); });
+  renderWifiDevicesTableBody();
+}
+
+function renderWifiDevicesTableBody() {
+  const searchEl = document.getElementById("wifi-devices-search");
+  const body = document.getElementById("wifi-devices-body");
+  if (!searchEl || !body) return;
+
+  const search = searchEl.value.trim().toLowerCase();
+  const rows = computeWifiDeviceOverview()
+    .filter((e) => !search || `${e.mac} ${e.vendor}`.toLowerCase().includes(search))
+    .sort((a, b) => b.sightings - a.sightings);
+
+  const info = paginate(rows, "wifi-devices");
+  body.innerHTML = info.pageRows.map((e) => `<tr>
+    <td><button class="link-cell mono" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(displayName(e.mac, e.mac))}</button></td>
+    <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
+    <td>${e.sightings}</td>
+    <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
+    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+  </tr>`).join("");
+  document.getElementById("wifi-devices-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("wifi-devices-pagination").innerHTML = rows.length ? paginationHtml("wifi-devices", info) : "";
+  wirePagination(document.getElementById("wifi-devices-pagination"), "wifi-devices", renderWifiDevicesTableBody);
+
+  body.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
+}
+
+/** Tabella di dettaglio completa delle reti WiFi adiacenti (catturate dai loro stessi beacon,
+ * wifi_networks.jsonl) — a cui rimanda il pannello "Adjacent networks" del radar ("View all"). */
+function renderWifiApsTable(container) {
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Adjacent networks</h2>
+      <span class="card-sub">WiFi networks genuinely detected around you from their own beacon frames, across all loaded history</span>
+      <div class="filter-row" style="margin:0;">
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-aps-search" placeholder="Search by SSID, BSSID or vendor…"></div>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr><th>SSID</th><th>BSSID</th><th>Vendor</th><th>Channel</th><th>Sightings</th><th>Average signal</th><th>Last seen</th></tr></thead>
+        <tbody id="wifi-aps-body"></tbody>
+      </table>
+      <p class="empty-state hidden" id="wifi-aps-empty">No adjacent WiFi networks detected — check the data source in Settings.</p>
+      <div id="wifi-aps-pagination"></div>
+    </div>
+  `;
+  document.getElementById("wifi-aps-search").addEventListener("input", () => { getPagination("wifi-aps").page = 1; renderWifiApsTableBody(); });
+  renderWifiApsTableBody();
+}
+
+function renderWifiApsTableBody() {
+  const searchEl = document.getElementById("wifi-aps-search");
+  const body = document.getElementById("wifi-aps-body");
+  if (!searchEl || !body) return;
+
+  const search = searchEl.value.trim().toLowerCase();
+  const rows = computeWifiApOverview()
+    .filter((e) => !search || `${e.label} ${e.bssid} ${e.vendor}`.toLowerCase().includes(search))
+    .sort((a, b) => b.avgRssi - a.avgRssi);
+
+  const info = paginate(rows, "wifi-aps");
+  body.innerHTML = info.pageRows.map((e) => `<tr>
+    <td>${escapeHtml(e.label)}</td>
+    <td class="mono">${escapeHtml(e.bssid)}</td>
+    <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
+    <td>${e.channel ?? '<span class="muted">—</span>'}</td>
+    <td>${e.sightings}</td>
+    <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
+    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+  </tr>`).join("");
+  document.getElementById("wifi-aps-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("wifi-aps-pagination").innerHTML = rows.length ? paginationHtml("wifi-aps", info) : "";
+  wirePagination(document.getElementById("wifi-aps-pagination"), "wifi-aps", renderWifiApsTableBody);
 }
 
 /** Severity dei rilevatori server-side (low/medium/high) -> classi CSS esistenti (info/serious/critical). */
@@ -1957,12 +2094,18 @@ function renderWifiPage(container) {
 
     <div class="page-section card" id="wifi-ssid-mount"></div>
 
+    <div class="page-section card" id="wifi-devices-mount"></div>
+
+    <div class="page-section card" id="wifi-aps-mount"></div>
+
     <div class="page-section card" id="wifi-section-mount"></div>
   `;
 
   renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
   renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Channel ${ch}`, n]), "var(--cat-3)");
   renderWifiSsidTable(document.getElementById("wifi-ssid-mount"));
+  renderWifiDevicesTable(document.getElementById("wifi-devices-mount"));
+  renderWifiApsTable(document.getElementById("wifi-aps-mount"));
   renderWifiSection(document.getElementById("wifi-section-mount"));
 }
 
@@ -2405,18 +2548,17 @@ function renderHouseRadarLegend(container) {
   });
 }
 
-function dintorniPanelHtml({ key, title, icon, color, rows, totalCount, rowHtml, emptyText }) {
-  const expanded = !!state.radarPanelsExpanded[key];
-  const shown = expanded ? rows : rows.slice(0, DINTORNI_PANEL_ROWS);
-  const more = totalCount - shown.length;
+/** Pannello del radar con le prime righe più un pulsante "View all" che porta alla pagina con
+ * l'elenco completo e tutti i dettagli (WiFi/BLE), invece di espandersi sul posto. */
+function dintorniPanelHtml({ title, icon, color, rows, rowHtml, emptyText, viewAllHash, viewAllTarget }) {
+  const shown = rows.slice(0, DINTORNI_PANEL_ROWS);
+  const viewAllBtn = `<button type="button" class="dintorni-panel-more" data-radar-panel-viewall="${escapeHtml(viewAllHash)}" data-radar-panel-target="${escapeHtml(viewAllTarget)}">View all</button>`;
   return `
     <div class="dintorni-panel">
       <div class="dintorni-panel-head" style="color:${color}">${ICON(icon)}<span>${escapeHtml(title)}</span></div>
       ${shown.length
-        ? `<div class="dintorni-panel-rows">${shown.map(rowHtml).join("")}</div>${more > 0 || expanded
-            ? `<button type="button" class="dintorni-panel-more" data-radar-panel-toggle="${key}">${more > 0 ? "View all" : "Show less"}</button>`
-            : ""}`
-        : `<p class="dintorni-panel-empty">${escapeHtml(emptyText)}</p>`}
+        ? `<div class="dintorni-panel-rows">${shown.map(rowHtml).join("")}</div>${viewAllBtn}`
+        : `<p class="dintorni-panel-empty">${escapeHtml(emptyText)}</p>${viewAllBtn}`}
     </div>`;
 }
 
@@ -2454,9 +2596,10 @@ function renderDintorniPanels(data) {
       <button type="button" class="dintorni-panel-more" id="dintorni-host-view-all">View all hosts</button>
     </div>`,
     state.radarFilters.network ? dintorniPanelHtml({
-      key: "network", title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
-      rows: data.networks, totalCount: data.networks.length,
+      title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
+      rows: data.networks,
       emptyText: "No SSIDs requested in probes in the last 24h.",
+      viewAllHash: "#/wifi", viewAllTarget: "wifi-ssid-mount",
       rowHtml: (e) => `<div class="dintorni-row">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
@@ -2465,9 +2608,10 @@ function renderDintorniPanels(data) {
       </div>`,
     }) : "",
     state.radarFilters.probe ? dintorniPanelHtml({
-      key: "probe", title: "WiFi devices", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
-      rows: data.probes, totalCount: data.probes.length,
+      title: "WiFi devices", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
+      rows: data.probes,
       emptyText: "No probes detected in the last 24h.",
+      viewAllHash: "#/wifi", viewAllTarget: "wifi-devices-mount",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name mono" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
@@ -2475,9 +2619,10 @@ function renderDintorniPanels(data) {
       </button>`,
     }) : "",
     state.radarFilters.ap ? dintorniPanelHtml({
-      key: "ap", title: "Adjacent networks", icon: "wifi", color: RADAR_CATEGORY_META.ap.color,
-      rows: data.aps, totalCount: data.aps.length,
+      title: "Adjacent networks", icon: "wifi", color: RADAR_CATEGORY_META.ap.color,
+      rows: data.aps,
       emptyText: "No WiFi network beacons detected in the last 24h.",
+      viewAllHash: "#/wifi", viewAllTarget: "wifi-aps-mount",
       rowHtml: (e) => `<div class="dintorni-row">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name" title="${escapeHtml(e.label)} — BSSID ${escapeHtml(e.bssid)}">${escapeHtml(e.label)}</span>
@@ -2486,9 +2631,10 @@ function renderDintorniPanels(data) {
       </div>`,
     }) : "",
     state.radarFilters.ble ? dintorniPanelHtml({
-      key: "ble", title: "Bluetooth devices", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
-      rows: data.ble, totalCount: data.ble.length,
+      title: "Bluetooth devices", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
+      rows: data.ble,
       emptyText: "No Bluetooth devices detected in the last 24h.",
+      viewAllHash: "#/ble", viewAllTarget: "ble-devices-mount",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
@@ -2503,16 +2649,14 @@ function renderDintorniPanels(data) {
     document.getElementById("refresh-now")?.click();
   });
   document.getElementById("dintorni-host-view-all").addEventListener("click", () => {
-    window.location.hash = "#/host";
+    navigateWithScroll("#/host", null);
   });
   mount.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
   });
-  mount.querySelectorAll("[data-radar-panel-toggle]").forEach((btn) => {
+  mount.querySelectorAll("[data-radar-panel-viewall]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const key = btn.dataset.radarPanelToggle;
-      state.radarPanelsExpanded[key] = !state.radarPanelsExpanded[key];
-      renderDintorniPanels(data);
+      navigateWithScroll(btn.dataset.radarPanelViewall, btn.dataset.radarPanelTarget);
     });
   });
 }
@@ -3310,9 +3454,9 @@ function renderAiuto(container) {
     <div class="card help-section">
       <h3>Pages</h3>
       <ul>
-        <li><strong>Dashboard</strong> (home) — active hosts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with the full list for each category — each capped at a handful of rows with a "View all" button to expand it. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
+        <li><strong>Dashboard</strong> (home) — active hosts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with a quick preview for each category — a "View all" button on each jumps to the corresponding page (Host, WiFi or BLE) with the complete, searchable list and full details. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
         <li><strong>Host</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
-        <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks. Click a row to see which devices requested that SSID (MAC, vendor, probe count, average signal). At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
+        <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then three tables (each searchable and paginated, across all loaded history) — "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it), "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons — this is what the Dashboard's "View all" buttons for those two categories link to). At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
@@ -3443,6 +3587,22 @@ function renderCurrentRoute() {
     getRouteById(state.route).render(document.getElementById("view-root"));
   }
   updateNavBadge();
+
+  if (state.pageScrollTarget) {
+    const targetId = state.pageScrollTarget;
+    state.pageScrollTarget = null;
+    requestAnimationFrame(() => {
+      document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+}
+
+/** Naviga a un'altra pagina scorrendo automaticamente fino a una sezione specifica (es. dai
+ * pannelli della Dashboard alla tabella di dettaglio corrispondente sulla pagina WiFi/BLE). */
+function navigateWithScroll(hash, targetId) {
+  state.pageScrollTarget = targetId;
+  if (window.location.hash === hash) onRouteChange(); // stessa pagina: hashchange non scatterebbe da solo
+  else window.location.hash = hash;
 }
 
 /* ---------------------------------------------------------------------- *
