@@ -228,12 +228,14 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e
   avvistamenti, ricercabile e paginata — e in fondo il log advertisement
   grezzo.
-- **Dintorni** — vista radar isometrica: una casetta al centro circondata
-  da reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, su
-  anelli concentrici in base al segnale medio (RSSI) — non alla posizione
-  reale, vedi il disclaimer nella pagina stessa. Filtri per categoria in
-  alto, click su un pallino per aprire il profilo del device (dove
-  disponibile).
+- **Dintorni** — casetta isometrica al centro con riquadri collegati da
+  linee guida per reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle
+  ultime 24h (più vicini = segnale medio più forte — non la posizione
+  reale, vedi il disclaimer nella pagina stessa), affiancata da pannelli
+  con l'elenco completo per categoria, lo stato della scansione e la
+  legenda. Filtri per categoria in alto (nascondono la categoria ovunque
+  compaia), click su un riquadro o una riga per aprire il profilo del
+  device (dove disponibile).
 - **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
   RDP, SMB, VNC, FTP) aperte sui device correnti, calcolati dalla dashboard
   stessa; più gli alert generati dai moduli di detection del daemon
