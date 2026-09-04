@@ -222,7 +222,7 @@ l'hopping, non tutto il traffico del device. Utile per confrontare device tra
 loro (chi trasmette di più), non per misurare Mbps effettivi.
 
 **`wifi_networks.jsonl`** (con `--wifi-iface`, salvo `--no-wifi-networks`):
-`{timestamp, bssid, ssid, vendor, rssi, channel}`
+`{timestamp, bssid, ssid, vendor, rssi, channel, security}`
 Una riga per rete WiFi realmente rilevata, non più di una ogni
 `--wifi-networks-interval` secondi per BSSID (default 30s, per non
 saturare il log: un AP trasmette beacon più volte al secondo). A
@@ -232,7 +232,14 @@ Parameter Set) o, in sua assenza, quello su cui lo sniffer si trovava
 mentre lo riceveva — comunque affidabile, perché un beacon si riceve solo
 restando sintonizzati sul canale dell'AP che lo trasmette (a differenza
 di un probe request, che non contiene alcuna informazione sul canale
-della rete cercata).
+della rete cercata). `security` è la classificazione del tipo di
+sicurezza dal beacon stesso — `open` (bit Privacy della Capability Info a
+0, nessuna cifratura), `wep` (Privacy attivo ma nessun IE RSN/WPA —
+cifratura legacy), `wpa` (IE vendor-specific WPA1), `wpa2_wpa3` (IE RSN —
+WPA2 e WPA3 condividono lo stesso formato di IE, distinguerli richiederebbe
+analizzare le AKM suite, non fatto perché non necessario per il filtro
+Open/cifrata della dashboard) — usata dal filtro "Security" della tabella
+"Adjacent networks".
 
 ## Moduli di detection
 
@@ -387,9 +394,13 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   (MAC, vendor, numero di probe, segnale medio, ultimo avvistamento) —
   **"Nearby WiFi devices"** — un riepilogo per MAC dei device esterni
   rilevati via probe (non presenti sulla LAN) — e **"Adjacent networks"**
-  — le reti WiFi genuinamente rilevate dai loro beacon. Queste ultime due
-  sono la destinazione dei pulsanti "View all" delle corrispondenti
-  categorie nella Dashboard. In fondo, il log probe grezzo per l'analisi
+  — le reti WiFi genuinamente rilevate dai loro beacon, filtrabili per
+  **tipo di sicurezza** (Open/WEP/WPA/WPA2-WPA3, classificato dal daemon
+  dal beacon stesso — richiede `--wifi-iface`) e per **banda** (2.4 vs
+  5 GHz, dal canale). I pulsanti "View all" delle tre categorie
+  corrispondenti nella Dashboard rimandano qui mostrando **solo** quella
+  tabella (non l'intera pagina WiFi) — un banner in cima permette di
+  tornare alla vista completa. In fondo, il log probe grezzo per l'analisi
   riga per riga. Il traffico WiFi stimato per device (se
   `wifi_traffic.jsonl` è disponibile — indicatore relativo, non banda
   esatta) non è mostrato qui: è una colonna opzionale della pagina Host,
@@ -414,9 +425,10 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   del rischio) e pannelli con un'anteprima per categoria — ciascuno mostra
   le prime righe con un pulsante **"View all"** che porta alla pagina
   corrispondente (Host, WiFi o BLE) con l'elenco completo, ricercabile e
-  con tutti i dettagli, invece di espandersi sul posto. Filtri per
-  categoria in alto (nascondono la categoria ovunque compaia), click su
-  un riquadro o una
+  con tutti i dettagli, invece di espandersi sul posto — per le tre
+  categorie WiFi, la pagina mostra solo quella tabella (non l'intera
+  pagina WiFi). Filtri per categoria in alto (nascondono la categoria
+  ovunque compaia), click su un riquadro o una
   riga per aprire il profilo del device (dove disponibile). Importante: gli "SSID cercati" sono le reti *salvate* sui
   device nei dintorni (dal probe request), non le reti WiFi fisicamente
   presenti in zona — un telefono chiede di decine di reti note

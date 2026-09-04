@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS wifi_networks (
     ssid TEXT,
     vendor TEXT,
     rssi INTEGER,
-    channel INTEGER
+    channel INTEGER,
+    security TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wifinet_bssid ON wifi_networks(bssid);
 CREATE INDEX IF NOT EXISTS idx_wifinet_ts ON wifi_networks(timestamp);
@@ -164,6 +165,7 @@ class SqliteStore:
         self._conn.executescript(SCHEMA)
         self._migrate_drop_hour_histogram()
         self._migrate_add_fingerprint_mdns_name()
+        self._migrate_add_wifi_networks_security()
         self._conn.commit()
 
     def _migrate_drop_hour_histogram(self) -> None:
@@ -203,6 +205,14 @@ class SqliteStore:
         cols = [row[1] for row in self._conn.execute("PRAGMA table_info(fingerprints)").fetchall()]
         if "mdns_name" not in cols:
             self._conn.execute("ALTER TABLE fingerprints ADD COLUMN mdns_name TEXT")
+
+    def _migrate_add_wifi_networks_security(self) -> None:
+        """Aggiunge la colonna security a un database creato da una versione precedente
+        (classificazione Open/WEP/WPA/WPA2-3 dal beacon, per il filtro sulla dashboard).
+        ADD COLUMN nullable, stesso ragionamento di _migrate_add_fingerprint_mdns_name."""
+        cols = [row[1] for row in self._conn.execute("PRAGMA table_info(wifi_networks)").fetchall()]
+        if "security" not in cols:
+            self._conn.execute("ALTER TABLE wifi_networks ADD COLUMN security TEXT")
 
     def insert_lan_event(self, row: dict) -> None:
         with self._lock:
@@ -276,9 +286,9 @@ class SqliteStore:
     def insert_wifi_network(self, row: dict) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO wifi_networks (timestamp, bssid, ssid, vendor, rssi, channel) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO wifi_networks (timestamp, bssid, ssid, vendor, rssi, channel, security) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (row["timestamp"], row["bssid"], row.get("ssid", ""), row.get("vendor", ""),
-                 row.get("rssi"), row.get("channel")),
+                 row.get("rssi"), row.get("channel"), row.get("security")),
             )
             self._conn.commit()
 
