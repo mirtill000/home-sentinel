@@ -321,7 +321,7 @@ LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
 e alert di detection. **Dashboard è la home** (sottotitolo "Local network
 overview"): è la prima voce del menu laterale e la pagina che si apre di
 default (`dashboard/` senza `#/...` nell'URL). In cima, prima della
-casetta isometrica, due KPI essenziali (host attivi, alert attivi); più
+casetta isometrica, il KPI "host attivi"; più
 giù, tra i pannelli sotto la mappa, un riepilogo compatto della pagina
 Host (host totali/attivi/offline, distribuzione del rischio) con un
 pulsante per aprire l'elenco completo. In qualsiasi punto della dashboard, **Ctrl+K**
@@ -342,8 +342,8 @@ ripiega in automatico sul download completo, senza errori, solo senza il
 vantaggio di velocità). Quando succede, un avviso compare nella pagina
 interessata e nel pannello "Stato moduli" in Impostazioni.
 
-- **Host** — riga KPI (host totali, nuovi dispositivi, alert attivi, a
-  rischio alto/critico), poi l'elenco completo dei dispositivi LAN, con tipo
+- **Host** — riga KPI (host totali, nuovi dispositivi, a rischio
+  alto/critico), poi l'elenco completo dei dispositivi LAN, con tipo
   di device (se `--fingerprint` è attivo) e punteggio di rischio 0-100
   (euristica su porte esposte e alert collegati). Filtri per stato, tipo,
   vendor, livello di rischio, fidato/non fidato e presenza di porte aperte,

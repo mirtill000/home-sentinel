@@ -2608,12 +2608,11 @@ function renderHouseRadar(container, data) {
  * Pages
  * ---------------------------------------------------------------------- */
 
-/** Riga dei KPI principali in cima alla home (host attivi, alert attivi). */
+/** Riga dei KPI principali in cima alla home (host attivi). */
 function topKpiRowHtml() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
-  const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id));
 
   return `
     ${kpiTile({
@@ -2621,12 +2620,6 @@ function topKpiRowHtml() {
       value: online, valueSuffix: `/ ${total}`,
       sub: `${total ? Math.round((online / total) * 100) : 0}% active`,
       sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
-    })}
-    ${kpiTile({
-      label: "Active alerts", icon: "shield", tone: "critical",
-      value: activeAlerts.length,
-      sub: activeAlerts.length ? "Need attention" : "No active alerts",
-      subTone: activeAlerts.length ? "critical" : "good",
     })}
   `;
 }
@@ -2734,7 +2727,6 @@ function renderHostKpiRow(container) {
   const online = lanCurrent.filter((d) => d.status === "online").length;
   const offline = lanCurrent.filter((d) => d.status === "offline").length;
   const newCount = lanCurrent.filter((d) => d.status === "new").length;
-  const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id));
   const segments = riskSegments(lanCurrent);
   const critical = segments.find((s) => s.label === "Critical")?.value || 0;
   const high = segments.find((s) => s.label === "High")?.value || 0;
@@ -2748,11 +2740,6 @@ function renderHostKpiRow(container) {
     ${kpiTile({
       label: "New devices", icon: "users", tone: "blue",
       value: newCount, sub: newCount ? "Seen for the first time in this scan" : "None in this scan",
-    })}
-    ${kpiTile({
-      label: "Active alerts", icon: "bell", tone: "critical",
-      value: activeAlerts.length, sub: activeAlerts.length ? "Need attention" : "No active alerts",
-      subTone: activeAlerts.length ? "critical" : "good",
     })}
     ${kpiTile({
       label: "At risk (High/Critical)", icon: "shield", tone: atRisk ? "critical" : "good",
@@ -3323,8 +3310,8 @@ function renderAiuto(container) {
     <div class="card help-section">
       <h3>Pages</h3>
       <ul>
-        <li><strong>Dashboard</strong> (home) — active hosts and active alerts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with the full list for each category — each capped at a handful of rows with a "View all" button to expand it. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
-        <li><strong>Host</strong> — KPI row (total hosts, new devices, active alerts, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
+        <li><strong>Dashboard</strong> (home) — active hosts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with the full list for each category — each capped at a handful of rows with a "View all" button to expand it. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
+        <li><strong>Host</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
         <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks. Click a row to see which devices requested that SSID (MAC, vendor, probe count, average signal). At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
