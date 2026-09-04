@@ -120,8 +120,9 @@ Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
 Una riga per ogni fingerprint eseguito su un device LAN (alla prima
 rilevazione e ad ogni port scan periodico). `device_type` è una
-classificazione euristica (es. "Stampante", "Google Cast / Chromecast",
-"PC/Server Windows (SMB)"); `services` i tipi di servizio mDNS trovati,
+classificazione euristica in inglese, per coerenza con la dashboard che la
+mostra così com'è (es. "Printer", "Google Cast / Chromecast",
+"Windows PC/server (SMB)"); `services` i tipi di servizio mDNS trovati,
 `ssdp` gli header SSDP/UPnP di risposta, `mdns_name` il nome "amichevole"
 del device se trovato via mDNS (es. "Cucina Alexa" — richiede fino a due
 query mDNS, vedi `sentinel_fingerprint.py`), `banners` i banner raccolti

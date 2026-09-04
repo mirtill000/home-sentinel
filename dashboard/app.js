@@ -748,7 +748,7 @@ function computeRiskScore(device, fingerprint, deviceAlerts) {
     else if (a.severity === "serious") score += 10;
     else score += 4;
   }
-  if (!fingerprint || !fingerprint.device_type || fingerprint.device_type === "Sconosciuto") score += 5;
+  if (!fingerprint || !fingerprint.device_type || fingerprint.device_type === "Unknown") score += 5;
   if (device?.mac && getDeviceLabel(device.mac).trusted) score *= 0.4;
   return Math.max(0, Math.min(100, Math.round(score)));
 }
