@@ -2199,7 +2199,7 @@ function renderDintorniPanels(data) {
         <span class="badge risk-badge tone-warning">${hostSummary.risk.Medium || 0} Medium</span>
         <span class="badge risk-badge tone-good">${hostSummary.risk.Low || 0} Low</span>
       </div>
-      <button type="button" class="btn btn-primary" id="dintorni-host-view-all" style="width:100%;justify-content:center;">${ICON("monitor")}View all hosts</button>
+      <button type="button" class="dintorni-panel-more" id="dintorni-host-view-all">View all hosts</button>
     </div>`,
     state.radarFilters.network ? dintorniPanelHtml({
       key: "network", title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
