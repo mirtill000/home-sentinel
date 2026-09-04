@@ -80,8 +80,15 @@ una rete affollata: la rotazione evita che cresca senza limite.
 **`lan_discovery.jsonl`**: `{timestamp, status, ip, mac, hostname, vendor, open_ports}`
 Una riga per ogni device visto ad ogni ciclo di scan (`status=new|online`),
 più una riga `status=offline` la prima volta che un device smette di
-rispondere. `open_ports` è un array di interi (es. `[22, 80]`), non una
-stringa. `hostname` viene risolto in ordine di priorità da: (1) l'hostname
+rispondere (qui `open_ports` è sempre `[]`: un device che non risponde non
+ha una porta "attualmente aperta" da riportare). `open_ports` è un array
+di interi (es. `[22, 80]`), non una stringa: riporta l'esito dell'ultimo
+port scan effettivamente eseguito per quel device, non necessariamente di
+*questo* ciclo — il port scan gira una volta ogni `--port-scan-interval`
+(default 3600s), molto meno spesso del ciclo di scan LAN (`--interval`,
+default 60s), quindi ogni riga `new`/`online` riporta l'ultimo elenco noto
+finché non ne arriva uno più recente, esattamente come già fa per
+`hostname`/`vendor`. `hostname` viene risolto in ordine di priorità da: (1) l'hostname
 dichiarato via DHCP se osservato passivamente (`--dhcp-discovery`, vedi
 sotto — spesso il più affidabile, dichiarato dal client stesso); (2) reverse
 DNS; (3) query NetBIOS diretta al device; (4) il nome mDNS del device se

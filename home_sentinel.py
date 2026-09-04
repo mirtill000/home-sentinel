@@ -38,7 +38,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -199,6 +199,7 @@ class DeviceState:
     vendor: str
     last_seen: float
     online: bool = True
+    open_ports: list[int] = field(default_factory=list)
 
 
 class LanDiscoveryService:
@@ -323,7 +324,13 @@ class LanDiscoveryService:
                 vendor = get_vendor(mac)
 
             do_port_scan = is_new or (now - self._last_port_scan.get(mac, 0.0) >= self.port_scan_interval)
-            open_ports: list[int] = []
+            # Fuori dai cicli di port scan (una volta ogni --port-scan-interval, non ogni ciclo ARP)
+            # si riporta l'ultimo elenco noto invece di scrivere [] — altrimenti ogni riga "online" tra
+            # una scansione e la successiva sovrascriverebbe silenziosamente il dato reale con uno vuoto,
+            # e "l'ultima riga per MAC" (come la calcola la dashboard) mostrerebbe quasi sempre nessuna
+            # porta anche su un device con porte aperte scansionate un attimo prima. Stessa logica già
+            # usata sopra per hostname/vendor: si riporta il valore noto finché non se ne trova uno nuovo.
+            open_ports: list[int] = state.open_ports if state else []
             if do_port_scan:
                 open_ports = scan_ports(ip, self.ports)
                 self._last_port_scan[mac] = now
@@ -332,7 +339,9 @@ class LanDiscoveryService:
                     if mdns_name and not hostname:
                         hostname = mdns_name
 
-            self.devices[mac] = DeviceState(ip=ip, hostname=hostname, vendor=vendor, last_seen=now, online=True)
+            self.devices[mac] = DeviceState(
+                ip=ip, hostname=hostname, vendor=vendor, last_seen=now, online=True, open_ports=open_ports,
+            )
             self._write("new" if is_new else "online", ip, mac, hostname, vendor, open_ports)
 
             if self.anomaly_detector is not None:
