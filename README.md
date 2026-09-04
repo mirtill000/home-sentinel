@@ -379,13 +379,18 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
 - **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
   device, offline, alert, fingerprint), filtrabile per categoria.
-- **WiFi** — attività oraria e distribuzione per canale in cima, poi
-  un'unica tabella **"SSID cercati"** — un riepilogo per nome di rete
-  richiesto nei probe (non un elenco di reti fisicamente presenti, vedi
-  sotto), ricercabile e paginata: click su una riga per vedere il dettaglio
-  dei device che hanno richiesto quell'SSID (MAC, vendor, numero di probe,
-  segnale medio, ultimo avvistamento) — e in fondo il log probe grezzo per
-  l'analisi riga per riga. Il traffico WiFi stimato per device (se
+- **WiFi** — attività oraria e distribuzione per canale in cima, poi tre
+  tabelle (tutte ricercabili e paginate, su tutta la cronologia caricata):
+  **"SSID cercati"** — un riepilogo per nome di rete richiesto nei probe
+  (non un elenco di reti fisicamente presenti, vedi sotto); click su una
+  riga per vedere il dettaglio dei device che hanno richiesto quell'SSID
+  (MAC, vendor, numero di probe, segnale medio, ultimo avvistamento) —
+  **"Nearby WiFi devices"** — un riepilogo per MAC dei device esterni
+  rilevati via probe (non presenti sulla LAN) — e **"Adjacent networks"**
+  — le reti WiFi genuinamente rilevate dai loro beacon. Queste ultime due
+  sono la destinazione dei pulsanti "View all" delle corrispondenti
+  categorie nella Dashboard. In fondo, il log probe grezzo per l'analisi
+  riga per riga. Il traffico WiFi stimato per device (se
   `wifi_traffic.jsonl` è disponibile — indicatore relativo, non banda
   esatta) non è mostrato qui: è una colonna opzionale della pagina Host,
   e resta comunque nell'export CSV e nel report email periodico.
@@ -394,10 +399,10 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e
   avvistamenti, ricercabile e paginata — e in fondo il log advertisement
   grezzo.
-- **Dashboard** (ex "Nearby"/"Dintorni", è la home) — in cima i 2 KPI
-  essenziali (vedi sopra), poi la casetta isometrica grande (si adatta alla
-  larghezza della card) e centrata, con riquadri collegati da linee guida
-  per SSID cercati nei probe, reti WiFi adiacenti realmente rilevate,
+- **Dashboard** (ex "Nearby"/"Dintorni", è la home) — in cima il KPI
+  "host attivi" (vedi sopra), poi la casetta isometrica grande (si adatta
+  alla larghezza della card) e centrata, con riquadri collegati da linee
+  guida per SSID cercati nei probe, reti WiFi adiacenti realmente rilevate,
   dispositivi WiFi e Bluetooth visti nelle ultime 24h (più vicini = segnale
   medio più forte — vista puramente illustrativa, non una mappa reale né
   una distanza fisica). La casetta mostra sempre fino a 10 riquadri in
@@ -406,10 +411,12 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   di un numero fisso per categoria). Sotto la casetta, in una griglia (non
   più ai lati, per non rimpicciolire la mappa): stato della scansione, un
   riepilogo della pagina Host (host totali/attivi/offline, distribuzione
-  del rischio, pulsante per l'elenco completo) e pannelli con l'elenco
-  completo per categoria — ciascuno mostra le prime righe con un pulsante
-  "View all" per espanderlo a tutte. Filtri per categoria in alto
-  (nascondono la categoria ovunque compaia), click su un riquadro o una
+  del rischio) e pannelli con un'anteprima per categoria — ciascuno mostra
+  le prime righe con un pulsante **"View all"** che porta alla pagina
+  corrispondente (Host, WiFi o BLE) con l'elenco completo, ricercabile e
+  con tutti i dettagli, invece di espandersi sul posto. Filtri per
+  categoria in alto (nascondono la categoria ovunque compaia), click su
+  un riquadro o una
   riga per aprire il profilo del device (dove disponibile). Importante: gli "SSID cercati" sono le reti *salvate* sui
   device nei dintorni (dal probe request), non le reti WiFi fisicamente
   presenti in zona — un telefono chiede di decine di reti note
