@@ -8,7 +8,9 @@ Tre moduli indipendenti, ciascuno in un proprio thread:
   - WifiProbeMonitor (opzionale): sniffing passivo dei probe request 802.11
     su un'interfaccia in monitor mode, con channel hopping; scrive ogni
     probe catturato su un secondo file JSON Lines. Osserva anche i beacon
-    (evil twin), i frame deauth/disassoc (possibile attacco flood) e stima
+    — loggati su un quarto file JSON Lines come reti WiFi realmente
+    presenti (BSSID/SSID/canale/RSSI), oltre che usati per il rilevamento
+    evil twin — i frame deauth/disassoc (possibile attacco flood) e stima
     il traffico per device dai frame dati catturati, tutto sullo stesso
     adattatore in monitor mode, senza sonde aggiuntive.
   - BleScanMonitor (opzionale): scan passivo degli advertisement BLE nei
@@ -356,6 +358,8 @@ class WifiProbeMonitor:
         deauth_detector: DeauthFloodDetector | None = None,
         traffic_log: JsonlLogger | None = None,
         traffic_flush_interval: float = 60.0,
+        networks_log: JsonlLogger | None = None,
+        networks_log_interval: float = 30.0,
     ):
         self.iface = iface
         self.channels = channels
@@ -368,9 +372,12 @@ class WifiProbeMonitor:
         self.deauth_detector = deauth_detector
         self.traffic_log = traffic_log
         self.traffic_flush_interval = traffic_flush_interval
+        self.networks_log = networks_log
+        self.networks_log_interval = networks_log_interval
         self._current_channel = channels[0]
         self._traffic_lock = threading.Lock()
         self._traffic_counters: dict[str, dict[str, int]] = {}
+        self._networks_last_logged: dict[str, float] = {}
 
     def _setup_monitor_mode(self) -> None:
         for cmd in (
@@ -404,7 +411,7 @@ class WifiProbeMonitor:
         if self.deauth_detector is not None and (pkt.haslayer(Dot11Deauth) or pkt.haslayer(Dot11Disas)):
             self._handle_deauth(pkt)
 
-        if self.evil_twin_detector is not None and pkt.haslayer(Dot11Beacon):
+        if (self.evil_twin_detector is not None or self.networks_log is not None) and pkt.haslayer(Dot11Beacon):
             self._handle_beacon(pkt)
 
         if self.traffic_log is not None and pkt.haslayer(Dot11) and pkt.type == 2:
@@ -442,14 +449,62 @@ class WifiProbeMonitor:
 
     def _handle_beacon(self, pkt) -> None:
         bssid = pkt.addr2
+        ssid = None
+        channel = None
         elt = pkt.getlayer(Dot11Elt)
-        if elt is None or elt.ID != 0:
+        while elt is not None:
+            if elt.ID == 0 and ssid is None:
+                try:
+                    ssid = elt.info.decode(errors="ignore")
+                except Exception:
+                    ssid = ""
+            elif elt.ID == 3 and channel is None and elt.info:
+                # Elemento "DS Parameter Set": un byte col canale dichiarato
+                # dall'AP stesso, indipendente dal canale su cui lo sniffer si
+                # trova in quel momento (più affidabile del solo hopping).
+                try:
+                    channel = int(elt.info[0])
+                except Exception:
+                    channel = None
+            elt = elt.payload.getlayer(Dot11Elt)
+        if ssid is None:
             return
-        try:
-            ssid = elt.info.decode(errors="ignore")
-        except Exception:
+
+        if self.evil_twin_detector is not None:
+            self.evil_twin_detector.observe_beacon(ssid, bssid or "")
+
+        if self.networks_log is not None and bssid:
+            self._log_network(bssid.lower(), ssid, channel, pkt)
+
+    def _log_network(self, bssid: str, ssid: str, channel: int | None, pkt) -> None:
+        """Logga una rete WiFi realmente rilevata (dal beacon del suo AP), non più di una volta ogni `networks_log_interval` secondi per BSSID.
+
+        A differenza del canale mostrato per un probe request (quello dello
+        sniffer, non della rete), qui il canale è reale: o dichiarato
+        dall'AP stesso nel beacon (DS Parameter Set), o — quando assente —
+        quello su cui lo sniffer si trovava mentre ascoltava quel beacon,
+        comunque affidabile perché un beacon si riceve solo restando
+        sintonizzati sul canale dell'AP che lo trasmette.
+        """
+        now = time.time()
+        last = self._networks_last_logged.get(bssid, 0.0)
+        if now - last < self.networks_log_interval:
             return
-        self.evil_twin_detector.observe_beacon(ssid, bssid or "")
+        self._networks_last_logged[bssid] = now
+
+        rssi = pkt.dBm_AntSignal if hasattr(pkt, "dBm_AntSignal") else None
+        row = {
+            "timestamp": now_iso(),
+            "bssid": bssid,
+            "ssid": ssid,
+            "vendor": get_vendor(bssid),
+            "rssi": rssi,
+            "channel": channel if channel is not None else self._current_channel,
+        }
+        self.networks_log.write(row)
+        if self.sqlite_store:
+            self.sqlite_store.insert_wifi_network(row)
+        LOG.debug("WiFi network bssid=%s ssid=%r channel=%s rssi=%s", bssid, ssid, row["channel"], rssi)
 
     def _handle_deauth(self, pkt) -> None:
         kind = "deauth" if pkt.haslayer(Dot11Deauth) else "disassoc"
@@ -779,6 +834,23 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
+        "--no-wifi-networks",
+        action="store_true",
+        help="Disabilita il log delle reti WiFi realmente rilevate dai beacon (richiede --wifi-iface)",
+    )
+    p.add_argument(
+        "--wifi-networks-log",
+        default="/var/log/home-sentinel/wifi_networks.jsonl",
+        help="Percorso file JSON Lines delle reti WiFi rilevate (BSSID/SSID/canale/RSSI, da beacon 802.11)",
+    )
+    p.add_argument(
+        "--wifi-networks-interval",
+        type=float,
+        default=30.0,
+        help="Intervallo minimo (s) tra due righe di log per lo stesso BSSID",
+    )
+
+    p.add_argument(
         "--max-log-size-mb",
         type=float,
         default=20.0,
@@ -850,6 +922,7 @@ def main() -> None:
 
     probe_log = None
     wifi_traffic_log = None
+    wifi_networks_log = None
     if args.wifi_iface:
         probe_log = make_logger(args.probe_log)
         channels = [int(ch) for ch in args.wifi_channels.split(",") if ch.strip()]
@@ -859,6 +932,8 @@ def main() -> None:
         )
         if not args.no_wifi_traffic:
             wifi_traffic_log = make_logger(args.wifi_traffic_log)
+        if not args.no_wifi_networks:
+            wifi_networks_log = make_logger(args.wifi_networks_log)
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
@@ -871,6 +946,8 @@ def main() -> None:
             deauth_detector=deauth_detector,
             traffic_log=wifi_traffic_log,
             traffic_flush_interval=args.wifi_traffic_interval,
+            networks_log=wifi_networks_log,
+            networks_log_interval=args.wifi_networks_interval,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
     else:
@@ -913,6 +990,8 @@ def main() -> None:
             probe_log.close()
         if wifi_traffic_log:
             wifi_traffic_log.close()
+        if wifi_networks_log:
+            wifi_networks_log.close()
         if ble_log:
             ble_log.close()
         if fingerprint_log:

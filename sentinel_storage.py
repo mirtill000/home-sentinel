@@ -102,6 +102,18 @@ CREATE TABLE IF NOT EXISTS wifi_traffic (
 );
 CREATE INDEX IF NOT EXISTS idx_traffic_mac ON wifi_traffic(mac);
 CREATE INDEX IF NOT EXISTS idx_traffic_ts ON wifi_traffic(timestamp);
+
+CREATE TABLE IF NOT EXISTS wifi_networks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    bssid TEXT NOT NULL,
+    ssid TEXT,
+    vendor TEXT,
+    rssi INTEGER,
+    channel INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_wifinet_bssid ON wifi_networks(bssid);
+CREATE INDEX IF NOT EXISTS idx_wifinet_ts ON wifi_networks(timestamp);
 """
 
 
@@ -207,6 +219,15 @@ class SqliteStore:
             self._conn.execute(
                 "INSERT INTO wifi_traffic (timestamp, mac, bytes, frames, interval_s) VALUES (?, ?, ?, ?, ?)",
                 (row["timestamp"], row["mac"], row["bytes"], row["frames"], row["interval_s"]),
+            )
+            self._conn.commit()
+
+    def insert_wifi_network(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO wifi_networks (timestamp, bssid, ssid, vendor, rssi, channel) VALUES (?, ?, ?, ?, ?, ?)",
+                (row["timestamp"], row["bssid"], row.get("ssid", ""), row.get("vendor", ""),
+                 row.get("rssi"), row.get("channel")),
             )
             self._conn.commit()
 

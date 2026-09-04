@@ -575,12 +575,10 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .radar-legend-item:not(.active) { opacity: 0.42; }
 .radar-legend-item.active { border-color: var(--border-strong); color: var(--text-primary); }
 
-.dintorni-layout { display: grid; grid-template-columns: 260px 1fr 260px; gap: 16px; align-items: start; }
-.dintorni-col { display: flex; flex-direction: column; gap: 14px; }
-.dintorni-col-center { align-items: center; }
-@media (max-width: 1080px) {
-  .dintorni-layout { grid-template-columns: 1fr; }
-  .dintorni-col-center { order: -1; }
+.dintorni-map-wrap { display: flex; justify-content: center; }
+.dintorni-panels-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px; margin-top: 14px;
 }
 
 .dintorni-panel { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
