@@ -561,6 +561,37 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .netmap-legend .dot { width: 8px; height: 8px; border-radius: 50%; }
 
 /* ------------------------------------------------------------------ *
+ * Dintorni di casa (radar isometrico)
+ * ------------------------------------------------------------------ */
+
+.radar-legend { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 6px; }
+.radar-legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text-secondary); font-size: 0.76rem;
+  cursor: pointer; transition: opacity .15s, border-color .15s;
+}
+.radar-legend-item .dot { width: 8px; height: 8px; border-radius: 50%; }
+.radar-legend-item:not(.active) { opacity: 0.42; }
+.radar-legend-item.active { border-color: var(--border-strong); color: var(--text-primary); }
+
+.radar-wrap { display: flex; justify-content: center; padding: 4px 0; }
+.radar-wrap svg { max-width: 100%; height: auto; }
+.radar-ring { fill: none; stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }
+.radar-ring-label { font-size: 9.5px; fill: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.radar-node circle { cursor: pointer; stroke: var(--surface); stroke-width: 1.5; }
+.radar-node:hover circle { stroke: var(--text-primary); }
+
+.iso-wall { stroke: var(--border-strong); stroke-width: 1; }
+.iso-wall-right { fill: var(--surface-2); }
+.iso-wall-left { fill: var(--surface-hover); }
+.iso-door { fill: var(--brand); opacity: .55; }
+.iso-roof { stroke: var(--border-strong); stroke-width: 1; }
+.iso-roof-right { fill: var(--status-serious); opacity: .85; }
+.iso-roof-left { fill: var(--status-serious); opacity: .65; }
+.iso-ridge { stroke: var(--border-strong); stroke-width: 1; }
+
+/* ------------------------------------------------------------------ *
  * Alerts
  * ------------------------------------------------------------------ */
 
