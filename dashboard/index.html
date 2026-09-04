@@ -7,8 +7,8 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="app-shell">
-  <aside class="sidebar">
+<div class="app-shell" id="app-shell">
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <span class="brand-icon" id="icon-brand"></span>
       <span class="brand-text">
@@ -20,6 +20,10 @@
     <nav class="nav" id="sidebar-nav"></nav>
 
     <div class="sidebar-spacer"></div>
+
+    <button class="sidebar-collapse-btn" id="sidebar-collapse-btn" aria-label="Collapse sidebar">
+      <span id="icon-sidebar-collapse"></span><span class="sidebar-collapse-label">Collapse</span>
+    </button>
 
     <div class="sidebar-footer">
       <span>Home Sentinel v1.0.0</span>

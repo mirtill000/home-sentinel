@@ -128,6 +128,7 @@ const state = {
   hostStaleOnly: false,
   hostGroupByIdentity: false,
   hostSelectedMacs: new Set(),
+  wifiSsidExpanded: null,
   pagination: {},
 };
 
@@ -1176,17 +1177,35 @@ function computeWifiSsidOverview(probeRows) {
   return [...byKey.values()].map((e) => ({ ...e, avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null }));
 }
 
+/** Per un SSID richiesto, il dettaglio dei singoli device che l'hanno chiesto: MAC, vendor,
+ * numero di probe, segnale medio e ultimo avvistamento (solo per quell'SSID, non l'intera cronologia del device). */
+function computeSsidDeviceDetail(ssid) {
+  const byMac = new Map();
+  for (const r of state.wifiRows) {
+    if (!r.ssid || r.ssid.trim() !== ssid || !r.mac) continue;
+    if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, vendor: r.vendor || "", sightings: 0, rssiSum: 0, rssiCount: 0, lastTs: 0 });
+    const e = byMac.get(r.mac);
+    e.sightings += 1;
+    if (typeof r.rssi === "number") { e.rssiSum += r.rssi; e.rssiCount += 1; }
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts > e.lastTs) e.lastTs = ts;
+  }
+  return [...byMac.values()]
+    .map((e) => ({ ...e, avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null }))
+    .sort((a, b) => b.lastTs - a.lastTs);
+}
+
 function renderWifiSsidTable(container) {
   container.innerHTML = `
     <div class="card-head">
       <h2>SSIDs requested</h2>
-      <span class="card-sub">a summary per network name requested in probes, across all loaded history</span>
+      <span class="card-sub">a summary per network name requested in probes, across all loaded history — click a row to see which devices requested it</span>
       <div class="filter-row" style="margin:0;">
         <div class="search-input">${ICON("search")}<input type="text" id="wifi-ssid-search" placeholder="Search by SSID…"></div>
       </div>
     </div>
     <div class="table-scroll">
-      <table class="data-table">
+      <table class="data-table" id="wifi-ssid-table">
         <thead><tr><th>SSID</th><th>Devices that requested it</th><th>Total probes</th><th>Average signal</th><th>Last seen</th></tr></thead>
         <tbody id="wifi-ssid-body"></tbody>
       </table>
@@ -1209,18 +1228,51 @@ function renderWifiSsidTableBody() {
   const rows = all
     .filter((e) => !search || e.key.toLowerCase().includes(search))
     .sort((a, b) => b.sightings - a.sightings);
+  if (state.wifiSsidExpanded && !rows.some((e) => e.key === state.wifiSsidExpanded)) state.wifiSsidExpanded = null;
 
   const info = paginate(rows, "wifi-ssid");
-  body.innerHTML = info.pageRows.map((e) => `<tr>
-    <td>${escapeHtml(e.key)}</td>
-    <td>${e.macs.size}</td>
-    <td>${e.sightings}</td>
-    <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
-    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
-  </tr>`).join("");
+  body.innerHTML = info.pageRows.map((e) => {
+    const expanded = state.wifiSsidExpanded === e.key;
+    let html = `<tr class="wifi-ssid-row" data-ssid-row="${escapeHtml(e.key)}">
+      <td><span class="expand-caret ${expanded ? "expanded" : ""}">${ICON("chevron-right")}</span>${escapeHtml(e.key)}</td>
+      <td>${e.macs.size}</td>
+      <td>${e.sightings}</td>
+      <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
+      <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+    </tr>`;
+    if (expanded) {
+      const devices = computeSsidDeviceDetail(e.key);
+      html += `<tr class="detail-row"><td colspan="5">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Device</th><th>Vendor</th><th>Probes</th><th>Avg signal</th><th>Last seen</th></tr></thead>
+            <tbody>${devices.map((d) => `<tr>
+              <td><button class="link-cell mono" data-mac-link="${escapeHtml(d.mac)}">${escapeHtml(displayName(d.mac, d.mac))}</button></td>
+              <td>${escapeHtml(d.vendor) || '<span class="muted">—</span>'}</td>
+              <td>${d.sightings}</td>
+              <td>${d.avgRssi === null ? '<span class="muted">—</span>' : `${d.avgRssi} dBm`}</td>
+              <td>${formatTs(new Date(d.lastTs).toISOString())}</td>
+            </tr>`).join("") || '<tr><td colspan="5"><p class="empty-state">No devices found for this SSID.</p></td></tr>'}</tbody>
+          </table>
+        </div>
+      </td></tr>`;
+    }
+    return html;
+  }).join("");
   document.getElementById("wifi-ssid-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("wifi-ssid-pagination").innerHTML = rows.length ? paginationHtml("wifi-ssid", info) : "";
   wirePagination(document.getElementById("wifi-ssid-pagination"), "wifi-ssid", renderWifiSsidTableBody);
+
+  body.querySelectorAll("[data-ssid-row]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const key = row.dataset.ssidRow;
+      state.wifiSsidExpanded = state.wifiSsidExpanded === key ? null : key;
+      renderWifiSsidTableBody();
+    });
+  });
+  body.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); goToDevice(btn.dataset.macLink); });
+  });
 }
 
 /** Severity dei rilevatori server-side (low/medium/high) -> classi CSS esistenti (info/serious/critical). */
@@ -1883,10 +1935,6 @@ function renderWifiTableBody() {
 
 function renderWifiPage(container) {
   const wifiLast24h = state.wifiRows.filter((r) => within24h(parseTs(r.timestamp)));
-  const distinctMacs = new Set(wifiLast24h.map((r) => r.mac));
-  const withSsid = wifiLast24h.filter((r) => r.ssid && r.ssid.trim());
-  const avg = avgRssi(wifiLast24h);
-  const knownVendors = new Set(wifiLast24h.map((r) => r.vendor).filter((v) => v && v.trim()));
   const wifiStatus = state.sourceStatus.wifi;
 
   container.innerHTML = `
@@ -1896,28 +1944,6 @@ function renderWifiPage(container) {
         <span>WiFi probe log at ${formatBytes(wifiStatus.totalBytes)}: to stay fast the dashboard only loads the last ${formatBytes(TAIL_FETCH_BYTES)} (the most recent). The views below — including the 24h ones — are correct, but "Trend" over 30 days may not cover the whole period. Set <code>--max-log-size-mb</code>/<code>--log-backup-count</code> on the daemon to keep the file from growing unbounded.</span>
       </div>
     ` : ""}
-    <div class="page-section kpi-row">
-      ${kpiTile({
-        label: "WiFi probes (24h)", icon: "wifi", tone: "blue",
-        value: wifiLast24h.length, sub: `${distinctMacs.size} distinct MACs`,
-        sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
-      })}
-      ${kpiTile({
-        label: "Probes with SSID requested", icon: "search", tone: "blue",
-        value: withSsid.length,
-        sub: wifiLast24h.length ? `${Math.round((withSsid.length / wifiLast24h.length) * 100)}% of total (24h)` : "No data",
-      })}
-      ${kpiTile({
-        label: "Average RSSI (24h)", icon: "radar", tone: "blue",
-        value: avg === null ? "—" : avg, valueSuffix: avg === null ? "" : "dBm",
-        sub: "Closer to 0 = stronger signal",
-      })}
-      ${kpiTile({
-        label: "Known vendors", icon: "users", tone: "blue",
-        value: knownVendors.size, sub: "From MAC OUI (24h)",
-      })}
-    </div>
-
     <div class="page-section grid-2">
       <div class="card">
         <div class="card-head"><h2>Probe activity <span class="card-sub">last 24h</span></h2></div>
@@ -3299,16 +3325,16 @@ function renderAiuto(container) {
       <ul>
         <li><strong>Dashboard</strong> (home) — active hosts and active alerts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with the full list for each category — each capped at a handful of rows with a "View all" button to expand it. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
         <li><strong>Host</strong> — KPI row (total hosts, new devices, active alerts, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
-        <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
-        <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
-        <li><strong>WiFi</strong> — 802.11 probe requests nearby: KPIs and channel distribution at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks — and at the bottom the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is no longer shown here: it remains in the CSV export and the periodic email report.</li>
+        <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks. Click a row to see which devices requested that SSID (MAC, vendor, probe count, average signal). At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
+        <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
+        <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
         <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
         <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
         <li><strong>Settings</strong> — daemon module status (inferred from loaded data), data sources (JSON Lines), theme.</li>
         <li><strong>Export</strong> — download the current data as CSV or JSON.</li>
       </ul>
-      <p class="field-hint">Press <strong>Ctrl+K</strong> (or <strong>⌘K</strong>) at any time for global search across pages, devices and alerts.</p>
+      <p class="field-hint">Press <strong>Ctrl+K</strong> (or <strong>⌘K</strong>) at any time for global search across pages, devices and alerts. The "Collapse" button at the bottom of the side menu shrinks it to icons only, for more room on pages with wide tables.</p>
     </div>
     <div class="card help-section">
       <h3>Known limitations</h3>
@@ -3338,10 +3364,10 @@ function renderAiuto(container) {
 const ROUTES = [
   { id: "dintorni", label: "Dashboard", icon: "home", title: "Dashboard", subtitle: "Local network overview", render: renderHouseRadarPage },
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Full list of LAN devices", render: renderHost },
-  { id: "scansioni", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
-  { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "WiFi probes", subtitle: "802.11 probe requests detected nearby", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "BLE devices", subtitle: "Passive Bluetooth Low Energy scan nearby", render: renderBlePage },
+  { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
+  { id: "scansioni", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
   { id: "avvisi", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Historical trend of devices and alerts", render: renderTrend },
   { id: "impostazioni", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
@@ -3353,7 +3379,7 @@ function getRouteById(id) { return ROUTES.find((r) => r.id === id) || ROUTES[0];
 
 function renderSidebarNav() {
   const nav = document.getElementById("sidebar-nav");
-  nav.innerHTML = ROUTES.map((r) => `<button class="nav-item ${r.id === state.route ? "active" : ""}" data-route="${r.id}">
+  nav.innerHTML = ROUTES.map((r) => `<button class="nav-item ${r.id === state.route ? "active" : ""}" data-route="${r.id}" title="${escapeHtml(r.label)}">
     ${ICON(r.icon)}<span>${escapeHtml(r.label)}</span>
     ${r.id === "avvisi" ? `<span class="nav-badge hidden" id="nav-badge-avvisi"></span>` : ""}
   </button>`).join("");
@@ -3369,6 +3395,30 @@ function updateNavBadge() {
   const count = computeAlerts().filter((a) => !isDismissed(a.id)).length;
   if (count > 0) { badge.textContent = String(count); badge.classList.remove("hidden"); }
   else { badge.classList.add("hidden"); }
+}
+
+/* Sidebar collassabile: solo icone quando chiusa, per lasciare più spazio alle pagine con
+ * tabelle larghe (es. Host). Stato persistito in localStorage, non nello state applicativo
+ * (è una preferenza di layout, non dati). */
+const SIDEBAR_COLLAPSED_KEY = "hs.sidebarCollapsed";
+
+function applySidebarCollapsed(collapsed) {
+  document.getElementById("app-shell").classList.toggle("sidebar-collapsed", collapsed);
+  const btn = document.getElementById("sidebar-collapse-btn");
+  btn.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+  btn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  document.getElementById("icon-sidebar-collapse").innerHTML = ICON(collapsed ? "chevron-right" : "chevron-left");
+  document.querySelector(".sidebar-collapse-label").textContent = collapsed ? "Expand" : "Collapse";
+}
+
+function initSidebarCollapse() {
+  const collapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  applySidebarCollapsed(collapsed);
+  document.getElementById("sidebar-collapse-btn").addEventListener("click", () => {
+    const next = !document.getElementById("app-shell").classList.contains("sidebar-collapsed");
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+    applySidebarCollapsed(next);
+  });
 }
 
 function onRouteChange() {
@@ -3611,6 +3661,7 @@ function init() {
   document.getElementById("icon-cmdk").innerHTML = ICON("search");
 
   renderSidebarNav();
+  initSidebarCollapse();
   setupTopbar();
   setupCmdk();
   updateStatusPill();

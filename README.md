@@ -327,7 +327,10 @@ Host (host totali/attivi/offline, distribuzione del rischio) con un
 pulsante per aprire l'elenco completo. In qualsiasi punto della dashboard, **Ctrl+K**
 (⌘K su Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni
 tabella ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno
-scorrimento pagine.
+scorrimento pagine. Il menu laterale è collassabile (pulsante in fondo,
+stato ricordato tra le sessioni) per lasciare più spazio alle pagine con
+tabelle larghe, come Host; l'ordine delle voci è Dashboard, Host, WiFi,
+BLE, Timeline, Scans, poi Avvisi/Trend/Impostazioni/Esporta/Aiuto.
 
 Per i file JSONL oltre 4MB (tipicamente `wifi_probes.jsonl`, il più
 "rumoroso"), la dashboard scarica solo la coda più recente via **HTTP
@@ -376,15 +379,16 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
 - **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
   device, offline, alert, fingerprint), filtrabile per categoria.
-- **WiFi** — KPI (probe 24h, MAC distinti, % con SSID cercato, RSSI medio,
-  vendor noti), attività oraria, distribuzione per canale, poi un'unica
-  tabella **"SSID cercati"** — un riepilogo per nome di rete richiesto
-  nei probe (non un elenco di reti fisicamente presenti, vedi sotto),
-  ricercabile e paginata — e in fondo il log probe grezzo per l'analisi
-  riga per riga. Il traffico WiFi stimato per device (se
+- **WiFi** — attività oraria e distribuzione per canale in cima, poi
+  un'unica tabella **"SSID cercati"** — un riepilogo per nome di rete
+  richiesto nei probe (non un elenco di reti fisicamente presenti, vedi
+  sotto), ricercabile e paginata: click su una riga per vedere il dettaglio
+  dei device che hanno richiesto quell'SSID (MAC, vendor, numero di probe,
+  segnale medio, ultimo avvistamento) — e in fondo il log probe grezzo per
+  l'analisi riga per riga. Il traffico WiFi stimato per device (se
   `wifi_traffic.jsonl` è disponibile — indicatore relativo, non banda
-  esatta) non è mostrato in dashboard: resta nell'export CSV e nel
-  report email periodico.
+  esatta) non è mostrato qui: è una colonna opzionale della pagina Host,
+  e resta comunque nell'export CSV e nel report email periodico.
 - **BLE** — KPI (advertisement 24h, MAC distinti, % con nome, RSSI medio,
   manufacturer noti), attività oraria, poi la tabella **"Dispositivi
   BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e

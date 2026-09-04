@@ -97,7 +97,9 @@ svg { display: block; }
   display: grid;
   grid-template-columns: 248px 1fr;
   min-height: 100vh;
+  transition: grid-template-columns 0.15s ease;
 }
+.app-shell.sidebar-collapsed { grid-template-columns: 68px 1fr; }
 
 /* Sidebar */
 
@@ -108,6 +110,11 @@ svg { display: block; }
   flex-direction: column;
   padding: 20px 14px;
   gap: 20px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .brand {
@@ -173,6 +180,28 @@ svg { display: block; }
 }
 .sidebar-footer .pwa-badge { display: flex; align-items: center; gap: 4px; color: var(--brand); }
 .sidebar-footer .pwa-badge svg { width: 11px; height: 11px; }
+
+.sidebar-collapse-btn {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  border-radius: var(--radius-sm); border: none; background: none;
+  color: var(--text-muted); font-size: 0.8rem; cursor: pointer; width: 100%;
+}
+.sidebar-collapse-btn:hover { background: var(--surface-2); color: var(--text-primary); }
+.sidebar-collapse-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* Sidebar collapsed: solo icone, testo e badge label nascosti, larghezza ridotta (vedi .app-shell.sidebar-collapsed) */
+.sidebar-collapsed .brand { justify-content: center; padding: 4px 0 12px; }
+.sidebar-collapsed .brand-text { display: none; }
+.sidebar-collapsed .nav-item { justify-content: center; padding: 9px; position: relative; }
+.sidebar-collapsed .nav-item > span:not(.nav-badge) { display: none; }
+.sidebar-collapsed .nav-item .nav-badge {
+  position: absolute; margin-left: 0; top: 4px; right: 4px;
+  min-width: 15px; height: 15px; padding: 0 3px; font-size: 0.58rem;
+  display: flex; align-items: center; justify-content: center;
+}
+.sidebar-collapsed .sidebar-collapse-btn { justify-content: center; }
+.sidebar-collapsed .sidebar-collapse-label { display: none; }
+.sidebar-collapsed .sidebar-footer span { display: none; }
 
 /* ------------------------------------------------------------------ *
  * Main column: topbar + page
@@ -545,6 +574,11 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 2px;
 }
 .link-cell:hover { text-decoration-color: currentColor; }
+
+#wifi-ssid-table tbody tr.wifi-ssid-row { cursor: pointer; }
+.expand-caret { display: inline-flex; margin-right: 6px; color: var(--text-muted); transition: transform 0.15s; vertical-align: middle; }
+.expand-caret svg { width: 12px; height: 12px; }
+.expand-caret.expanded { transform: rotate(90deg); }
 
 .row-menu { position: relative; }
 .kebab-btn {
