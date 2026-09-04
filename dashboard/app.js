@@ -1920,7 +1920,7 @@ function renderHouseRadarPage(container) {
   container.innerHTML = `
     <div class="page-section card">
       <div class="card-head">
-        <h2>Around the house</h2>
+        <h2>Nearby</h2>
         <span class="card-sub">SSIDs requested, WiFi and Bluetooth devices detected in the last 24h, by signal strength</span>
       </div>
       <div class="radar-legend" id="radar-legend"></div>
@@ -1988,7 +1988,7 @@ function renderDintorniSidePanels(data) {
       </div>`,
     }) : "",
     state.radarFilters.probe ? dintorniPanelHtml({
-      title: "WiFi probes", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
+      title: "WiFi devices", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
       rows: data.probes, totalCount: data.probes.length,
       emptyText: "No probes detected in the last 24h.",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
@@ -2682,7 +2682,7 @@ function renderAiuto(container) {
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>WiFi</strong> — 802.11 probe requests nearby: KPIs and channel distribution at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks — and at the bottom the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is no longer shown here: it remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
-        <li><strong>Around the house</strong> — isometric house at the center with cards connected by guide lines for SSIDs requested in probes, WiFi and Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); side panels with the full list for each category, scan status and legend. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here — see the disclaimer on the page. Click a card or a row for details, use the filters at the top to hide a category (wherever it appears).</li>
+        <li><strong>Nearby</strong> — isometric house at the center with cards connected by guide lines for SSIDs requested in probes, WiFi and Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); side panels with the full list for each category, scan status and legend. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here — see the disclaimer on the page. Click a card or a row for details, use the filters at the top to hide a category (wherever it appears).</li>
         <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
         <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
         <li><strong>Settings</strong> — daemon module status (inferred from loaded data), data sources (JSON Lines), theme.</li>
@@ -2699,8 +2699,8 @@ function renderAiuto(container) {
         <li>The risk score (the "Risk" column in Host) is a heuristic based on exposed ports and linked alerts, not a formal security assessment; marking a device as trusted attenuates it (reduced score, linked alerts one level less severe) but doesn't hide it or exclude it from checks.</li>
         <li>Deauth/disassoc flood detection is threshold-based (number of frames in a time window): very crowded WiFi networks or aggressive roaming can generate occasional false positives, and a very slow/distributed attack over time can stay under the threshold.</li>
         <li>"Trend" and "Timeline" are calculated in the browser from the already-loaded JSONL files: automatic log rotation on the daemon (<code>--max-log-size-mb</code>) and the dashboard's "tail only" loading for larger files (>4MB) reduce the available history accordingly, especially beyond 7-30 days.</li>
-        <li>The "Around the house" page is purely illustrative: the distance from the center only reflects the average signal (RSSI) in the last 24h, not a real physical distance, and the angle around the house is random (no direction data exists). It's not a location, just an at-a-glance view of "how much is around".</li>
-        <li>"SSIDs requested" (in Around the house and the WiFi page) is not a list of WiFi networks physically present nearby: these are network names requested in probe requests by devices nearby, i.e. the networks those devices have saved — a phone can request dozens of known networks at once, regardless of where it has used them in the past or where it is now. The channel of a requested network is never shown: it doesn't exist in the probe request, only the sniffer's own channel at capture time.</li>
+        <li>The "Nearby" page is purely illustrative: the distance from the center only reflects the average signal (RSSI) in the last 24h, not a real physical distance, and the angle around the house is random (no direction data exists). It's not a location, just an at-a-glance view of "how much is around".</li>
+        <li>"SSIDs requested" (in Nearby and the WiFi page) is not a list of WiFi networks physically present nearby: these are network names requested in probe requests by devices nearby, i.e. the networks those devices have saved — a phone can request dozens of known networks at once, regardless of where it has used them in the past or where it is now. The channel of a requested network is never shown: it doesn't exist in the probe request, only the sniffer's own channel at capture time.</li>
       </ul>
     </div>
   `;
@@ -2722,7 +2722,7 @@ const ROUTES = [
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "WiFi probes", subtitle: "802.11 probe requests detected nearby", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "BLE devices", subtitle: "Passive Bluetooth Low Energy scan nearby", render: renderBlePage },
-  { id: "dintorni", label: "Around the house", icon: "home", title: "Around the house", subtitle: "Isometric radar view of SSIDs requested, WiFi and Bluetooth devices nearby", render: renderHouseRadarPage },
+  { id: "dintorni", label: "Nearby", icon: "home", title: "Nearby", subtitle: "Isometric radar view of SSIDs requested, WiFi and Bluetooth devices nearby", render: renderHouseRadarPage },
   { id: "avvisi", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Historical trend of devices and alerts", render: renderTrend },
   { id: "impostazioni", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
