@@ -2219,6 +2219,12 @@ const DINTORNI_CALLOUTS_PER_CATEGORY = 3;
 
 function renderHouseRadarPage(container) {
   container.innerHTML = `
+    <div class="page-section kpi-row">
+      ${topKpiRowHtml()}
+    </div>
+
+    <div class="page-section card" id="nearby-alerts-mount"></div>
+
     <div class="page-section card">
       <div class="card-head">
         <h2>Nearby</h2>
@@ -2230,6 +2236,7 @@ function renderHouseRadarPage(container) {
       <p class="field-hint">Purely illustrative view, not a real map: the distance of the cards from the house only reflects the average signal (RSSI) over the last 24 hours — strong signal = closer, weak = farther — not a physical distance, and the arrangement around the house is random (no direction data exists). The rings around the router are decorative, not a real coverage measurement. Devices already present on your LAN are not shown here (they're not "external"); WiFi/BLE MACs are often randomized by modern devices and may make the same device appear more than once. <strong>"SSIDs requested" is not a list of WiFi networks physically present here</strong>: these are network names that devices nearby have requested in probe requests, i.e. the networks they have saved — a phone asks about dozens of known networks at once (home, work, past trips) regardless of where it actually is; a name you don't recognize isn't necessarily a network nearby. <strong>"Adjacent networks" is different</strong>: it comes from the beacon frames access points broadcast themselves, so BSSID, SSID and channel reflect networks genuinely detected around you — signal strength is still the only distance proxy.</p>
     </div>
   `;
+  renderRecentAlertsWidget(document.getElementById("nearby-alerts-mount"));
   renderHouseRadarLegend(document.getElementById("radar-legend"));
   renderDintorniAll();
 }
@@ -2469,7 +2476,10 @@ function renderRecentAlertsWidget(container) {
   });
 }
 
-function renderDashboard(container) {
+/** Riga dei 4 KPI principali (host attivi, probe WiFi 24h, dispositivi nuovi, alert attivi): stessa
+ * identica logica usata da Dashboard e, ora che è la home, in cima a Nearby — un solo posto dove
+ * calcolarla evita che le due pagine finiscano per mostrare numeri leggermente diversi nel tempo. */
+function topKpiRowHtml() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
@@ -2477,31 +2487,39 @@ function renderDashboard(container) {
   const wifiLast24h = state.wifiRows.filter((r) => within24h(parseTs(r.timestamp)));
   const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id));
 
+  return `
+    ${kpiTile({
+      label: "Active hosts", icon: "monitor", tone: "good",
+      value: online, valueSuffix: `/ ${total}`,
+      sub: `${total ? Math.round((online / total) * 100) : 0}% active`,
+      sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
+    })}
+    ${kpiTile({
+      label: "WiFi probes (24h)", icon: "wifi", tone: "blue",
+      value: wifiLast24h.length,
+      sub: `${new Set(wifiLast24h.map((r) => r.mac)).size} distinct MACs`,
+      sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
+    })}
+    ${kpiTile({
+      label: "New devices", icon: "users", tone: "violet",
+      value: newLast24h, sub: "In the last 24h",
+      sparkValues: hourlyCounts(state.lanRows.filter((r) => r.status === "new")), sparkColor: "var(--series-violet)",
+    })}
+    ${kpiTile({
+      label: "Active alerts", icon: "shield", tone: "critical",
+      value: activeAlerts.length,
+      sub: activeAlerts.length ? "Need attention" : "No active alerts",
+      subTone: activeAlerts.length ? "critical" : "good",
+    })}
+  `;
+}
+
+function renderDashboard(container) {
+  const lanCurrent = latestLanByMac(state.lanRows);
+
   container.innerHTML = `
     <div class="page-section kpi-row">
-      ${kpiTile({
-        label: "Active hosts", icon: "monitor", tone: "good",
-        value: online, valueSuffix: `/ ${total}`,
-        sub: `${total ? Math.round((online / total) * 100) : 0}% active`,
-        sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
-      })}
-      ${kpiTile({
-        label: "WiFi probes (24h)", icon: "wifi", tone: "blue",
-        value: wifiLast24h.length,
-        sub: `${new Set(wifiLast24h.map((r) => r.mac)).size} distinct MACs`,
-        sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
-      })}
-      ${kpiTile({
-        label: "New devices", icon: "users", tone: "violet",
-        value: newLast24h, sub: "In the last 24h",
-        sparkValues: hourlyCounts(state.lanRows.filter((r) => r.status === "new")), sparkColor: "var(--series-violet)",
-      })}
-      ${kpiTile({
-        label: "Active alerts", icon: "shield", tone: "critical",
-        value: activeAlerts.length,
-        sub: activeAlerts.length ? "Need attention" : "No active alerts",
-        subTone: activeAlerts.length ? "critical" : "good",
-      })}
+      ${topKpiRowHtml()}
     </div>
 
     <div class="page-section grid-2">
