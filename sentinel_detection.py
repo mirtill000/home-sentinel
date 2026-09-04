@@ -11,7 +11,11 @@ lì per evitare falsi positivi sulle normali riassegnazioni DHCP.
     noto.
   - RogueDhcpDetector: sniffing passivo di DHCPOFFER/DHCPACK; se non è
     configurata una lista di server fidati impara il primo osservato,
-    segnala ogni server successivo diverso.
+    segnala ogni server successivo diverso. Sullo stesso sniff loop osserva
+    anche i DHCPDISCOVER/DHCPREQUEST dei client (facoltativo, indipendente
+    dal rilevamento rogue): MAC ed hostname dichiarato (opzione 12), utili
+    alla LAN discovery per un hostname più affidabile del reverse DNS e per
+    accorciare la latenza di rilevamento di un device nuovo.
   - EvilTwinDetector: osserva i beacon 802.11 catturati dal WiFi probe
     monitor (stesso adattatore in monitor mode) e segnala un SSID
     "di casa" trasmesso da un BSSID mai visto prima.
@@ -93,14 +97,24 @@ class AnomalyDetector:
 
 
 class RogueDhcpDetector:
-    """Sniffing passivo di DHCPOFFER/DHCPACK per rilevare server DHCP non attesi."""
+    """Sniffing passivo DHCP: rileva server non attesi (rogue) e, se configurato,
+    osserva i DHCPDISCOVER/DHCPREQUEST dei client per la LAN discovery.
+
+    Un solo sniff loop condiviso per entrambe le funzioni (evita di aprire
+    due socket raw sullo stesso adattatore per lo stesso traffico): il
+    rilevamento rogue è invariato, la parte client-discovery è puramente
+    additiva e non richiede `--detect-rogue-dhcp` per funzionare.
+    """
 
     def __init__(self, iface: str | None, trusted_servers: set[str], alert_manager: AlertManager,
-                 stop_event: threading.Event):
+                 stop_event: threading.Event, discovery_log=None, sqlite_store=None, on_client_event=None):
         self.iface = iface
         self.trusted_servers = set(trusted_servers)
         self.alert_manager = alert_manager
         self.stop_event = stop_event
+        self.discovery_log = discovery_log
+        self.sqlite_store = sqlite_store
+        self.on_client_event = on_client_event
         self._learned_first = bool(self.trusted_servers)
 
     def _handle_packet(self, pkt) -> None:
@@ -112,10 +126,25 @@ class RogueDhcpDetector:
             return
 
         msg_type = None
+        hostname = ""
+        requested_ip = None
         for opt in pkt[DHCP].options:
-            if isinstance(opt, tuple) and opt[0] == "message-type":
+            if not isinstance(opt, tuple):
+                continue
+            if opt[0] == "message-type":
                 msg_type = opt[1]
-                break
+            elif opt[0] == "hostname":
+                try:
+                    hostname = opt[1].decode(errors="ignore") if isinstance(opt[1], bytes) else str(opt[1])
+                except Exception:
+                    hostname = ""
+            elif opt[0] == "requested_addr":
+                requested_ip = opt[1]
+
+        if msg_type in (1, 3):  # DHCPDISCOVER, DHCPREQUEST
+            if self.discovery_log is not None or self.on_client_event is not None:
+                self._handle_client_event(pkt, msg_type, hostname, requested_ip)
+            return
         if msg_type not in (2, 5):  # DHCPOFFER, DHCPACK
             return
 
@@ -135,6 +164,30 @@ class RogueDhcpDetector:
             f"Risposta DHCP da un server non atteso: {server_ip} (mac {mac})",
             ip=server_ip, mac=mac, details={"trusted_servers": sorted(self.trusted_servers)},
         )
+
+    def _handle_client_event(self, pkt, msg_type: int, hostname: str, requested_ip: str | None) -> None:
+        try:
+            from scapy.all import Ether
+        except Exception:
+            return
+        mac = pkt[Ether].src.lower() if pkt.haslayer(Ether) else None
+        if not mac:
+            return
+
+        if self.discovery_log is not None:
+            row = {
+                "timestamp": _now_iso(),
+                "event": "discover" if msg_type == 1 else "request",
+                "mac": mac,
+                "hostname": hostname,
+                "requested_ip": requested_ip,
+            }
+            self.discovery_log.write(row)
+            if self.sqlite_store:
+                self.sqlite_store.insert_dhcp_event(row)
+
+        if self.on_client_event is not None:
+            self.on_client_event(mac, hostname)
 
     def run(self) -> None:
         try:

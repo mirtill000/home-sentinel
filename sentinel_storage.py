@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS fingerprints (
     services TEXT,
     ssdp TEXT,
     netbios_name TEXT,
+    mdns_name TEXT,
     banners TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_fp_mac ON fingerprints(mac);
@@ -114,6 +115,40 @@ CREATE TABLE IF NOT EXISTS wifi_networks (
 );
 CREATE INDEX IF NOT EXISTS idx_wifinet_bssid ON wifi_networks(bssid);
 CREATE INDEX IF NOT EXISTS idx_wifinet_ts ON wifi_networks(timestamp);
+
+CREATE TABLE IF NOT EXISTS dhcp_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    event TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    hostname TEXT,
+    requested_ip TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dhcpevt_mac ON dhcp_events(mac);
+CREATE INDEX IF NOT EXISTS idx_dhcpevt_ts ON dhcp_events(timestamp);
+
+CREATE TABLE IF NOT EXISTS os_fingerprints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    ip TEXT,
+    ttl INTEGER,
+    window INTEGER,
+    os_guess TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_osfp_mac ON os_fingerprints(mac);
+CREATE INDEX IF NOT EXISTS idx_osfp_ts ON os_fingerprints(timestamp);
+
+CREATE TABLE IF NOT EXISTS dhcp_leases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    ip TEXT,
+    hostname TEXT,
+    arp_confirmed INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dhcplease_mac ON dhcp_leases(mac);
+CREATE INDEX IF NOT EXISTS idx_dhcplease_ts ON dhcp_leases(timestamp);
 """
 
 
@@ -128,6 +163,7 @@ class SqliteStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
         self._migrate_drop_hour_histogram()
+        self._migrate_add_fingerprint_mdns_name()
         self._conn.commit()
 
     def _migrate_drop_hour_histogram(self) -> None:
@@ -153,6 +189,20 @@ class SqliteStore:
                 "SELECT mac, first_seen, known_ports, observations, updated_at FROM device_baseline_old"
             )
             self._conn.execute("DROP TABLE device_baseline_old")
+
+    def _migrate_add_fingerprint_mdns_name(self) -> None:
+        """Aggiunge la colonna mdns_name a un database creato da una versione
+        precedente (nome "amichevole" mDNS, introdotto insieme al secondo
+        round trip di mdns_probe in sentinel_fingerprint.py).
+
+        A differenza di _migrate_drop_hour_histogram, un ADD COLUMN è
+        sicuro su qualunque versione di sqlite3 (nessun rebuild di tabella
+        necessario) perché la colonna è nullable, senza vincoli da
+        soddisfare sulle righe già presenti.
+        """
+        cols = [row[1] for row in self._conn.execute("PRAGMA table_info(fingerprints)").fetchall()]
+        if "mdns_name" not in cols:
+            self._conn.execute("ALTER TABLE fingerprints ADD COLUMN mdns_name TEXT")
 
     def insert_lan_event(self, row: dict) -> None:
         with self._lock:
@@ -192,12 +242,13 @@ class SqliteStore:
     def insert_fingerprint(self, row: dict) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO fingerprints (timestamp, mac, ip, device_type, services, ssdp, netbios_name, banners) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO fingerprints "
+                "(timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["timestamp"], row["mac"], row["ip"], row.get("device_type", ""),
                     json.dumps(row.get("services", [])), json.dumps(row.get("ssdp", {})),
-                    row.get("netbios_name", ""), json.dumps(row.get("banners", {})),
+                    row.get("netbios_name", ""), row.get("mdns_name", ""), json.dumps(row.get("banners", {})),
                 ),
             )
             self._conn.commit()
@@ -228,6 +279,32 @@ class SqliteStore:
                 "INSERT INTO wifi_networks (timestamp, bssid, ssid, vendor, rssi, channel) VALUES (?, ?, ?, ?, ?, ?)",
                 (row["timestamp"], row["bssid"], row.get("ssid", ""), row.get("vendor", ""),
                  row.get("rssi"), row.get("channel")),
+            )
+            self._conn.commit()
+
+    def insert_dhcp_event(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO dhcp_events (timestamp, event, mac, hostname, requested_ip) VALUES (?, ?, ?, ?, ?)",
+                (row["timestamp"], row["event"], row["mac"], row.get("hostname", ""), row.get("requested_ip")),
+            )
+            self._conn.commit()
+
+    def insert_os_fingerprint(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO os_fingerprints (timestamp, mac, ip, ttl, window, os_guess) VALUES (?, ?, ?, ?, ?, ?)",
+                (row["timestamp"], row["mac"], row.get("ip", ""), row.get("ttl"),
+                 row.get("window"), row.get("os_guess", "")),
+            )
+            self._conn.commit()
+
+    def insert_dhcp_lease(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO dhcp_leases (timestamp, mac, ip, hostname, arp_confirmed) VALUES (?, ?, ?, ?, ?)",
+                (row["timestamp"], row["mac"], row.get("ip", ""), row.get("hostname", ""),
+                 1 if row.get("arp_confirmed") else 0),
             )
             self._conn.commit()
 

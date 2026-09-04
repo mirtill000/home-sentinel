@@ -49,12 +49,14 @@ const SETTINGS_KEYS = {
   netLabel: "hs.net.label", netGateway: "hs.net.gateway",
   alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl", wifiTrafficUrl: "hs.wifiTrafficUrl",
   wifiNetworksUrl: "hs.wifiNetworksUrl",
+  dhcpEventsUrl: "hs.dhcpEventsUrl", osFingerprintUrl: "hs.osFingerprintUrl", dhcpLeasesUrl: "hs.dhcpLeasesUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
   netLabel: "", netGateway: "",
   alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl", wifiTrafficUrl: "wifi_traffic.jsonl",
   wifiNetworksUrl: "wifi_networks.jsonl",
+  dhcpEventsUrl: "dhcp_events.jsonl", osFingerprintUrl: "os_fingerprint.jsonl", dhcpLeasesUrl: "dhcp_leases.jsonl",
 };
 
 function getSetting(key) {
@@ -96,6 +98,9 @@ const state = {
   fingerprintRows: [],
   wifiTrafficRows: [],
   wifiNetworksRows: [],
+  dhcpEventsRows: [],
+  osFingerprintRows: [],
+  dhcpLeasesRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -295,6 +300,30 @@ async function loadAllOnce() {
     state.wifiNetworksRows = state.wifiNetworksRows || [];
     state.sourceStatus.wifiNetworks = { ok: false, count: 0, truncated: false };
   }
+  try {
+    const r = await fetchJsonl(getSetting("dhcpEventsUrl"));
+    state.dhcpEventsRows = r.rows;
+    state.sourceStatus.dhcpEvents = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.dhcpEventsRows = state.dhcpEventsRows || [];
+    state.sourceStatus.dhcpEvents = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("osFingerprintUrl"));
+    state.osFingerprintRows = r.rows;
+    state.sourceStatus.osFingerprint = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.osFingerprintRows = state.osFingerprintRows || [];
+    state.sourceStatus.osFingerprint = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("dhcpLeasesUrl"));
+    state.dhcpLeasesRows = r.rows;
+    state.sourceStatus.dhcpLeases = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.dhcpLeasesRows = state.dhcpLeasesRows || [];
+    state.sourceStatus.dhcpLeases = { ok: false, count: 0, truncated: false };
+  }
 
   state.lastFetchOk = errors.length === 0;
   if (errors.length) showError(errors.join(" — "));
@@ -364,6 +393,19 @@ function signalBarsHtml(rssi) {
   const cells = [1, 2, 3, 4].map((i) => `<span class="signal-bar ${i <= bars ? "on" : ""}" style="height:${i * 3 + 3}px"></span>`).join("");
   const title = typeof rssi === "number" ? `${label} (${rssi} dBm)` : "Signal not available";
   return `<span class="signal-bars" title="${escapeHtml(title)}">${cells}</span>`;
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 1) return "< 1 min";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  if (hours < 24) return remMinutes ? `${hours} h ${remMinutes} min` : `${hours} h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours ? `${days} d ${remHours} h` : `${days} d`;
 }
 
 function formatRelativeTime(ts) {
@@ -495,6 +537,43 @@ function firstSeenTs(mac) {
   return s.length ? s[0].timestamp : null;
 }
 
+/** Ricostruisce le sessioni online/offline di un device dalle transizioni di stato già nel log LAN
+ * (new/online aprono, offline chiude): nessun dato nuovo da raccogliere, solo un modo diverso di
+ * guardare quello già scritto da ogni ciclo di scan. Se l'ultima riga non è "offline" la sessione
+ * resta aperta ("ongoing") fino ad ora, non necessariamente perché il device è online adesso — solo
+ * perché i dati caricati non coprono ancora un evento "offline" successivo. */
+function computeUptimeSessions(mac) {
+  const rows = sightingsForMac(mac);
+  const sessions = [];
+  let openStart = null;
+  for (const r of rows) {
+    const ts = parseTs(r.timestamp);
+    if (ts === null) continue;
+    if (r.status === "offline") {
+      if (openStart !== null) {
+        sessions.push({ start: openStart, end: ts });
+        openStart = null;
+      }
+    } else if (openStart === null) {
+      openStart = ts;
+    }
+  }
+  if (openStart !== null) sessions.push({ start: openStart, end: null });
+  return sessions;
+}
+
+/** % di tempo online nel periodo coperto dalla history caricata per questo MAC (dal primo evento ad ora). */
+function computeUptimeSummary(mac) {
+  const sessions = computeUptimeSessions(mac);
+  if (!sessions.length) return null;
+  const periodStart = sessions[0].start;
+  const periodEnd = Date.now();
+  const totalPeriod = periodEnd - periodStart;
+  if (totalPeriod <= 0) return null;
+  const onlineMs = sessions.reduce((sum, s) => sum + ((s.end ?? periodEnd) - s.start), 0);
+  return { pct: Math.round((onlineMs / totalPeriod) * 100), sessions, periodStart, periodEnd };
+}
+
 function goToDevice(mac) {
   window.location.hash = `#/device/${encodeURIComponent(mac)}`;
 }
@@ -513,23 +592,122 @@ function getDeviceLabels() {
 }
 function saveDeviceLabels(labels) { localStorage.setItem(DEVICE_LABELS_KEY, JSON.stringify(labels)); }
 
-function getDeviceLabel(mac) {
-  const labels = getDeviceLabels();
-  return labels[mac] || { trusted: false, name: "" };
+/* Raggruppamento multi-MAC: più MAC (WiFi+Ethernet dello stesso device, o MAC
+ * randomizzati) possono essere collegati come "stesso device fisico" così
+ * condividono nome/trusted. hs.deviceGroups mappa mac -> mac canonico
+ * (un solo salto, mai una catena: linkDeviceIdentity ripunta sempre ogni
+ * alias esistente al nuovo canonico, vedi sotto) — deliberatamente manuale:
+ * indovinare da soli quali MAC sono lo stesso device non è mai certo al
+ * 100%, quindi la dashboard può solo suggerire (stesso hostname), mai unire
+ * automaticamente. */
+const DEVICE_GROUPS_KEY = "hs.deviceGroups";
+
+function getDeviceGroups() {
+  try { return JSON.parse(localStorage.getItem(DEVICE_GROUPS_KEY) || "{}"); } catch { return {}; }
+}
+function saveDeviceGroups(groups) { localStorage.setItem(DEVICE_GROUPS_KEY, JSON.stringify(groups)); }
+
+/** MAC canonico di un'identità: se `mac` è stato collegato ad un altro MAC come "stesso device", quello; altrimenti `mac` stesso. */
+function canonicalMac(mac) {
+  const groups = getDeviceGroups();
+  return groups[mac] || mac;
 }
 
-function setDeviceLabel(mac, patch) {
+/** Tutti i MAC della stessa identità di `mac` (incluso mac stesso), canonico per primo. */
+function macsInIdentity(mac) {
+  const canonical = canonicalMac(mac);
+  const groups = getDeviceGroups();
+  const linked = Object.entries(groups).filter(([, c]) => c === canonical).map(([m]) => m);
+  return [canonical, ...linked.filter((m) => m !== canonical)];
+}
+
+/** Collega `mac` all'identità di `targetMac` ("stesso device fisico"): da qui condividono nome/trusted.
+ * Se `mac` aveva già un'etichetta propria e il target no, la eredita invece di perderla silenziosamente. */
+function linkDeviceIdentity(mac, targetMac) {
+  if (!mac || !targetMac || mac === targetMac) return;
+  const canonicalTarget = canonicalMac(targetMac);
+  if (canonicalTarget === mac) return; // già collegati (o creerebbe un ciclo A->B->A)
+
+  const existing = getDeviceLabel(mac);
+  const targetLabel = getDeviceLabel(canonicalTarget);
+  if ((existing.trusted || existing.name) && !(targetLabel.trusted || targetLabel.name)) {
+    setDeviceLabel(canonicalTarget, existing);
+  }
+
+  const groups = getDeviceGroups();
+  // Ogni MAC che puntava a `mac` come canonico va ripuntato al nuovo canonico:
+  // canonicalMac fa un solo salto, non segue catene.
+  for (const [m, c] of Object.entries(groups)) {
+    if (c === mac) groups[m] = canonicalTarget;
+  }
+  groups[mac] = canonicalTarget;
+  saveDeviceGroups(groups);
+
   const labels = getDeviceLabels();
-  const next = { ...getDeviceLabel(mac), ...patch };
-  if (next.trusted || next.name) labels[mac] = next;
-  else delete labels[mac]; // torna al default: nessuna voce da conservare
+  delete labels[mac];
   saveDeviceLabels(labels);
 }
 
-/** Nome da mostrare per un device: personalizzato se impostato, altrimenti il fallback (hostname/MAC). */
+/** Scioglie il collegamento tra due MAC della stessa identità (torna ciascuno un'identità a sé stante).
+ * Uno solo dei due è l'alias nella mappa (mai entrambi, vedi l'invariante mantenuto da linkDeviceIdentity):
+ * accetta i due MAC in qualunque ordine invece di richiedere di sapere quale dei due lo sia. */
+function unlinkDeviceIdentity(macA, macB) {
+  const groups = getDeviceGroups();
+  let changed = false;
+  if (macA in groups) { delete groups[macA]; changed = true; }
+  if (macB in groups) { delete groups[macB]; changed = true; }
+  if (changed) saveDeviceGroups(groups);
+}
+
+function getDeviceLabel(mac) {
+  const labels = getDeviceLabels();
+  return labels[canonicalMac(mac)] || { trusted: false, name: "" };
+}
+
+function setDeviceLabel(mac, patch) {
+  const canonical = canonicalMac(mac);
+  const labels = getDeviceLabels();
+  const next = { ...getDeviceLabel(canonical), ...patch };
+  if (next.trusted || next.name) labels[canonical] = next;
+  else delete labels[canonical]; // torna al default: nessuna voce da conservare
+  saveDeviceLabels(labels);
+}
+
+/** Nome da mostrare per un device: personalizzato se impostato (proprio o ereditato dall'identità collegata), altrimenti il fallback (hostname/MAC). */
 function displayName(mac, fallback) {
   const label = getDeviceLabel(mac);
   return label.name || fallback;
+}
+
+/* Suggerimenti di identità: due MAC con lo stesso hostname non ancora
+ * collegati potrebbero essere lo stesso device (es. interfaccia WiFi ed
+ * Ethernet). Mai applicati automaticamente — solo un suggerimento
+ * scartabile, l'unione resta sempre una scelta esplicita dell'utente. */
+const IDENTITY_SUGGESTIONS_DISMISSED_KEY = "hs.identitySuggestions.dismissed";
+
+function getDismissedIdentitySuggestions() {
+  try { return new Set(JSON.parse(localStorage.getItem(IDENTITY_SUGGESTIONS_DISMISSED_KEY) || "[]")); } catch { return new Set(); }
+}
+function suggestionKey(macA, macB) { return [macA, macB].sort().join("|"); }
+function dismissIdentitySuggestion(macA, macB) {
+  const set = getDismissedIdentitySuggestions();
+  set.add(suggestionKey(macA, macB));
+  localStorage.setItem(IDENTITY_SUGGESTIONS_DISMISSED_KEY, JSON.stringify([...set]));
+}
+function isIdentitySuggestionDismissed(macA, macB) {
+  return getDismissedIdentitySuggestions().has(suggestionKey(macA, macB));
+}
+
+/** MAC non ancora collegati a `mac` che condividono lo stesso hostname corrente (non vuoto). */
+function suggestedIdentityMatches(mac) {
+  const current = latestLanByMac(state.lanRows).find((d) => d.mac === mac);
+  const hostname = (current?.hostname || "").trim();
+  if (!hostname) return [];
+  const alreadyLinked = new Set(macsInIdentity(mac));
+  return latestLanByMac(state.lanRows)
+    .filter((d) => !alreadyLinked.has(d.mac) && (d.hostname || "").trim() === hostname)
+    .map((d) => d.mac)
+    .filter((m) => !isIdentitySuggestionDismissed(mac, m));
 }
 
 function trustBadgeHtml(mac) {
@@ -2273,6 +2451,7 @@ function renderDeviceProfile(container, mac) {
   const wifiHits = state.wifiRows.filter((r) => r.mac === mac).slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
   const bleHits = state.bleRows.filter((r) => r.mac === mac).slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
   const deviceAlerts = computeAlerts().filter((a) => a.mac === mac);
+  const uptimeSummary = computeUptimeSummary(mac);
 
   const backButton = `<div class="page-section" style="margin-bottom:10px;">
     <button class="btn btn-icon" id="device-back" title="Back to Host">${ICON("arrow-left")}</button>
@@ -2289,6 +2468,10 @@ function renderDeviceProfile(container, mac) {
   const risk = lanCurrent ? computeRiskScore(lanCurrent, fingerprint, deviceAlerts) : null;
   const label = getDeviceLabel(mac);
   const title = displayName(mac, lanCurrent?.hostname || fingerprint?.device_type || mac);
+  const linkedMacs = macsInIdentity(mac).filter((m) => m !== mac);
+  const identitySuggestions = suggestedIdentityMatches(mac);
+  const osFingerprint = latestFingerprintByMac(state.osFingerprintRows).get(mac);
+  const latestLease = latestFingerprintByMac(state.dhcpLeasesRows).get(mac);
 
   container.innerHTML = `
     ${backButton}
@@ -2299,11 +2482,14 @@ function renderDeviceProfile(container, mac) {
         ${lanCurrent ? statusBadge(lanCurrent.status) : '<span class="badge status-offline"><span class="dot"></span>Not on LAN</span>'}
         ${risk !== null ? riskBadgeHtml(risk) : ""}
         ${trustBadgeHtml(mac)}
+        ${latestLease && !latestLease.arp_confirmed ? `<span class="badge risk-badge tone-warning" title="Seen in the router's DHCP lease table but silent on the last ARP scan — may just be asleep or firewalled">Silent on ARP</span>` : ""}
       </div>
       <div class="detail-grid">
         <div><span>IP</span>${lanCurrent ? escapeHtml(lanCurrent.ip) : "—"}</div>
         <div><span>Vendor</span>${escapeHtml(lanCurrent?.vendor) || "—"}</div>
         <div><span>Device type</span>${escapeHtml(fingerprint?.device_type) || "—"}</div>
+        <div><span>mDNS name</span>${escapeHtml(fingerprint?.mdns_name) || "—"}</div>
+        <div><span>OS guess</span>${escapeHtml(osFingerprint?.os_guess) || "—"}</div>
         <div><span>Open ports</span>${formatPorts(lanCurrent?.open_ports) || "—"}</div>
         <div><span>First seen</span>${formatTs(firstSeenTs(mac))}</div>
         <div><span>Last LAN activity</span>${lanCurrent ? formatTs(lanCurrent.timestamp) : "—"}</div>
@@ -2316,6 +2502,28 @@ function renderDeviceProfile(container, mac) {
         <button class="btn ${label.trusted ? "btn-primary" : ""}" id="device-trust-toggle">
           ${ICON("shield")}${label.trusted ? "Trusted — remove" : "Mark as trusted"}
         </button>
+      </div>
+      <div class="device-identity-section">
+        <span class="device-identity-heading">Same physical device as</span>
+        <div class="device-identity-chips">
+          ${linkedMacs.length ? linkedMacs.map((m) => `<span class="badge device-identity-chip">
+            <button type="button" class="mono" data-goto-mac="${escapeHtml(m)}">${escapeHtml(m)}</button>
+            <button type="button" class="chip-remove" data-unlink-mac="${escapeHtml(m)}" title="Unlink">${ICON("x")}</button>
+          </span>`).join("") : '<span class="muted">No other MAC linked yet — e.g. this device\'s WiFi and Ethernet interfaces.</span>'}
+        </div>
+        <div class="device-identity-add">
+          <input type="text" id="device-link-mac-input" class="mono" placeholder="aa:bb:cc:dd:ee:ff">
+          <button class="btn" id="device-link-mac-btn">Link as same device</button>
+        </div>
+        ${identitySuggestions.map((m) => `
+          <div class="device-identity-suggestion">
+            <span>Same hostname also seen on <span class="mono">${escapeHtml(m)}</span> — could be the same device?</span>
+            <div class="device-identity-suggestion-actions">
+              <button class="btn btn-primary" data-link-suggestion="${escapeHtml(m)}">Same device</button>
+              <button class="btn" data-dismiss-suggestion="${escapeHtml(m)}">Not the same</button>
+            </div>
+          </div>
+        `).join("")}
       </div>
     </div>
 
@@ -2334,6 +2542,24 @@ function renderDeviceProfile(container, mac) {
         <div class="card-head"><h2>Linked alerts</h2><span class="card-sub">${deviceAlerts.length} total</span></div>
         <div class="alert-list">${deviceAlerts.length ? deviceAlerts.slice(0, 20).map(alertItemHtml).join("") : '<p class="empty-state">No alerts for this device.</p>'}</div>
       </div>
+    </div>
+
+    <div class="page-section card">
+      <div class="card-head">
+        <h2>Uptime</h2>
+        <span class="card-sub">${uptimeSummary ? `${uptimeSummary.pct}% online since ${formatTs(new Date(uptimeSummary.periodStart).toISOString())} (from the loaded history)` : "Not enough history to reconstruct sessions"}</span>
+      </div>
+      ${uptimeSummary && uptimeSummary.sessions.length ? `
+        <div class="table-scroll">
+          <table class="data-table"><thead><tr><th>From</th><th>To</th><th>Duration</th></tr></thead>
+          <tbody>${uptimeSummary.sessions.slice().reverse().slice(0, 20).map((s) => `<tr>
+            <td>${formatTs(new Date(s.start).toISOString())}</td>
+            <td>${s.end !== null ? formatTs(new Date(s.end).toISOString()) : `<span class="badge status-online"><span class="dot"></span>Ongoing</span>`}</td>
+            <td>${formatDuration((s.end ?? Date.now()) - s.start)}</td>
+          </tr>`).join("")}</tbody></table>
+        </div>
+        <p class="field-hint">Reconstructed from the new/online/offline transitions already in the LAN discovery log for this MAC, not a separate measurement. "Ongoing" means no "offline" event has been seen yet for the current session in the loaded history — not necessarily that the device is online right now.</p>
+      ` : '<p class="empty-state">Not enough LAN history for this MAC to reconstruct online/offline sessions.</p>'}
     </div>
 
     <div class="page-section grid-2">
@@ -2367,6 +2593,34 @@ function renderDeviceProfile(container, mac) {
   document.getElementById("device-trust-toggle").addEventListener("click", () => {
     setDeviceLabel(mac, { trusted: !getDeviceLabel(mac).trusted });
     renderDeviceProfile(container, mac);
+  });
+  document.getElementById("device-link-mac-btn").addEventListener("click", () => {
+    const input = document.getElementById("device-link-mac-input");
+    const target = input.value.trim().toLowerCase();
+    if (!target) return;
+    linkDeviceIdentity(target, mac);
+    renderDeviceProfile(container, mac);
+  });
+  container.querySelectorAll("[data-goto-mac]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.gotoMac));
+  });
+  container.querySelectorAll("[data-unlink-mac]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      unlinkDeviceIdentity(mac, btn.dataset.unlinkMac);
+      renderDeviceProfile(container, mac);
+    });
+  });
+  container.querySelectorAll("[data-link-suggestion]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      linkDeviceIdentity(btn.dataset.linkSuggestion, mac);
+      renderDeviceProfile(container, mac);
+    });
+  });
+  container.querySelectorAll("[data-dismiss-suggestion]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      dismissIdentitySuggestion(mac, btn.dataset.dismissSuggestion);
+      renderDeviceProfile(container, mac);
+    });
   });
 }
 
@@ -2560,6 +2814,9 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("Fingerprinting (--fingerprint)", "fingerprint")}
         ${moduleStatusRow("Estimated WiFi traffic", "wifiTraffic")}
         ${moduleStatusRow("Adjacent WiFi networks (beacons)", "wifiNetworks")}
+        ${moduleStatusRow("DHCP client discovery (--dhcp-discovery)", "dhcpEvents")}
+        ${moduleStatusRow("Passive OS fingerprint (--os-fingerprint)", "osFingerprint")}
+        ${moduleStatusRow("DHCP lease cross-check (--dhcp-lease-source)", "dhcpLeases")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
     </div>
@@ -2577,6 +2834,9 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-fingerprint-url">Device fingerprint log (.jsonl)</label><input type="text" id="set-fingerprint-url" value="${escapeHtml(getSetting("fingerprintUrl"))}"></div>
         <div class="field"><label for="set-wifi-traffic-url">WiFi traffic log (.jsonl)</label><input type="text" id="set-wifi-traffic-url" value="${escapeHtml(getSetting("wifiTrafficUrl"))}"></div>
         <div class="field"><label for="set-wifi-networks-url">Adjacent WiFi networks log (.jsonl)</label><input type="text" id="set-wifi-networks-url" value="${escapeHtml(getSetting("wifiNetworksUrl"))}"></div>
+        <div class="field"><label for="set-dhcp-events-url">DHCP client discovery log (.jsonl)</label><input type="text" id="set-dhcp-events-url" value="${escapeHtml(getSetting("dhcpEventsUrl"))}"></div>
+        <div class="field"><label for="set-os-fingerprint-url">Passive OS fingerprint log (.jsonl)</label><input type="text" id="set-os-fingerprint-url" value="${escapeHtml(getSetting("osFingerprintUrl"))}"></div>
+        <div class="field"><label for="set-dhcp-leases-url">DHCP lease cross-check log (.jsonl)</label><input type="text" id="set-dhcp-leases-url" value="${escapeHtml(getSetting("dhcpLeasesUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -2622,6 +2882,9 @@ function renderImpostazioni(container) {
   document.getElementById("set-fingerprint-url").addEventListener("change", (e) => { setSetting("fingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.fingerprintUrl); loadAll(); });
   document.getElementById("set-wifi-traffic-url").addEventListener("change", (e) => { setSetting("wifiTrafficUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiTrafficUrl); loadAll(); });
   document.getElementById("set-wifi-networks-url").addEventListener("change", (e) => { setSetting("wifiNetworksUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiNetworksUrl); loadAll(); });
+  document.getElementById("set-dhcp-events-url").addEventListener("change", (e) => { setSetting("dhcpEventsUrl", e.target.value.trim() || SETTINGS_DEFAULTS.dhcpEventsUrl); loadAll(); });
+  document.getElementById("set-os-fingerprint-url").addEventListener("change", (e) => { setSetting("osFingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.osFingerprintUrl); loadAll(); });
+  document.getElementById("set-dhcp-leases-url").addEventListener("change", (e) => { setSetting("dhcpLeasesUrl", e.target.value.trim() || SETTINGS_DEFAULTS.dhcpLeasesUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -2653,6 +2916,9 @@ function renderEsporta(container) {
     ${exportCardHtml("Device fingerprints", `${state.fingerprintRows.length} rows`, "fingerprint")}
     ${exportCardHtml("Estimated WiFi traffic", `${state.wifiTrafficRows.length} rows`, "wifi-traffic")}
     ${exportCardHtml("Adjacent WiFi networks", `${state.wifiNetworksRows.length} rows`, "wifi-networks")}
+    ${exportCardHtml("DHCP client discovery", `${state.dhcpEventsRows.length} rows`, "dhcp-events")}
+    ${exportCardHtml("Passive OS fingerprint", `${state.osFingerprintRows.length} rows`, "os-fingerprint")}
+    ${exportCardHtml("DHCP lease cross-check", `${state.dhcpLeasesRows.length} rows`, "dhcp-leases")}
     ${exportCardHtml("Alerts", `${alerts.length} alerts`, "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
@@ -2692,6 +2958,9 @@ function doExport(key, format) {
   else if (key === "fingerprint") { rows = state.fingerprintRows; filename = "fingerprint_discovery"; }
   else if (key === "wifi-traffic") { rows = state.wifiTrafficRows; filename = "wifi_traffic"; }
   else if (key === "wifi-networks") { rows = state.wifiNetworksRows; filename = "wifi_networks"; }
+  else if (key === "dhcp-events") { rows = state.dhcpEventsRows; filename = "dhcp_events"; }
+  else if (key === "os-fingerprint") { rows = state.osFingerprintRows; filename = "os_fingerprint"; }
+  else if (key === "dhcp-leases") { rows = state.dhcpLeasesRows; filename = "dhcp_leases"; }
   else if (key === "alerts") {
     rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
     filename = "alerts";
@@ -2703,7 +2972,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>How it works</h3>
-      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
+      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Device status</h3>
