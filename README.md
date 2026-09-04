@@ -217,12 +217,15 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
 - **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
   device, offline, alert, fingerprint), filtrabile per categoria.
-- **WiFi** — KPI (probe 24h, MAC distinti, % con SSID, RSSI medio, vendor
-  noti), attività oraria, distribuzione per canale, poi un'unica tabella
-  **"Dispositivi WiFi"** — un riepilogo per MAC con traffico stimato (se
+- **WiFi** — KPI (probe 24h, MAC distinti, % con SSID cercato, RSSI medio,
+  vendor noti), attività oraria, distribuzione per canale, poi un'unica
+  tabella **"SSID cercati"** — un riepilogo per nome di rete richiesto
+  nei probe (non un elenco di reti fisicamente presenti, vedi sotto),
+  ricercabile e paginata — e in fondo il log probe grezzo per l'analisi
+  riga per riga. Il traffico WiFi stimato per device (se
   `wifi_traffic.jsonl` è disponibile — indicatore relativo, non banda
-  esatta, vedi sopra), SSID cercati e probe totali, ricercabile e
-  paginata — e in fondo il log probe grezzo per l'analisi riga per riga.
+  esatta) non è mostrato in dashboard: resta nell'export CSV e nel
+  report email periodico.
 - **BLE** — KPI (advertisement 24h, MAC distinti, % con nome, RSSI medio,
   manufacturer noti), attività oraria, poi la tabella **"Dispositivi
   BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e

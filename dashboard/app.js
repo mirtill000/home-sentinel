@@ -916,97 +916,76 @@ function wifiChannelSegments(rows) {
 }
 
 /**
- * Riepilogo unificato per device WiFi: un MAC, una riga. Unisce i probe
- * request (SSID cercati, conteggio, ultimo avvistamento) e il traffico
- * stimato (wifi_traffic.jsonl, se il daemon gira con --wifi-iface e senza
- * --no-wifi-traffic) invece di tenerli in due tabelle separate con le
- * stesse colonne MAC/vendor duplicate. Il traffico è una stima grezza dai
- * frame dati catturati durante il channel hopping — non è banda esatta, si
- * vede solo la frazione di traffico transitata mentre si era fermi su quel
- * canale.
+ * Riepilogo per SSID cercato: un nome di rete, una riga. Il campo ssid di
+ * un probe request è la rete che il DISPOSITIVO client sta cercando (dalla
+ * sua lista di reti salvate) — un device chiede contemporaneamente di
+ * decine di reti note, ovunque le abbia usate in passato, indipendentemente
+ * da dove si trova ora. Non è quindi un elenco di reti WiFi fisicamente
+ * presenti nei dintorni: solo un catalogo di nomi richiesti. Vale lo stesso
+ * per il segnale medio, che riflette il device che chiede, non un'ipotetica
+ * antenna della rete cercata.
  */
-function computeWifiDeviceOverview(probeRows, trafficRows) {
-  const byMac = new Map();
-  const get = (mac) => {
-    if (!byMac.has(mac)) byMac.set(mac, { mac, vendor: "", ssids: new Map(), totalProbes: 0, lastTs: 0, bytes: 0, frames: 0 });
-    return byMac.get(mac);
-  };
+function computeWifiSsidOverview(probeRows) {
+  const byKey = new Map();
   for (const r of probeRows) {
-    if (!r.mac) continue;
-    const e = get(r.mac);
-    e.totalProbes += 1;
-    if (!e.vendor && r.vendor) e.vendor = r.vendor;
-    const ts = parseTs(r.timestamp) || 0;
-    if (ts > e.lastTs) e.lastTs = ts;
-    if (r.ssid && r.ssid.trim()) e.ssids.set(r.ssid, (e.ssids.get(r.ssid) || 0) + 1);
-  }
-  for (const r of trafficRows) {
-    if (!r.mac) continue;
-    const e = get(r.mac);
-    e.bytes += Number(r.bytes) || 0;
-    e.frames += Number(r.frames) || 0;
+    if (!r.ssid || !r.ssid.trim()) continue;
+    const key = r.ssid.trim();
+    if (!byKey.has(key)) byKey.set(key, { key, macs: new Set(), sightings: 0, rssiSum: 0, rssiCount: 0, lastTs: 0 });
+    const e = byKey.get(key);
+    e.sightings += 1;
+    if (r.mac) e.macs.add(r.mac);
+    if (typeof r.rssi === "number") { e.rssiSum += r.rssi; e.rssiCount += 1; }
     const ts = parseTs(r.timestamp) || 0;
     if (ts > e.lastTs) e.lastTs = ts;
   }
-  return [...byMac.values()].map((e) => ({ ...e, ssidList: [...e.ssids.entries()].sort((a, b) => b[1] - a[1]) }));
+  return [...byKey.values()].map((e) => ({ ...e, avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null }));
 }
 
-function renderWifiDevicesTable(container) {
+function renderWifiSsidTable(container) {
   container.innerHTML = `
     <div class="card-head">
-      <h2>Dispositivi WiFi</h2>
-      <span class="card-sub">un riepilogo per MAC — traffico stimato, SSID cercati e probe totali, su tutto lo storico caricato</span>
+      <h2>SSID cercati</h2>
+      <span class="card-sub">un riepilogo per nome di rete richiesto nei probe, su tutto lo storico caricato</span>
       <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="wifi-devices-search" placeholder="Cerca per MAC, nome, vendor, SSID…"></div>
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-ssid-search" placeholder="Cerca per SSID…"></div>
       </div>
     </div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Dispositivo</th><th>Vendor</th><th>Traffico stimato</th><th>SSID cercati</th><th>Probe totali</th><th>Ultimo avvistamento</th></tr></thead>
-        <tbody id="wifi-devices-body"></tbody>
+        <thead><tr><th>SSID</th><th>Device che l'hanno cercata</th><th>Probe totali</th><th>Segnale medio</th><th>Ultimo avvistamento</th></tr></thead>
+        <tbody id="wifi-ssid-body"></tbody>
       </table>
-      <p class="empty-state hidden" id="wifi-devices-empty">Nessun probe WiFi — controlla la sorgente dati in Impostazioni.</p>
-      <div id="wifi-devices-pagination"></div>
+      <p class="empty-state hidden" id="wifi-ssid-empty">Nessun SSID cercato nei probe — controlla la sorgente dati in Impostazioni.</p>
+      <div id="wifi-ssid-pagination"></div>
     </div>
-    <p class="field-hint">Traffico stimato dai frame dati catturati durante il channel hopping (non è banda esatta); SSID cercati solo per i probe che li pubblicizzano — molti device moderni non lo fanno più per privacy, quindi è normale che la colonna resti vuota per molte righe.</p>
+    <p class="field-hint"><strong>Non è un elenco di reti WiFi fisicamente presenti nei dintorni</strong>: sono i nomi di rete che i device nei dintorni hanno richiesto nei probe request, cioè le reti che hanno salvate — un telefono chiede contemporaneamente di decine di reti note (casa, lavoro, viaggi passati) indipendentemente da dove si trova davvero. Solo i probe che specificano un SSID compaiono qui: molti device moderni non lo fanno più per privacy.</p>
   `;
-  document.getElementById("wifi-devices-search").addEventListener("input", () => { getPagination("wifi-devices").page = 1; renderWifiDevicesTableBody(); });
-  renderWifiDevicesTableBody();
+  document.getElementById("wifi-ssid-search").addEventListener("input", () => { getPagination("wifi-ssid").page = 1; renderWifiSsidTableBody(); });
+  renderWifiSsidTableBody();
 }
 
-function renderWifiDevicesTableBody() {
-  const searchEl = document.getElementById("wifi-devices-search");
-  const body = document.getElementById("wifi-devices-body");
+function renderWifiSsidTableBody() {
+  const searchEl = document.getElementById("wifi-ssid-search");
+  const body = document.getElementById("wifi-ssid-body");
   if (!searchEl || !body) return;
 
   const search = searchEl.value.trim().toLowerCase();
-  const all = computeWifiDeviceOverview(state.wifiRows, state.wifiTrafficRows);
+  const all = computeWifiSsidOverview(state.wifiRows);
   const rows = all
-    .filter((e) => {
-      if (!search) return true;
-      const ssidText = e.ssidList.map(([s]) => s).join(" ");
-      return `${e.mac} ${displayName(e.mac, "")} ${e.vendor} ${ssidText}`.toLowerCase().includes(search);
-    })
-    .sort((a, b) => (b.bytes - a.bytes) || (b.totalProbes - a.totalProbes));
+    .filter((e) => !search || e.key.toLowerCase().includes(search))
+    .sort((a, b) => b.sightings - a.sightings);
 
-  const info = paginate(rows, "wifi-devices");
+  const info = paginate(rows, "wifi-ssid");
   body.innerHTML = info.pageRows.map((e) => `<tr>
-    <td>
-      <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(displayName(e.mac, e.mac))}</button>
-      ${trustBadgeHtml(e.mac)}
-    </td>
-    <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
-    <td>${formatBytes(e.bytes) || '<span class="muted">—</span>'}</td>
-    <td>${e.ssidList.length ? e.ssidList.map(([ssid, count]) => `${escapeHtml(ssid)} (${count})`).join(", ") : '<span class="muted">—</span>'}</td>
-    <td>${e.totalProbes}</td>
+    <td>${escapeHtml(e.key)}</td>
+    <td>${e.macs.size}</td>
+    <td>${e.sightings}</td>
+    <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
     <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
   </tr>`).join("");
-  document.getElementById("wifi-devices-empty").classList.toggle("hidden", rows.length > 0);
-  document.getElementById("wifi-devices-pagination").innerHTML = rows.length ? paginationHtml("wifi-devices", info) : "";
-  wirePagination(document.getElementById("wifi-devices-pagination"), "wifi-devices", renderWifiDevicesTableBody);
-  body.querySelectorAll("[data-mac-link]").forEach((btn) => {
-    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
-  });
+  document.getElementById("wifi-ssid-empty").classList.toggle("hidden", rows.length > 0);
+  document.getElementById("wifi-ssid-pagination").innerHTML = rows.length ? paginationHtml("wifi-ssid", info) : "";
+  wirePagination(document.getElementById("wifi-ssid-pagination"), "wifi-ssid", renderWifiSsidTableBody);
 }
 
 /* ---------------------------------------------------------------------- *
@@ -1540,7 +1519,7 @@ function renderWifiPage(container) {
         sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
       })}
       ${kpiTile({
-        label: "SSID pubblicizzati", icon: "search", tone: "blue",
+        label: "Probe con SSID cercato", icon: "search", tone: "blue",
         value: withSsid.length,
         sub: wifiLast24h.length ? `${Math.round((withSsid.length / wifiLast24h.length) * 100)}% del totale (24h)` : "Nessun dato",
       })}
@@ -1566,14 +1545,14 @@ function renderWifiPage(container) {
       </div>
     </div>
 
-    <div class="page-section card" id="wifi-devices-mount"></div>
+    <div class="page-section card" id="wifi-ssid-mount"></div>
 
     <div class="page-section card" id="wifi-section-mount"></div>
   `;
 
   renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
   renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Canale ${ch}`, n]), "var(--cat-3)");
-  renderWifiDevicesTable(document.getElementById("wifi-devices-mount"));
+  renderWifiSsidTable(document.getElementById("wifi-ssid-mount"));
   renderWifiSection(document.getElementById("wifi-section-mount"));
 }
 
@@ -2701,7 +2680,7 @@ function renderAiuto(container) {
         <li><strong>Host</strong> — elenco completo dei dispositivi LAN noti, con tipo di device e punteggio di rischio (0-100, su porte esposte e alert collegati); il nome host è un link al profilo completo del dispositivo. Da lì, o dal menu azioni di una riga, puoi assegnare un nome personalizzato e contrassegnare un device come fidato (riduce il rumore: punteggio di rischio più basso, alert collegati meno severi).</li>
         <li><strong>Scansioni</strong> — cronologia dei cicli di discovery LAN.</li>
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
-        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "Dispositivi WiFi" — un riepilogo per MAC con traffico stimato, SSID cercati e probe totali — e in fondo il log probe grezzo per l'analisi riga per riga.</li>
+        <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "SSID cercati" — un riepilogo per nome di rete richiesto nei probe, non un elenco di reti fisicamente presenti — e in fondo il log probe grezzo per l'analisi riga per riga. Il traffico WiFi stimato per device non è più mostrato qui: resta nell'export CSV e nel report email periodico.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: KPI e attività 24h in alto, poi la tabella "Dispositivi BLE" — un riepilogo per MAC con nome, manufacturer, segnale e numero di avvistamenti — e in fondo il log advertisement grezzo per l'analisi riga per riga.</li>
         <li><strong>Dintorni</strong> — casetta isometrica al centro con riquadri collegati da linee guida per SSID cercati nei probe, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h (più vicini = segnale più forte, non posizione reale); pannelli laterali con l'elenco completo di ciascuna categoria, stato scansione e legenda. Gli "SSID cercati" sono le reti salvate sui device nei dintorni, non necessariamente reti presenti qui — vedi il disclaimer nella pagina. Clicca un riquadro o una riga per il dettaglio, usa i filtri in alto per nascondere una categoria (ovunque compaia).</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
@@ -2720,7 +2699,8 @@ function renderAiuto(container) {
         <li>Il punteggio di rischio (colonna "Rischio" in Host) è un'euristica su porte esposte e alert collegati, non una valutazione di sicurezza formale; contrassegnare un device come fidato lo attenua (punteggio ridotto, alert collegati un livello meno severo) ma non lo nasconde né lo esclude dai controlli.</li>
         <li>Il rilevamento di deauth/disassoc flood è a soglia (numero di frame in una finestra temporale): reti WiFi molto affollate o con roaming aggressivo possono generare falsi positivi occasionali, e un attacco molto lento/distribuito nel tempo può restare sotto soglia.</li>
         <li>"Trend" e "Timeline" sono calcolati lato browser sui file JSONL già caricati: la rotazione automatica dei log sul daemon (<code>--max-log-size-mb</code>) e il caricamento "solo coda" della dashboard sui file più grandi (>4MB) riducono di conseguenza la cronologia disponibile, specie oltre i 7-30 giorni.</li>
-        <li>La pagina "Dintorni" è puramente illustrativa: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24h, non una distanza fisica reale, e l'angolo attorno alla casa è casuale (nessun dato di direzione esiste). Non è una localizzazione, solo un colpo d'occhio su "quanto c'è intorno". Il pannello "SSID cercati" in particolare non è un elenco di reti WiFi fisicamente vicine: sono i nomi di rete richiesti nei probe request dai device nei dintorni, cioè le reti che quei device hanno salvate — un telefono può cercare contemporaneamente decine di reti note ovunque le abbia usate in passato, indipendentemente da dove si trova ora.</li>
+        <li>La pagina "Dintorni" è puramente illustrativa: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24h, non una distanza fisica reale, e l'angolo attorno alla casa è casuale (nessun dato di direzione esiste). Non è una localizzazione, solo un colpo d'occhio su "quanto c'è intorno".</li>
+        <li>"SSID cercati" (in Dintorni e nella pagina WiFi) non è un elenco di reti WiFi fisicamente presenti nei dintorni: sono i nomi di rete richiesti nei probe request dai device nei dintorni, cioè le reti che quei device hanno salvate — un telefono può cercare contemporaneamente decine di reti note ovunque le abbia usate in passato, indipendentemente da dove si trova ora. Il canale di una rete cercata non è mai mostrato: nel probe request non esiste, solo quello del proprio sniffer al momento della cattura.</li>
       </ul>
     </div>
   `;
