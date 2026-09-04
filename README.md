@@ -229,13 +229,19 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   avvistamenti, ricercabile e paginata — e in fondo il log advertisement
   grezzo.
 - **Dintorni** — casetta isometrica al centro con riquadri collegati da
-  linee guida per reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle
-  ultime 24h (più vicini = segnale medio più forte — non la posizione
-  reale, vedi il disclaimer nella pagina stessa), affiancata da pannelli
-  con l'elenco completo per categoria, lo stato della scansione e la
-  legenda. Filtri per categoria in alto (nascondono la categoria ovunque
-  compaia), click su un riquadro o una riga per aprire il profilo del
-  device (dove disponibile).
+  linee guida per SSID cercati nei probe, dispositivi WiFi e Bluetooth
+  rilevati nelle ultime 24h (più vicini = segnale medio più forte — non
+  la posizione reale, vedi il disclaimer nella pagina stessa), affiancata
+  da pannelli con l'elenco completo per categoria, lo stato della
+  scansione e la legenda. Filtri per categoria in alto (nascondono la
+  categoria ovunque compaia), click su un riquadro o una riga per aprire
+  il profilo del device (dove disponibile). Importante: gli "SSID
+  cercati" sono le reti *salvate* sui device nei dintorni (dal probe
+  request), non le reti WiFi fisicamente presenti in zona — un telefono
+  chiede di decine di reti note indipendentemente da dove si trova
+  davvero, e il canale non è mai mostrato perché nel probe request non
+  esiste un canale reale della rete cercata (solo quello del proprio
+  sniffer al momento della cattura).
 - **Avvisi** — nuovi dispositivi e porte potenzialmente a rischio (telnet,
   RDP, SMB, VNC, FTP) aperte sui device correnti, calcolati dalla dashboard
   stessa; più gli alert generati dai moduli di detection del daemon
