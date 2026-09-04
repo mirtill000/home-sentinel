@@ -89,6 +89,42 @@ def get_vendor(mac: str) -> str:
         return ""
 
 
+_WPA1_VENDOR_IE_PREFIX = bytes([0x00, 0x50, 0xF2, 0x01])  # OUI Microsoft (00:50:F2), tipo 1 = WPA
+
+
+def classify_wifi_security(pkt) -> str:
+    """Classifica la sicurezza di una rete WiFi dal suo beacon, per il filtro "Open/WEP/WPA..."
+    della dashboard: 'open' se il bit Privacy della Capability Info è a 0 (nessuna cifratura);
+    altrimenti 'wpa2_wpa3' se è presente l'IE RSN (ID 48 — stesso formato per WPA2 e WPA3, che si
+    distinguerebbero solo analizzando le AKM suite, non necessario qui); 'wpa' se è presente il
+    vecchio IE vendor-specific WPA1 (ID 221, OUI Microsoft 00:50:F2 tipo 1) senza RSN; altrimenti
+    'wep' (Privacy attivo ma nessun IE RSN/WPA — cifratura legacy). 'unknown' se il pacchetto non
+    ha un layer Beacon valido (non dovrebbe succedere, chiamata solo da _handle_beacon)."""
+    beacon = pkt.getlayer(Dot11Beacon)
+    if beacon is None:
+        return "unknown"
+    try:
+        if "privacy" not in beacon.cap:
+            return "open"
+    except Exception:
+        return "unknown"
+
+    has_rsn = False
+    has_wpa1 = False
+    elt = pkt.getlayer(Dot11Elt)
+    while elt is not None:
+        if elt.ID == 48:
+            has_rsn = True
+        elif elt.ID == 221 and bytes(elt.info)[:4] == _WPA1_VENDOR_IE_PREFIX:
+            has_wpa1 = True
+        elt = elt.payload.getlayer(Dot11Elt)
+    if has_rsn:
+        return "wpa2_wpa3"
+    if has_wpa1:
+        return "wpa"
+    return "wep"
+
+
 def resolve_hostname(ip: str, timeout: float = 1.0) -> str:
     old_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(timeout)
@@ -621,11 +657,12 @@ class WifiProbeMonitor:
             "vendor": get_vendor(bssid),
             "rssi": rssi,
             "channel": channel if channel is not None else self._current_channel,
+            "security": classify_wifi_security(pkt),
         }
         self.networks_log.write(row)
         if self.sqlite_store:
             self.sqlite_store.insert_wifi_network(row)
-        LOG.debug("WiFi network bssid=%s ssid=%r channel=%s rssi=%s", bssid, ssid, row["channel"], rssi)
+        LOG.debug("WiFi network bssid=%s ssid=%r channel=%s rssi=%s security=%s", bssid, ssid, row["channel"], rssi, row["security"])
 
     def _handle_deauth(self, pkt) -> None:
         kind = "deauth" if pkt.haslayer(Dot11Deauth) else "disassoc"

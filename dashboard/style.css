@@ -948,6 +948,18 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .info-banner svg { width: 16px; height: 16px; color: var(--brand); flex-shrink: 0; margin-top: 1px; }
 .info-banner code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 
+.focus-banner {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 0.82rem;
+}
+.focus-banner svg { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
+.focus-banner .dintorni-panel-more { margin-left: auto; }
+
 .tooltip {
   position: fixed;
   background: var(--surface-2);
