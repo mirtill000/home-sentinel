@@ -57,6 +57,7 @@ from sentinel_detection import (
     EvilTwinDetector,
     RogueDhcpDetector,
 )
+from sentinel_dhcp_leases import fetch_dhcp_leases
 from sentinel_fingerprint import fingerprint_device, netbios_probe
 from sentinel_storage import SqliteStore
 
@@ -215,6 +216,10 @@ class LanDiscoveryService:
         alert_manager: AlertManager | None = None,
         arp_detection_enabled: bool = True,
         fingerprint_log: JsonlLogger | None = None,
+        dhcp_lease_source: str = "",
+        dhcp_lease_format: str = "auto",
+        dhcp_lease_poll_interval: float = 300.0,
+        dhcp_leases_log: JsonlLogger | None = None,
     ):
         self.subnet = subnet
         self.iface = iface
@@ -228,9 +233,36 @@ class LanDiscoveryService:
         self.alert_manager = alert_manager
         self.arp_detection_enabled = arp_detection_enabled
         self.fingerprint_log = fingerprint_log
+        self.dhcp_lease_source = dhcp_lease_source
+        self.dhcp_lease_format = dhcp_lease_format
+        self.dhcp_lease_poll_interval = dhcp_lease_poll_interval
+        self.dhcp_leases_log = dhcp_leases_log
         self.devices: dict[str, DeviceState] = {}
         self._last_port_scan: dict[str, float] = {}
         self._ip_owner: dict[str, str] = {}
+        self._dhcp_hostnames: dict[str, str] = {}
+        self._dhcp_lock = threading.Lock()
+        self._rescan_now = threading.Event()
+        self._last_lease_poll = 0.0
+
+    def note_dhcp_client(self, mac: str, hostname: str) -> None:
+        """Callback per il DHCP discovery monitor (DHCPDISCOVER/DHCPREQUEST osservati passivamente).
+
+        L'hostname dichiarato dal client via DHCP (opzione 12) è spesso più
+        affidabile e immediato del reverse DNS (non dipende da una
+        registrazione dinamica lato router) o del NetBIOS: ha priorità su
+        entrambi quando risolviamo l'hostname di un device. Un MAC mai visto
+        prima innesca anche una rescan immediata invece di aspettare il
+        prossimo ciclo periodico, per accorciare la latenza di rilevamento di
+        un device davvero nuovo (una DHCPREQUEST di rinnovo su un MAC già
+        noto non la innesca, per non scatenare uno scan ad ogni rinnovo).
+        """
+        mac = mac.lower()
+        if hostname:
+            with self._dhcp_lock:
+                self._dhcp_hostnames[mac] = hostname
+        if mac not in self.devices:
+            self._rescan_now.set()
 
     def run(self) -> None:
         LOG.info("LAN discovery avviato su %s (intervallo=%ss)", self.subnet, self.interval)
@@ -241,7 +273,18 @@ class LanDiscoveryService:
             except Exception:
                 LOG.exception("Ciclo di LAN discovery fallito")
             elapsed = time.time() - cycle_start
-            self.stop_event.wait(max(0.0, self.interval - elapsed))
+            self._wait_for_next_cycle(max(0.0, self.interval - elapsed))
+
+    def _wait_for_next_cycle(self, remaining: float) -> None:
+        """Come `stop_event.wait(remaining)`, ma si sveglia anche prima se `_rescan_now` viene impostato
+        (device nuovo visto via DHCP, vedi `note_dhcp_client`) — poll a grana fine (0.5s) perché
+        `threading.Event.wait` non supporta nativamente l'attesa su più eventi contemporaneamente."""
+        deadline = time.time() + remaining
+        while not self.stop_event.is_set() and not self._rescan_now.is_set():
+            if time.time() >= deadline:
+                return
+            time.sleep(min(0.5, max(0.0, deadline - time.time())))
+        self._rescan_now.clear()
 
     def _do_cycle(self) -> None:
         found = arp_scan(self.subnet, self.iface)
@@ -262,7 +305,14 @@ class LanDiscoveryService:
             hostname = state.hostname if state else ""
             vendor = state.vendor if state else ""
             if is_new or not hostname:
-                hostname = resolve_hostname(ip)
+                # Priorità: hostname dichiarato via DHCP (se osservato passivamente,
+                # vedi note_dhcp_client) > reverse DNS > NetBIOS. Il DHCP è spesso il
+                # più affidabile: dichiarato dal client stesso, non dipende da una
+                # registrazione dinamica lato router come il reverse DNS.
+                with self._dhcp_lock:
+                    hostname = self._dhcp_hostnames.get(mac, "")
+                if not hostname:
+                    hostname = resolve_hostname(ip)
                 if not hostname:
                     # Molti device (specie IoT/stampanti) non hanno un PTR DNS ma
                     # rispondono comunque a una query NetBIOS: un secondo metodo di
@@ -278,7 +328,9 @@ class LanDiscoveryService:
                 open_ports = scan_ports(ip, self.ports)
                 self._last_port_scan[mac] = now
                 if self.fingerprint_log is not None:
-                    self._fingerprint_and_log(ip, mac, open_ports, vendor)
+                    mdns_name = self._fingerprint_and_log(ip, mac, open_ports, vendor)
+                    if mdns_name and not hostname:
+                        hostname = mdns_name
 
             self.devices[mac] = DeviceState(ip=ip, hostname=hostname, vendor=vendor, last_seen=now, online=True)
             self._write("new" if is_new else "online", ip, mac, hostname, vendor, open_ports)
@@ -290,6 +342,39 @@ class LanDiscoveryService:
             if mac not in seen_macs and state.online:
                 state.online = False
                 self._write("offline", state.ip, mac, state.hostname, state.vendor, [])
+
+        if self.dhcp_lease_source and (now - self._last_lease_poll >= self.dhcp_lease_poll_interval):
+            self._last_lease_poll = now
+            self._cross_check_leases(seen_macs)
+
+    def _cross_check_leases(self, seen_macs: set[str]) -> None:
+        """Confronta la tabella lease del router con i MAC che hanno risposto all'ARP scan in questo ciclo.
+
+        Un device presente nelle lease ma silenzioso sull'ARP scan non è
+        necessariamente un problema (può essere spento/addormentato, o
+        firewallato contro ARP non richiesti): è solo un dato in più, loggato
+        con `arp_confirmed=False`, non un alert — a differenza dei rilevatori
+        di sicurezza veri e propri di sentinel_detection.py.
+        """
+        leases = fetch_dhcp_leases(self.dhcp_lease_source, self.dhcp_lease_format)
+        if not leases:
+            return
+        ts = now_iso()
+        for lease in leases:
+            mac = lease["mac"]
+            row = {
+                "timestamp": ts,
+                "mac": mac,
+                "ip": lease.get("ip", ""),
+                "hostname": lease.get("hostname", ""),
+                "arp_confirmed": mac in seen_macs,
+            }
+            if self.dhcp_leases_log is not None:
+                self.dhcp_leases_log.write(row)
+            if self.sqlite_store:
+                self.sqlite_store.insert_dhcp_lease(row)
+        LOG.debug("Cross-check lease DHCP: %d lease, %d non confermate su ARP",
+                   len(leases), sum(1 for lease in leases if lease["mac"] not in seen_macs))
 
     def _check_arp_conflict(self, ip: str, mac: str) -> None:
         """Segnala solo un conflitto reale: due MAC diversi, entrambi online, che rivendicano lo stesso IP.
@@ -312,17 +397,20 @@ class LanDiscoveryService:
                 ip=ip, mac=mac, details={"mac_precedente": prev_mac, "mac_nuovo": mac},
             )
 
-    def _fingerprint_and_log(self, ip: str, mac: str, open_ports: list[int], vendor: str) -> None:
+    def _fingerprint_and_log(self, ip: str, mac: str, open_ports: list[int], vendor: str) -> str:
+        """Esegue il fingerprint e lo logga; ritorna il nome mDNS del device (stringa vuota se non trovato/fallito),
+        così _do_cycle può usarlo per completare l'hostname quando reverse DNS/NetBIOS non hanno dato nulla."""
         try:
             result = fingerprint_device(ip, open_ports, vendor)
         except Exception:
             LOG.exception("Fingerprint fallito per %s", ip)
-            return
+            return ""
         row = {"timestamp": now_iso(), "mac": mac, "ip": ip, **result}
         self.fingerprint_log.write(row)
         if self.sqlite_store:
             self.sqlite_store.insert_fingerprint(row)
         LOG.debug("Fingerprint ip=%s mac=%s type=%s services=%s", ip, mac, result["device_type"], result["services"])
+        return result.get("mdns_name") or ""
 
     def _write(self, status: str, ip: str, mac: str, hostname: str, vendor: str, open_ports: list[int]) -> None:
         row = {
@@ -673,6 +761,108 @@ class BleScanMonitor:
 
 
 # --------------------------------------------------------------------------
+# OS fingerprinting passivo
+# --------------------------------------------------------------------------
+
+# TTL iniziale tipico dei principali stack IP: sulla stessa subnet L2 (nessun
+# router nel mezzo che lo decrementa) il TTL osservato coincide con quello di
+# partenza del device, quindi è un indizio ragionevole — ma resta un'euristica
+# grezza, non un'identificazione: più sistemi operativi condividono lo stesso
+# valore (64 è il default sia di Linux sia di macOS/Android/iOS moderni).
+TTL_OS_BUCKETS = [
+    (64, "Linux / Android / macOS / iOS (TTL iniziale tipico 64)"),
+    (128, "Windows (TTL iniziale tipico 128)"),
+    (255, "Apparato di rete o Unix legacy (TTL iniziale tipico 255)"),
+]
+
+
+def guess_os_from_ttl(ttl: int | None) -> str:
+    if ttl is None:
+        return ""
+    for value, label in TTL_OS_BUCKETS:
+        if ttl <= value:
+            return label
+    return f"TTL {ttl} (fuori dai bucket noti)"
+
+
+class OsFingerprintMonitor:
+    """Sniffing passivo di pacchetti TCP con flag SYN (SYN o SYN-ACK) su `--lan-iface`.
+
+    Non è un p0f completo (nessun database di firme dello stack TCP/IP):
+    osserva solo il TTL IP e la window size TCP di pacchetti che il device
+    manda comunque — inclusi i SYN-ACK di risposta al port scan attivo già
+    in corso — e ne ricava un'euristica grezza (vedi `guess_os_from_ttl`),
+    onestamente etichettata come tale. La window size viene salvata per
+    riferimento ma non entra nell'euristica: dipende troppo da window
+    scaling/configurazioni custom per essere un indizio affidabile senza un
+    vero database di firme, che qui non c'è.
+    """
+
+    def __init__(
+        self,
+        iface: str | None,
+        log: JsonlLogger,
+        stop_event: threading.Event,
+        sqlite_store: SqliteStore | None = None,
+        interval: float = 300.0,
+    ):
+        self.iface = iface
+        self.log = log
+        self.stop_event = stop_event
+        self.sqlite_store = sqlite_store
+        self.interval = interval
+        self._last_logged: dict[str, float] = {}
+
+    def _handle_packet(self, pkt) -> None:
+        try:
+            from scapy.all import Ether, IP, TCP
+        except Exception:
+            return
+        if not (pkt.haslayer(Ether) and pkt.haslayer(IP) and pkt.haslayer(TCP)):
+            return
+        mac = (pkt[Ether].src or "").lower()
+        if not mac:
+            return
+
+        now = time.time()
+        if now - self._last_logged.get(mac, 0.0) < self.interval:
+            return
+        self._last_logged[mac] = now
+
+        ttl = pkt[IP].ttl
+        row = {
+            "timestamp": now_iso(),
+            "mac": mac,
+            "ip": pkt[IP].src,
+            "ttl": ttl,
+            "window": pkt[TCP].window,
+            "os_guess": guess_os_from_ttl(ttl),
+        }
+        self.log.write(row)
+        if self.sqlite_store:
+            self.sqlite_store.insert_os_fingerprint(row)
+        LOG.debug("OS fingerprint mac=%s ip=%s ttl=%s window=%s guess=%s",
+                   mac, row["ip"], ttl, row["window"], row["os_guess"])
+
+    def run(self) -> None:
+        try:
+            from scapy.all import sniff
+        except ImportError:
+            LOG.error("scapy non disponibile: OS fingerprint monitor non avviato")
+            return
+
+        LOG.info("OS fingerprint monitor avviato%s", f" su {self.iface}" if self.iface else "")
+        try:
+            while not self.stop_event.is_set():
+                sniff(
+                    iface=self.iface, filter="tcp[13] & 2 != 0",
+                    prn=self._handle_packet, store=False, timeout=1,
+                )
+        except Exception:
+            LOG.exception("OS fingerprint monitor terminato con errore")
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
@@ -701,6 +891,30 @@ def parse_args() -> argparse.Namespace:
         "--lan-log",
         default="/var/log/home-sentinel/lan_discovery.jsonl",
         help="Percorso file JSON Lines output LAN discovery",
+    )
+    p.add_argument(
+        "--dhcp-lease-source",
+        default="",
+        help="Percorso locale o URL http(s) della tabella lease DHCP del router, per il cross-check con "
+        "l'ARP scan (vuoto = disabilitato; vedi README per i formati supportati)",
+    )
+    p.add_argument(
+        "--dhcp-lease-format",
+        choices=["auto", "dnsmasq", "json"],
+        default="auto",
+        help="Formato di --dhcp-lease-source: 'dnsmasq' (dnsmasq.leases nativo), 'json' (array generico, "
+        "vedi README), 'auto' (indovina dal contenuto)",
+    )
+    p.add_argument(
+        "--dhcp-lease-poll-interval",
+        type=float,
+        default=300.0,
+        help="Intervallo minimo (s) tra due letture di --dhcp-lease-source",
+    )
+    p.add_argument(
+        "--dhcp-leases-log",
+        default="/var/log/home-sentinel/dhcp_leases.jsonl",
+        help="Percorso file JSON Lines del cross-check lease DHCP / ARP scan (richiede --dhcp-lease-source)",
     )
 
     p.add_argument(
@@ -760,6 +974,24 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
+        "--os-fingerprint",
+        action="store_true",
+        help="Abilita l'euristica passiva del sistema operativo (da TTL/window size dei pacchetti "
+        "TCP SYN/SYN-ACK già visibili su --lan-iface, nessuna sonda attiva aggiuntiva)",
+    )
+    p.add_argument(
+        "--os-fingerprint-log",
+        default="/var/log/home-sentinel/os_fingerprint.jsonl",
+        help="Percorso file JSON Lines output euristica OS",
+    )
+    p.add_argument(
+        "--os-fingerprint-interval",
+        type=float,
+        default=300.0,
+        help="Intervallo minimo (s) tra due righe di log per lo stesso MAC",
+    )
+
+    p.add_argument(
         "--alerts-log",
         default="/var/log/home-sentinel/alerts_detection.jsonl",
         help="Percorso file JSON Lines degli alert generati dai rilevatori (anomalie, ARP, DHCP, evil twin)",
@@ -789,6 +1021,18 @@ def parse_args() -> argparse.Namespace:
         "--dhcp-iface",
         default=None,
         help="Interfaccia su cui sniffare il traffico DHCP (default: stessa di --lan-iface)",
+    )
+    p.add_argument(
+        "--dhcp-discovery",
+        action="store_true",
+        help="Osserva passivamente i DHCPDISCOVER/DHCPREQUEST dei client (stesso sniff loop di "
+        "--detect-rogue-dhcp, indipendente da esso) per un hostname più affidabile del reverse DNS "
+        "e una rescan LAN immediata quando compare un MAC mai visto",
+    )
+    p.add_argument(
+        "--dhcp-events-log",
+        default="/var/log/home-sentinel/dhcp_events.jsonl",
+        help="Percorso file JSON Lines degli eventi DHCP client osservati (richiede --dhcp-discovery)",
     )
 
     p.add_argument(
@@ -902,6 +1146,7 @@ def main() -> None:
 
     lan_log = make_logger(args.lan_log)
     ports = [int(port) for port in args.ports.split(",") if port.strip()]
+    dhcp_leases_log = make_logger(args.dhcp_leases_log) if args.dhcp_lease_source else None
     lan_service = LanDiscoveryService(
         subnet=args.subnet,
         iface=args.lan_iface,
@@ -915,6 +1160,10 @@ def main() -> None:
         alert_manager=alert_manager,
         arp_detection_enabled=not args.no_arp_detection,
         fingerprint_log=fingerprint_log,
+        dhcp_lease_source=args.dhcp_lease_source,
+        dhcp_lease_format=args.dhcp_lease_format,
+        dhcp_lease_poll_interval=args.dhcp_lease_poll_interval,
+        dhcp_leases_log=dhcp_leases_log,
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
 
@@ -965,15 +1214,33 @@ def main() -> None:
     else:
         LOG.info("Nessun --ble indicato: modulo scan BLE disabilitato")
 
-    if args.detect_rogue_dhcp:
+    dhcp_events_log = None
+    if args.detect_rogue_dhcp or args.dhcp_discovery:
         trusted_servers = {s.strip() for s in args.dhcp_trusted_servers.split(",") if s.strip()}
+        if args.dhcp_discovery:
+            dhcp_events_log = make_logger(args.dhcp_events_log)
         dhcp_detector = RogueDhcpDetector(
             iface=args.dhcp_iface or args.lan_iface,
             trusted_servers=trusted_servers,
             alert_manager=alert_manager,
             stop_event=stop_event,
+            discovery_log=dhcp_events_log,
+            sqlite_store=sqlite_store,
+            on_client_event=lan_service.note_dhcp_client if args.dhcp_discovery else None,
         )
         threads.append(threading.Thread(target=dhcp_detector.run, name="rogue-dhcp-detector", daemon=True))
+
+    os_fingerprint_log = None
+    if args.os_fingerprint:
+        os_fingerprint_log = make_logger(args.os_fingerprint_log)
+        os_fingerprint_service = OsFingerprintMonitor(
+            iface=args.lan_iface,
+            log=os_fingerprint_log,
+            stop_event=stop_event,
+            sqlite_store=sqlite_store,
+            interval=args.os_fingerprint_interval,
+        )
+        threads.append(threading.Thread(target=os_fingerprint_service.run, name="os-fingerprint", daemon=True))
 
     for t in threads:
         t.start()
@@ -996,6 +1263,12 @@ def main() -> None:
             ble_log.close()
         if fingerprint_log:
             fingerprint_log.close()
+        if dhcp_events_log:
+            dhcp_events_log.close()
+        if os_fingerprint_log:
+            os_fingerprint_log.close()
+        if dhcp_leases_log:
+            dhcp_leases_log.close()
         alerts_log.close()
         if sqlite_store:
             sqlite_store.close()

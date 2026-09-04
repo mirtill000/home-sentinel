@@ -25,6 +25,12 @@ Type=simple
 # "--detect-rogue-dhcp \" per il rilevamento rogue DHCP,
 # "--home-ssid CasaWiFi \" per il rilevamento evil twin WiFi (richiede
 # --wifi-iface).
+#
+# Moduli di discovery avanzata opzionali, non detector di sicurezza (vedi
+# README, sezione "Moduli di discovery avanzata"): "--dhcp-discovery \" per
+# hostname via DHCP e rescan immediata su device nuovo, "--os-fingerprint \"
+# per l'euristica passiva del sistema operativo, "--dhcp-lease-source
+# /percorso/o/URL \" per il cross-check con le lease DHCP del router.
 ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
     --subnet 192.168.1.0/24
 WorkingDirectory=/opt/home-sentinel

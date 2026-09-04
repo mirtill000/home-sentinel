@@ -81,10 +81,18 @@ una rete affollata: la rotazione evita che cresca senza limite.
 Una riga per ogni device visto ad ogni ciclo di scan (`status=new|online`),
 più una riga `status=offline` la prima volta che un device smette di
 rispondere. `open_ports` è un array di interi (es. `[22, 80]`), non una
-stringa. `hostname` viene risolto via reverse DNS e, se il device non ha un
-PTR (comune per molti IoT/stampanti), con un secondo tentativo via query
-NetBIOS diretta al device — resta comunque vuoto se nessuno dei due
-risponde.
+stringa. `hostname` viene risolto in ordine di priorità da: (1) l'hostname
+dichiarato via DHCP se osservato passivamente (`--dhcp-discovery`, vedi
+sotto — spesso il più affidabile, dichiarato dal client stesso); (2) reverse
+DNS; (3) query NetBIOS diretta al device; (4) il nome mDNS del device se
+`--fingerprint` è attivo e ha trovato qualcosa in quel ciclo di port scan
+(vedi `fingerprint_discovery.jsonl` sotto) — resta vuoto se nessuna delle
+quattro fonti dà risultato.
+
+Il ciclo di scan normalmente segue `--interval` (default 60s), ma con
+`--dhcp-discovery` attivo un MAC mai visto prima innesca una rescan
+immediata invece di aspettare il prossimo ciclo, per accorciare la latenza
+di rilevamento di un device davvero nuovo.
 
 Il port scan (`--ports`) di default copre le porte **1-1024** ("well-known")
 più **50 porte "alte"** comuni per servizi self-hosted/home-lab/IoT tipici
@@ -109,13 +117,56 @@ Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
 è `null` se il device non lo include nell'advertisement.
 
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
-`{timestamp, mac, ip, device_type, services, ssdp, netbios_name, banners}`
+`{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
 Una riga per ogni fingerprint eseguito su un device LAN (alla prima
 rilevazione e ad ogni port scan periodico). `device_type` è una
 classificazione euristica (es. "Stampante", "Google Cast / Chromecast",
 "PC/Server Windows (SMB)"); `services` i tipi di servizio mDNS trovati,
-`ssdp` gli header SSDP/UPnP di risposta, `banners` i banner raccolti sulle
-porte aperte (chiave = porta).
+`ssdp` gli header SSDP/UPnP di risposta, `mdns_name` il nome "amichevole"
+del device se trovato via mDNS (es. "Cucina Alexa" — richiede fino a due
+query mDNS, vedi `sentinel_fingerprint.py`), `banners` i banner raccolti
+sulle porte aperte (chiave = porta).
+
+**`dhcp_events.jsonl`** (`--dhcp-discovery`, indipendente da `--detect-rogue-dhcp`
+ma sullo stesso sniff loop DHCP su `--dhcp-iface`):
+`{timestamp, event, mac, hostname, requested_ip}`
+Una riga per ogni DHCPDISCOVER/DHCPREQUEST osservato passivamente
+(`event=discover|request`). `hostname` è quello dichiarato dal client
+(opzione DHCP 12, spesso vuota se il client non la invia). Alimenta anche
+`lan_discovery.jsonl` (priorità sull'hostname, vedi sopra) e la rescan LAN
+immediata su un MAC nuovo.
+
+**`os_fingerprint.jsonl`** (`--os-fingerprint`, sniffing passivo su `--lan-iface`):
+`{timestamp, mac, ip, ttl, window, os_guess}`
+Una riga per MAC (non più di una ogni `--os-fingerprint-interval` secondi,
+default 300s), da pacchetti TCP con flag SYN (SYN o SYN-ACK) — inclusi i
+SYN-ACK di risposta al port scan attivo già in corso, nessuna sonda
+aggiuntiva. `os_guess` è un'**euristica grezza** sul solo TTL IP (vedi
+`guess_os_from_ttl` in `home_sentinel.py`): sulla stessa subnet L2 il TTL
+osservato coincide con quello di partenza del device (nessun router nel
+mezzo lo decrementa), ma più sistemi condividono lo stesso valore iniziale
+(64 è il default sia di Linux sia di macOS/Android/iOS), quindi resta un
+indizio, non un'identificazione certa — non è un p0f completo, nessun
+database di firme. `window` è salvato per riferimento ma non entra
+nell'euristica (troppo sensibile a window scaling/configurazioni custom).
+
+**`dhcp_leases.jsonl`** (`--dhcp-lease-source`):
+`{timestamp, mac, ip, hostname, arp_confirmed}`
+Cross-check periodico (`--dhcp-lease-poll-interval`, default 300s) tra la
+tabella lease del router e l'ultimo ciclo di ARP scan: una riga per lease,
+con `arp_confirmed=false` se quel MAC non ha risposto all'ARP scan più
+recente (può essere spento/addormentato/firewallato, non necessariamente
+un problema — vedi il modulo di detection più sotto per cosa invece *è*
+un alert). Non esiste un'API universale per leggere le lease di un router
+qualsiasi: `--dhcp-lease-source` accetta un path locale o un URL http(s),
+`--dhcp-lease-format` il formato — `dnsmasq` (il formato nativo
+`dnsmasq.leases`, usato da molti router OpenWrt/pfSense/Pi-hole, o dal
+Pi stesso se ci gira dnsmasq), `json` (un array generico
+`[{"mac": ..., "ip": ..., "hostname": ...}, ...]`, per router che non
+espongono dnsmasq.leases — un piccolo script/cron lato router, se
+supportato, può convertire le proprie lease in questo formato e
+pubblicarle su un file letto dal Pi via rete o URL), `auto` (default,
+indovina dal contenuto).
 
 **`alerts_detection.jsonl`**:
 `{timestamp, severity, type, mac, ip, message, details}`
@@ -198,6 +249,34 @@ a posteriori:
   60) su `wifi_traffic.jsonl` e, se attivo, sullo specchio SQLite. È una
   stima relativa (vedi sopra), non una misura di banda reale.
 
+## Moduli di discovery avanzata
+
+A differenza dei moduli sopra, questi non generano alert (non sono
+detector di sicurezza): arricchiscono la sola discovery — hostname più
+affidabili, latenza minore su un device nuovo, un'euristica sul sistema
+operativo, un cross-check con una fonte esterna al Pi:
+
+- **DHCP client discovery** (`--dhcp-discovery`, opzionale, indipendente da
+  `--detect-rogue-dhcp` ma sullo stesso sniff loop DHCP): osserva
+  passivamente i DHCPDISCOVER/DHCPREQUEST dei client su `--dhcp-iface` per
+  un hostname (opzione DHCP 12) spesso più affidabile del reverse DNS —
+  dichiarato dal client stesso, non dipende da una registrazione dinamica
+  lato router — e per una rescan LAN immediata quando compare un MAC mai
+  visto, invece di aspettare il prossimo ciclo di `--interval`. Vedi
+  `dhcp_events.jsonl` sopra.
+- **OS fingerprint passivo** (`--os-fingerprint`, opzionale): euristica
+  grezza sul sistema operativo dal TTL IP dei pacchetti TCP SYN/SYN-ACK già
+  visibili su `--lan-iface` (inclusi i SYN-ACK di risposta al port scan
+  attivo già in corso), nessuna sonda aggiuntiva. Onestamente etichettata
+  come euristica, non un'identificazione certa — vedi `os_fingerprint.jsonl`
+  sopra per i dettagli e i limiti.
+- **Cross-check lease DHCP del router** (`--dhcp-lease-source`, opzionale):
+  confronta periodicamente la tabella lease del router (dnsmasq.leases o un
+  JSON generico, vedi `dhcp_leases.jsonl` sopra) con l'ultimo ciclo di ARP
+  scan, per rilevare device presenti nelle lease ma silenziosi sull'ARP
+  scan (spenti, addormentati, o firewallati contro ARP non richiesti — non
+  necessariamente un problema, solo un dato in più).
+
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
@@ -228,12 +307,23 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   `--fingerprint` è attivo) e punteggio di rischio 0-100 (euristica su porte
   esposte e alert collegati); il nome host apre il **profilo completo** del
   dispositivo (cronologia LAN, probe WiFi, advertisement BLE, alert e
-  fingerprint riuniti in un'unica vista). Da qui, o dal menu azioni di una
-  riga, puoi assegnare un **nome personalizzato** a un device e
-  contrassegnarlo come **fidato**: riduce il punteggio di rischio e la
-  severità degli alert collegati (di un livello), senza nasconderli. Dati
-  salvati solo nel browser (`localStorage`), non richiedono modifiche al
-  daemon.
+  fingerprint riuniti in un'unica vista, più — se le relative fonti dati
+  sono disponibili — nome mDNS ed euristica del sistema operativo, e un
+  badge se il device compare nella tabella lease del router ma non risponde
+  all'ultimo ARP scan). Da qui, o dal menu azioni di una riga, puoi
+  assegnare un **nome personalizzato** a un device e contrassegnarlo come
+  **fidato**: riduce il punteggio di rischio e la severità degli alert
+  collegati (di un livello), senza nasconderli. Dal profilo del device puoi
+  anche collegare **più MAC alla stessa identità fisica** ("stesso device
+  come"), utile per un device con interfacce WiFi ed Ethernet separate o
+  con MAC randomizzati: nome e stato "fidato" si condividono tra i MAC
+  collegati; se un altro MAC ha lo stesso hostname e non è ancora
+  collegato, un suggerimento scartabile propone l'unione (mai automatica).
+  Sempre nel profilo, la sezione **Uptime** ricostruisce le sessioni
+  online/offline del device dalle transizioni di stato già presenti nel
+  log LAN (nessun dato nuovo raccolto, solo un modo diverso di guardare
+  quello già scritto). Tutti questi dati sono salvati solo nel browser
+  (`localStorage`), non richiedono modifiche al daemon.
 - **Scansioni** — cronologia dei cicli di discovery LAN ricostruita dal log.
 - **Timeline** — feed cronologico unificato degli eventi notevoli (nuovi
   device, offline, alert, fingerprint), filtrabile per categoria.

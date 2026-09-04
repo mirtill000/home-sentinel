@@ -4,8 +4,9 @@ Incrocia quattro fonti leggere, tutte via socket UDP/TCP standard (nessuna
 dipendenza aggiuntiva oltre scapy, già richiesto dal resto del daemon):
 
   - mDNS: query "_services._dns-sd._udp.local" via multicast, con match sui
-    tipi di servizio noti nella risposta grezza (Chromecast, AirPlay,
-    HomeKit, stampanti IPP, SMB, ecc.).
+    tipi di servizio noti nella risposta (Chromecast, AirPlay, HomeKit,
+    stampanti IPP, SMB, ecc.) più, quando disponibile, il nome "amichevole"
+    del device (es. "Cucina Alexa") da un'eventuale seconda query mirata.
   - SSDP/UPnP: M-SEARCH multicast, con parsing degli header HTTP-like della
     risposta (SERVER, ST, USN, LOCATION).
   - NetBIOS (NBSTAT su UDP/137): nome NetBIOS del device, tipico di PC/server
@@ -39,20 +40,26 @@ KNOWN_MDNS_SERVICE_TOKENS = [
 HTTP_PORTS = {80, 443, 8080, 8443, 5000}
 
 
-def mdns_probe(ip: str, timeout: float = 1.5) -> list[str]:
-    """Interroga mDNS per i tipi di servizio pubblicizzati da `ip`.
+def _decode_dns_name(value) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("latin-1", errors="ignore")
+    return str(value).rstrip(".")
 
-    Parsing "a occhio" sui byte grezzi della risposta invece di decodificare
-    i record DNS: più robusto alle differenze tra implementazioni mDNS dei
-    device reali, sufficiente per un match euristico sui token noti.
-    """
+
+def _iter_dns_records(pkt):
+    for section in (pkt.an, pkt.ns, pkt.ar):
+        for rr in section:
+            yield rr
+
+
+def _mdns_query(ip: str, qname: str, qtype: str, timeout: float) -> list:
+    """Invia una query mDNS unicast a `ip` e ritorna tutti i pacchetti DNS di risposta ricevuti entro `timeout`."""
     try:
         from scapy.all import DNS, DNSQR
     except Exception:
         return []
-
-    query = DNS(rd=1, qd=DNSQR(qname="_services._dns-sd._udp.local.", qtype="PTR", qclass="IN"))
-    found: list[str] = []
+    query = DNS(rd=1, qd=DNSQR(qname=qname, qtype=qtype, qclass="IN"))
+    responses = []
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.sendto(bytes(query), ("224.0.0.251", 5353))
@@ -68,15 +75,66 @@ def mdns_probe(ip: str, timeout: float = 1.5) -> list[str]:
                 break
             if addr[0] != ip:
                 continue
-            text = data.decode("latin-1", errors="ignore")
-            for token in KNOWN_MDNS_SERVICE_TOKENS:
-                if token in text and token not in found:
-                    found.append(token)
+            try:
+                responses.append(DNS(data))
+            except Exception:
+                continue
     except OSError:
         pass
     finally:
         sock.close()
-    return found
+    return responses
+
+
+def mdns_probe(ip: str, timeout: float = 1.5) -> tuple[list[str], str]:
+    """Interroga mDNS: tipi di servizio pubblicizzati da `ip` + il suo nome "amichevole" (best-effort).
+
+    Al più due round trip: la prima query (RFC 6763 §9, "list of service
+    types") ritorna solo i *tipi* di servizio esposti, non il nome
+    dell'istanza — per quello serve una seconda query mirata sul primo tipo
+    trovato (la cui risposta PTR contiene il nome, es.
+    "Cucina Alexa._amzn-wplay._tcp.local"); saltata se la prima risposta
+    include già un record proprio del device (alcuni responder lo allegano
+    come extra senza che serva chiederlo). I nomi vengono letti dai campi
+    DNS già decompressi da scapy, non da un match sui byte grezzi: i record
+    DNS-SD usano quasi sempre la compressione dei nomi, che un semplice
+    match testuale sulla risposta grezza non riconoscerebbe.
+    """
+    try:
+        from scapy.all import DNS  # noqa: F401 — solo per verificare che scapy sia disponibile
+    except Exception:
+        return [], ""
+
+    found: list[str] = []
+    mdns_name = ""
+
+    for pkt in _mdns_query(ip, "_services._dns-sd._udp.local.", "PTR", timeout):
+        for rr in _iter_dns_records(pkt):
+            rrname = _decode_dns_name(getattr(rr, "rrname", b""))
+            if getattr(rr, "type", None) == 12:  # PTR
+                rdata = _decode_dns_name(getattr(rr, "rdata", b""))
+                token = next(
+                    (t for t in KNOWN_MDNS_SERVICE_TOKENS if rdata == t or rdata.startswith(t + ".")), None,
+                )
+                if token and token not in found:
+                    found.append(token)
+            if not mdns_name and rrname and not rrname.startswith("_") and rrname.endswith(".local"):
+                mdns_name = rrname[:-len(".local")]
+
+    if not mdns_name and found:
+        suffix = f".{found[0]}.local"
+        for pkt in _mdns_query(ip, f"{found[0]}.local.", "PTR", min(timeout, 1.0)):
+            for rr in _iter_dns_records(pkt):
+                if getattr(rr, "type", None) != 12:
+                    continue
+                rdata = _decode_dns_name(getattr(rr, "rdata", b""))
+                if rdata.endswith(suffix):
+                    mdns_name = rdata[:-len(suffix)]
+                    break
+            if mdns_name:
+                break
+
+    return found, mdns_name
 
 
 def ssdp_probe(ip: str, timeout: float = 1.5) -> dict:
@@ -242,7 +300,7 @@ def classify_device(
 
 def fingerprint_device(ip: str, open_ports: list[int], vendor: str = "") -> dict:
     """Esegue tutte le sonde e ritorna un fingerprint pronto da loggare."""
-    services = mdns_probe(ip)
+    services, mdns_name = mdns_probe(ip)
     ssdp_info = ssdp_probe(ip)
     netbios_name = netbios_probe(ip)
     banners = {}
@@ -257,5 +315,6 @@ def fingerprint_device(ip: str, open_ports: list[int], vendor: str = "") -> dict
         "services": services,
         "ssdp": ssdp_info,
         "netbios_name": netbios_name,
+        "mdns_name": mdns_name,
         "banners": banners,
     }
