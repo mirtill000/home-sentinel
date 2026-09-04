@@ -863,6 +863,52 @@ class OsFingerprintMonitor:
 
 
 # --------------------------------------------------------------------------
+# Rollup giornaliero per il Trend della dashboard
+# --------------------------------------------------------------------------
+
+class TrendRollupService:
+    """Ricalcola periodicamente conteggi giornalieri (nuovi device, alert) dallo specchio SQLite
+    e ne appende su JSONL solo le righe cambiate rispetto all'ultimo giro.
+
+    Perché serve: la dashboard scarica solo la coda dei JSONL grezzi oltre una certa dimensione
+    (TAIL_FETCH_BYTES lato dashboard) e il daemon li ruota oltre --max-log-size-mb — su una rete
+    affollata (specie wifi_probes.jsonl) il "Trend" a 30 giorni può quindi risultare incompleto ben
+    prima che i dati siano davvero scomparsi: esistono ancora, solo non nella coda scaricata. Questo
+    rollup attinge invece all'intero storico indicizzato in SQLite, e il file che produce resta
+    piccolo (poche righe al giorno, non un evento per probe) anche su mesi di storico.
+
+    Un giorno passato, una volta scritto, non cambia più (i conteggi sono definitivi): solo "oggi"
+    viene riscritto ai giri successivi finché il conteggio continua a crescere. Il file resta
+    append-only come tutti gli altri log del daemon: la dashboard prende l'ultima riga per data
+    (l'ordine cronologico del file garantisce che sia quella più aggiornata).
+    """
+
+    def __init__(self, sqlite_store: SqliteStore, log: JsonlLogger, stop_event: threading.Event,
+                 interval: float = 3600.0):
+        self.sqlite_store = sqlite_store
+        self.log = log
+        self.stop_event = stop_event
+        self.interval = interval
+        self._last_written: dict[str, tuple[int, int]] = {}
+
+    def _compute_and_write(self) -> None:
+        for day, counts in self.sqlite_store.daily_counts().items():
+            if self._last_written.get(day) == counts:
+                continue
+            self._last_written[day] = counts
+            self.log.write({"date": day, "new_devices": counts[0], "alerts": counts[1]})
+
+    def run(self) -> None:
+        LOG.info("Trend rollup avviato (intervallo=%ss)", self.interval)
+        while not self.stop_event.is_set():
+            try:
+                self._compute_and_write()
+            except Exception:
+                LOG.exception("Rollup trend giornaliero fallito")
+            self.stop_event.wait(self.interval)
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
@@ -961,6 +1007,24 @@ def parse_args() -> argparse.Namespace:
         help="Percorso database SQLite (specchio indicizzato dei log JSON Lines, per query storiche)",
     )
     p.add_argument("--no-db", action="store_true", help="Disabilita lo specchio SQLite")
+
+    p.add_argument(
+        "--no-trend-rollup",
+        action="store_true",
+        help="Disabilita il rollup giornaliero per il Trend della dashboard (richiede lo specchio "
+        "SQLite, quindi non ha effetto se combinato con --no-db)",
+    )
+    p.add_argument(
+        "--trend-rollup-log",
+        default="/var/log/home-sentinel/trend_daily.jsonl",
+        help="Percorso file JSON Lines del rollup giornaliero (nuovi device, alert)",
+    )
+    p.add_argument(
+        "--trend-rollup-interval",
+        type=float,
+        default=3600.0,
+        help="Intervallo (s) di ricalcolo del rollup giornaliero dallo specchio SQLite",
+    )
 
     p.add_argument(
         "--fingerprint",
@@ -1167,6 +1231,17 @@ def main() -> None:
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
 
+    trend_rollup_log = None
+    if sqlite_store is not None and not args.no_trend_rollup:
+        trend_rollup_log = make_logger(args.trend_rollup_log)
+        trend_rollup_service = TrendRollupService(
+            sqlite_store=sqlite_store, log=trend_rollup_log, stop_event=stop_event,
+            interval=args.trend_rollup_interval,
+        )
+        threads.append(threading.Thread(target=trend_rollup_service.run, name="trend-rollup", daemon=True))
+    elif args.no_db and not args.no_trend_rollup:
+        LOG.info("--no-db attivo: rollup trend giornaliero disabilitato (richiede lo specchio SQLite)")
+
     home_ssids = {s.strip() for s in args.home_ssid.split(",") if s.strip()}
 
     probe_log = None
@@ -1269,6 +1344,8 @@ def main() -> None:
             os_fingerprint_log.close()
         if dhcp_leases_log:
             dhcp_leases_log.close()
+        if trend_rollup_log:
+            trend_rollup_log.close()
         alerts_log.close()
         if sqlite_store:
             sqlite_store.close()

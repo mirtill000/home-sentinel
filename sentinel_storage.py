@@ -308,6 +308,29 @@ class SqliteStore:
             )
             self._conn.commit()
 
+    def daily_counts(self) -> dict[str, tuple[int, int]]:
+        """Conteggi giornalieri (nuovi device, alert) su tutto lo storico in SQLite, raggruppati per
+        data UTC (i primi 10 caratteri di `timestamp`, sempre ISO 8601 UTC da `now_iso()`).
+
+        Usato da TrendRollupService per scrivere `trend_daily.jsonl`: a differenza dei JSONL grezzi,
+        che la dashboard può leggere solo in coda oltre una certa dimensione, questa query attinge
+        all'intero storico indicizzato, quindi non risente di alcun troncamento.
+        """
+        with self._lock:
+            new_rows = self._conn.execute(
+                "SELECT substr(timestamp, 1, 10) AS day, COUNT(*) FROM lan_events "
+                "WHERE status = 'new' GROUP BY day"
+            ).fetchall()
+            alert_rows = self._conn.execute(
+                "SELECT substr(timestamp, 1, 10) AS day, COUNT(*) FROM alerts GROUP BY day"
+            ).fetchall()
+        counts: dict[str, list[int]] = {}
+        for day, n in new_rows:
+            counts.setdefault(day, [0, 0])[0] = n
+        for day, n in alert_rows:
+            counts.setdefault(day, [0, 0])[1] = n
+        return {day: (v[0], v[1]) for day, v in counts.items()}
+
     def load_baselines(self) -> dict[str, dict]:
         with self._lock:
             cur = self._conn.execute(
