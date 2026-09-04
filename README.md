@@ -318,10 +318,14 @@ operativo, un cross-check con una fonte esterna al Pi:
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
 utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
-e alert di detection. In qualsiasi punto della dashboard, **Ctrl+K** (⌘K su
-Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni tabella
-ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno scorrimento
-pagine.
+e alert di detection. **Nearby è la home**: è la prima voce del menu
+laterale e la pagina che si apre di default (`dashboard/` senza `#/...`
+nell'URL); include anche un riepilogo compatto della pagina Host (host
+totali/attivi/offline, distribuzione del rischio) con un pulsante per
+aprire l'elenco completo. In qualsiasi punto della dashboard, **Ctrl+K**
+(⌘K su Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni
+tabella ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno
+scorrimento pagine.
 
 Per i file JSONL oltre 4MB (tipicamente `wifi_probes.jsonl`, il più
 "rumoroso"), la dashboard scarica solo la coda più recente via **HTTP
@@ -377,13 +381,15 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e
   avvistamenti, ricercabile e paginata — e in fondo il log advertisement
   grezzo.
-- **Nearby** (ex "Dintorni") — casetta isometrica grande e centrata, con
-  riquadri collegati da linee guida per SSID cercati nei probe, reti WiFi
-  adiacenti realmente rilevate, dispositivi WiFi e Bluetooth visti nelle
-  ultime 24h (più vicini = segnale medio più forte — non la posizione
-  reale, vedi il disclaimer nella pagina stessa). Sotto la casetta, in
-  una griglia (non più ai lati, per non rimpicciolire la mappa): stato
-  della scansione, elenco completo per categoria e legenda. Filtri per
+- **Nearby** (ex "Dintorni", ora la home) — casetta isometrica grande e
+  centrata, con riquadri collegati da linee guida per SSID cercati nei
+  probe, reti WiFi adiacenti realmente rilevate, dispositivi WiFi e
+  Bluetooth visti nelle ultime 24h (più vicini = segnale medio più forte —
+  non la posizione reale, vedi il disclaimer nella pagina stessa). Sotto
+  la casetta, in una griglia (non più ai lati, per non rimpicciolire la
+  mappa): un riepilogo della pagina Host (host totali/attivi/offline,
+  distribuzione del rischio, pulsante per l'elenco completo), stato della
+  scansione, elenco completo per categoria e legenda. Filtri per
   categoria in alto (nascondono la categoria ovunque compaia), click su
   un riquadro o una riga per aprire il profilo del device (dove
   disponibile). Importante: gli "SSID cercati" sono le reti *salvate* sui
