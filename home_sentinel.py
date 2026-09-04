@@ -245,6 +245,30 @@ class LanDiscoveryService:
         self._dhcp_lock = threading.Lock()
         self._rescan_now = threading.Event()
         self._last_lease_poll = 0.0
+        if self.sqlite_store is not None:
+            self._hydrate_from_store()
+
+    def _hydrate_from_store(self) -> None:
+        """Ripristina lo stato noto (hostname/vendor/porte aperte) dall'ultima riga vista per ogni
+        MAC nello specchio SQLite, così un riavvio del daemon non fa apparire ogni device come "mai
+        visto prima": senza, la colonna porte aperte in dashboard resterebbe vuota finché non arriva
+        un nuovo port scan (--port-scan-interval, di norma fino a un'ora) anche per device già noti da
+        tempo. Non scrive nulla sui log: popola solo lo stato in memoria, il primo ciclo di scan dopo
+        il riavvio produce comunque i suoi eventi normalmente (compreso un nuovo port scan immediato
+        per ogni device: _last_port_scan non viene ripristinato, perché una riga lan_events non
+        distingue "in questo ciclo è girato un port scan" da "qui si riporta solo l'ultimo elenco
+        noto", quindi non c'è un timestamp dell'ultima scansione reale da recuperare in modo
+        affidabile).
+        """
+        now = time.time()
+        for mac, info in self.sqlite_store.load_latest_lan_state().items():
+            self.devices[mac] = DeviceState(
+                ip=info["ip"], hostname=info["hostname"], vendor=info["vendor"],
+                last_seen=now, online=(info["status"] != "offline"), open_ports=info["open_ports"],
+            )
+            self._ip_owner[info["ip"]] = mac
+        if self.devices:
+            LOG.info("LAN discovery: ripristinati %d device noti dallo specchio SQLite", len(self.devices))
 
     def note_dhcp_client(self, mac: str, hostname: str) -> None:
         """Callback per il DHCP discovery monitor (DHCPDISCOVER/DHCPREQUEST osservati passivamente).

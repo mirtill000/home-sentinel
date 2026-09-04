@@ -17,7 +17,11 @@ stima del traffico WiFi per device. Vedi "Moduli di detection" sotto.
 Ogni evento viene appeso in tempo reale a file **JSON Lines** separati
 (un oggetto JSON per riga, uno per modulo). Non serve un database per far
 girare il daemon, ma è disponibile uno specchio **SQLite** opzionale (attivo
-di default) per query storiche/aggregate senza dover riparsare i JSONL.
+di default) per query storiche/aggregate senza dover riparsare i JSONL —
+e, se attivo, anche per ripristinare lo stato noto di ogni device
+(hostname, vendor, porte aperte) all'avvio: senza, un riavvio del daemon
+farebbe ripartire ogni device "da zero", con la colonna porte aperte
+vuota in dashboard finché non arriva un nuovo port scan.
 
 ## Installazione
 
@@ -88,7 +92,15 @@ port scan effettivamente eseguito per quel device, non necessariamente di
 (default 3600s), molto meno spesso del ciclo di scan LAN (`--interval`,
 default 60s), quindi ogni riga `new`/`online` riporta l'ultimo elenco noto
 finché non ne arriva uno più recente, esattamente come già fa per
-`hostname`/`vendor`. `hostname` viene risolto in ordine di priorità da: (1) l'hostname
+`hostname`/`vendor`. Questo stato noto sopravvive anche a un riavvio del
+daemon (se lo specchio SQLite è attivo, di default lo è): all'avvio
+`LanDiscoveryService` ripristina hostname/vendor/porte dall'ultima riga
+vista per ogni MAC, così un device già noto non appare come "mai visto
+prima" e la dashboard non perde temporaneamente i dati già disponibili —
+il port scan riparte comunque subito per ogni device (l'ultimo istante di
+scan reale non è recuperabile in modo affidabile dal solo storico), ma nel
+frattempo la colonna porte in dashboard mostra già l'ultimo elenco noto
+invece di restare vuota. `hostname` viene risolto in ordine di priorità da: (1) l'hostname
 dichiarato via DHCP se osservato passivamente (`--dhcp-discovery`, vedi
 sotto — spesso il più affidabile, dichiarato dal client stesso); (2) reverse
 DNS; (3) query NetBIOS diretta al device; (4) il nome mDNS del device se
