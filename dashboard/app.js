@@ -71,7 +71,6 @@ function setSetting(key, value) {
 
 const DISMISSED_KEY = "hs.alerts.dismissed";
 const RISK_PORTS = { 21: "FTP", 23: "Telnet", 445: "SMB", 3389: "RDP", 5900: "VNC" };
-const CAT_COLORS = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--cat-4)", "var(--cat-5)", "var(--cat-6)", "var(--cat-7)", "var(--cat-8)"];
 
 /** Company ID Bluetooth SIG più comuni (elenco parziale e curato, non il
  * registro completo — vedi bluetooth.com/specifications/assigned-numbers).
@@ -1035,39 +1034,6 @@ function kpiTile({ label, icon, tone, value, valueSuffix, sub, subTone, sparkVal
   </div>`;
 }
 
-function renderDonut(container, segments, centerSub) {
-  const total = segments.reduce((sum, s) => sum + s.value, 0);
-  if (total === 0) {
-    container.innerHTML = `<p class="empty-state">No data</p>`;
-    return;
-  }
-  const R = 50, C = 2 * Math.PI * R;
-  let offset = 0;
-  const circles = segments.filter((s) => s.value > 0).map((seg) => {
-    const len = (seg.value / total) * C;
-    const gap = Math.min(2.5, len * 0.12);
-    const visible = Math.max(len - gap, 0.001);
-    const html = `<circle class="donut-seg" cx="60" cy="60" r="${R}" fill="none" style="stroke:${seg.color}" stroke-width="14" stroke-dasharray="${visible.toFixed(2)} ${(C - visible).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" data-tip="${escapeHtml(seg.label)}: ${seg.value}"></circle>`;
-    offset += len;
-    return html;
-  }).join("");
-
-  const legend = segments.map((seg) => {
-    const pct = total ? Math.round((seg.value / total) * 100) : 0;
-    return `<div class="donut-legend-row"><span class="swatch" style="background:${seg.color}"></span><span class="name">${escapeHtml(seg.label)}</span><span class="value">${seg.value}</span><span class="pct">${pct}%</span></div>`;
-  }).join("");
-
-  container.innerHTML = `
-    <div class="donut-body">
-      <div class="donut-svg-wrap">
-        <svg viewBox="0 0 120 120"><g transform="rotate(-90 60 60)">${circles}</g></svg>
-        <div class="donut-center"><strong>${total}</strong><span>${escapeHtml(centerSub || "Total")}</span></div>
-      </div>
-      <div class="donut-legend">${legend}</div>
-    </div>`;
-  container.querySelectorAll(".donut-seg").forEach((el) => attachTooltip(el, el.dataset.tip));
-}
-
 function renderBarChart(container, buckets) {
   container.innerHTML = "";
   const total = buckets.reduce((a, b) => a + b, 0);
@@ -1140,28 +1106,6 @@ function renderHBarChart(container, entries, color) {
 /* ---------------------------------------------------------------------- *
  * Derived views: vendor / status distribution, alerts, scan cycles
  * ---------------------------------------------------------------------- */
-
-function vendorSegments(devices) {
-  const counts = new Map();
-  for (const d of devices) {
-    const v = (d.vendor || "").trim() || "Unknown";
-    counts.set(v, (counts.get(v) || 0) + 1);
-  }
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  const top = sorted.slice(0, 5);
-  const rest = sorted.slice(5).reduce((sum, [, c]) => sum + c, 0);
-  const segs = top.map(([label, value], i) => ({ label, value, color: CAT_COLORS[i] }));
-  if (rest > 0) segs.push({ label: "Other", value: rest, color: "var(--status-muted)" });
-  return segs;
-}
-
-function statusSegments(devices) {
-  return [
-    { label: "Online", value: devices.filter((d) => d.status === "online").length, color: "var(--status-good)" },
-    { label: "New", value: devices.filter((d) => d.status === "new").length, color: "var(--status-warning)" },
-    { label: "Offline", value: devices.filter((d) => d.status === "offline").length, color: "var(--status-muted)" },
-  ];
-}
 
 function riskSegments(devices) {
   const fingerprintByMac = latestFingerprintByMac(state.fingerprintRows);
@@ -1272,79 +1216,6 @@ function renderWifiSsidTableBody() {
   document.getElementById("wifi-ssid-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("wifi-ssid-pagination").innerHTML = rows.length ? paginationHtml("wifi-ssid", info) : "";
   wirePagination(document.getElementById("wifi-ssid-pagination"), "wifi-ssid", renderWifiSsidTableBody);
-}
-
-/* ---------------------------------------------------------------------- *
- * Dispositivi nei dintorni (euristica: segnale forte + presenza ripetuta,
- * incrociando probe WiFi e advertisement BLE. Non è una localizzazione
- * reale: è solo un'indicazione di possibile prossimità fisica.)
- * ---------------------------------------------------------------------- */
-
-const NEARBY_RSSI_THRESHOLD = -70; // dBm, più vicino a 0 = segnale più forte
-const NEARBY_MIN_SIGHTINGS = 3;
-const NEARBY_LOOKBACK_MS = 24 * 3600 * 1000;
-
-function computeNearbyDevices() {
-  const cutoff = Date.now() - NEARBY_LOOKBACK_MS;
-  const knownLanMacs = new Set(latestLanByMac(state.lanRows).map((d) => d.mac));
-  const groups = new Map(); // `${source}:${mac}` -> { source, mac, name, vendor, rssiSum, rssiCount, sightings, lastTs }
-
-  function addRow(source, mac, name, vendor, rssi, ts) {
-    if (ts === null || ts < cutoff) return;
-    const key = `${source}:${mac}`;
-    if (!groups.has(key)) groups.set(key, { source, mac, name: "", vendor: "", rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
-    const g = groups.get(key);
-    g.sightings += 1;
-    if (typeof rssi === "number") { g.rssiSum += rssi; g.rssiCount += 1; }
-    if (ts > g.lastTs) g.lastTs = ts;
-    if (!g.name && name) g.name = name;
-    if (!g.vendor && vendor) g.vendor = vendor;
-  }
-
-  for (const r of state.wifiRows) {
-    if (knownLanMacs.has(r.mac)) continue; // è un tuo dispositivo, non un "esterno"
-    addRow("wifi", r.mac, "", r.vendor || "", typeof r.rssi === "number" ? r.rssi : null, parseTs(r.timestamp));
-  }
-  for (const r of state.bleRows) {
-    const ids = Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : [];
-    const vendor = ids.length ? bleCompanyLabel(ids[0]) : "";
-    addRow("ble", r.mac, r.name || "", vendor, typeof r.rssi === "number" ? r.rssi : null, parseTs(r.timestamp));
-  }
-
-  return [...groups.values()]
-    .filter((g) => g.rssiCount > 0 && g.sightings >= NEARBY_MIN_SIGHTINGS && g.rssiSum / g.rssiCount >= NEARBY_RSSI_THRESHOLD)
-    .map((g) => ({ ...g, avgRssi: Math.round(g.rssiSum / g.rssiCount) }))
-    .sort((a, b) => b.avgRssi - a.avgRssi);
-}
-
-function nearbyCardHtml(d) {
-  return `<div class="nearby-card">
-    <span class="nearby-icon">${ICON(d.source === "ble" ? "bluetooth" : "wifi")}</span>
-    <div class="nearby-body">
-      <div class="nearby-title">${escapeHtml(d.name || d.vendor || "Unknown device")}</div>
-      <div class="nearby-meta">
-        ${signalBarsHtml(d.avgRssi)}
-        <span>${d.sightings} sightings</span>
-        <span>${formatRelativeTime(d.lastTs)}</span>
-      </div>
-    </div>
-  </div>`;
-}
-
-function renderNearbySection(container) {
-  const all = computeNearbyDevices();
-  const shown = all.slice(0, 10);
-
-  container.innerHTML = `
-    <div class="card-head">
-      <h2>Nearby devices</h2>
-      <span class="card-sub">strong signal and repeated presence in the last 24h${all.length > shown.length ? ` — showing the ${shown.length} closest out of ${all.length}` : ""}</span>
-    </div>
-    ${shown.length
-      ? `<div class="nearby-grid">${shown.map(nearbyCardHtml).join("")}</div>`
-      : `<p class="empty-state">No external devices detected nearby in the last 24h.</p>`}
-    <p class="field-hint">Heuristic estimate based on strong signal and repeated presence in WiFi/BLE probes, not a real location; excludes devices already known on the LAN. MACs are often randomized by modern devices and deliberately not shown here: name/vendor and persistence over time are more useful indicators, but not always 100% reliable.</p>
-  `;
 }
 
 /** Severity dei rilevatori server-side (low/medium/high) -> classi CSS esistenti (info/serious/critical). */
@@ -2215,15 +2086,35 @@ function isoHouseSvg(geo) {
 }
 
 const DINTORNI_PANEL_ROWS = 6;
-const DINTORNI_CALLOUTS_PER_CATEGORY = 3;
+const DINTORNI_CALLOUTS_TOTAL = 10;
+
+/** Distribuisce `total` elementi tra le categorie attive, il più possibile in parti uguali, ma
+ * ridistribuendo le quote non utilizzabili (categoria con meno elementi disponibili della sua quota)
+ * verso le altre finché ce n'è capienza — così con una sola categoria attiva se ne mostrano fino a
+ * `total`, con più categorie attive la vista resta comunque piena finché la somma disponibile lo
+ * consente, invece di fermarsi a una quota fissa per categoria come prima. Un giro "round robin"
+ * (un elemento a testa a rotazione, saltando le categorie esaurite) ottiene lo stesso risultato senza
+ * dover ricalcolare quote/resti ad ogni iterazione. */
+function pickBalanced(categories, total) {
+  const picked = categories.map(() => []);
+  let remaining = total;
+  let i = 0;
+  while (remaining > 0 && categories.some((c, idx) => picked[idx].length < c.rows.length)) {
+    const idx = i % categories.length;
+    if (picked[idx].length < categories[idx].rows.length) {
+      picked[idx].push(categories[idx].rows[picked[idx].length]);
+      remaining--;
+    }
+    i++;
+  }
+  return categories.map((c, idx) => ({ key: c.key, items: picked[idx] }));
+}
 
 function renderHouseRadarPage(container) {
   container.innerHTML = `
     <div class="page-section kpi-row">
       ${topKpiRowHtml()}
     </div>
-
-    <div class="page-section card" id="nearby-alerts-mount"></div>
 
     <div class="page-section card">
       <div class="card-head">
@@ -2236,7 +2127,6 @@ function renderHouseRadarPage(container) {
       <p class="field-hint">Purely illustrative view, not a real map: the distance of the cards from the house only reflects the average signal (RSSI) over the last 24 hours — strong signal = closer, weak = farther — not a physical distance, and the arrangement around the house is random (no direction data exists). The rings around the router are decorative, not a real coverage measurement. Devices already present on your LAN are not shown here (they're not "external"); WiFi/BLE MACs are often randomized by modern devices and may make the same device appear more than once. <strong>"SSIDs requested" is not a list of WiFi networks physically present here</strong>: these are network names that devices nearby have requested in probe requests, i.e. the networks they have saved — a phone asks about dozens of known networks at once (home, work, past trips) regardless of where it actually is; a name you don't recognize isn't necessarily a network nearby. <strong>"Adjacent networks" is different</strong>: it comes from the beacon frames access points broadcast themselves, so BSSID, SSID and channel reflect networks genuinely detected around you — signal strength is still the only distance proxy.</p>
     </div>
   `;
-  renderRecentAlertsWidget(document.getElementById("nearby-alerts-mount"));
   renderHouseRadarLegend(document.getElementById("radar-legend"));
   renderDintorniAll();
 }
@@ -2350,16 +2240,6 @@ function renderDintorniPanels(data) {
         <span class="badge dintorni-dbm">${e.avgRssi} dBm</span>
       </button>`,
     }) : "",
-    `<div class="dintorni-panel">
-      <div class="dintorni-panel-head"><span>Legend</span></div>
-      <div class="dintorni-legend-rows">
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-1)"></span>SSID requested in probes (not necessarily present here)</div>
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-2)"></span>WiFi device (probe)</div>
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-3)"></span>Adjacent network (from beacons)</div>
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-7)"></span>Bluetooth device</div>
-        <div class="dintorni-legend-row"><span class="dot" style="background:var(--status-good)"></span>Strong signal / <span class="dot" style="background:var(--status-warning)"></span>medium / <span class="dot" style="background:var(--status-critical)"></span>weak</div>
-      </div>
-    </div>`,
   ].join("");
 
   const lastUpdatedEl = document.getElementById("last-updated");
@@ -2386,11 +2266,16 @@ function renderHouseRadar(container, data) {
   const geo = computeHouseGeometry(cx, cy);
   const { routerPoint } = geo;
 
+  const activeCategories = [];
+  if (state.radarFilters.network) activeCategories.push({ key: "network", rows: data.networks });
+  if (state.radarFilters.probe) activeCategories.push({ key: "probe", rows: data.probes });
+  if (state.radarFilters.ap) activeCategories.push({ key: "ap", rows: data.aps });
+  if (state.radarFilters.ble) activeCategories.push({ key: "ble", rows: data.ble });
+
   const items = [];
-  if (state.radarFilters.network) for (const e of data.networks.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "network" });
-  if (state.radarFilters.probe) for (const e of data.probes.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "probe" });
-  if (state.radarFilters.ap) for (const e of data.aps.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "ap" });
-  if (state.radarFilters.ble) for (const e of data.ble.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "ble" });
+  for (const { key, items: rows } of pickBalanced(activeCategories, DINTORNI_CALLOUTS_TOTAL)) {
+    for (const e of rows) items.push({ ...e, category: key });
+  }
 
   const pulseRings = [46, 78, 110].map((r) => `<circle cx="${routerPoint.x.toFixed(1)}" cy="${routerPoint.y.toFixed(1)}" r="${r}" class="radar-pulse"/>`).join("");
 
@@ -2461,30 +2346,11 @@ function renderHouseRadar(container, data) {
  * Pages
  * ---------------------------------------------------------------------- */
 
-function renderRecentAlertsWidget(container) {
-  const alerts = computeAlerts().filter((a) => !isDismissed(a.id)).slice(0, 5);
-  container.innerHTML = `
-    <div class="card-head">
-      <h2>Latest alerts</h2>
-      <button class="btn btn-icon" id="recent-alerts-all" title="View all alerts" aria-label="View all alerts">${ICON("bell")}</button>
-    </div>
-    <div class="alert-list">${alerts.length ? alerts.map(alertItemHtml).join("") : '<p class="empty-state">No active alerts.</p>'}</div>
-  `;
-  document.getElementById("recent-alerts-all").addEventListener("click", () => { window.location.hash = "#/avvisi"; });
-  container.querySelectorAll("[data-dismiss]").forEach((btn) => {
-    btn.addEventListener("click", () => { toggleDismiss(btn.dataset.dismiss); renderRecentAlertsWidget(container); updateNavBadge(); });
-  });
-}
-
-/** Riga dei 4 KPI principali (host attivi, probe WiFi 24h, dispositivi nuovi, alert attivi): stessa
- * identica logica usata da Dashboard e, ora che è la home, in cima a Nearby — un solo posto dove
- * calcolarla evita che le due pagine finiscano per mostrare numeri leggermente diversi nel tempo. */
+/** Riga dei KPI principali in cima alla home (host attivi, alert attivi). */
 function topKpiRowHtml() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
-  const newLast24h = state.lanRows.filter((r) => r.status === "new" && within24h(parseTs(r.timestamp))).length;
-  const wifiLast24h = state.wifiRows.filter((r) => within24h(parseTs(r.timestamp)));
   const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id));
 
   return `
@@ -2495,68 +2361,12 @@ function topKpiRowHtml() {
       sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
     })}
     ${kpiTile({
-      label: "WiFi probes (24h)", icon: "wifi", tone: "blue",
-      value: wifiLast24h.length,
-      sub: `${new Set(wifiLast24h.map((r) => r.mac)).size} distinct MACs`,
-      sparkValues: hourlyCounts(state.wifiRows), sparkColor: "var(--series-blue)",
-    })}
-    ${kpiTile({
-      label: "New devices", icon: "users", tone: "violet",
-      value: newLast24h, sub: "In the last 24h",
-      sparkValues: hourlyCounts(state.lanRows.filter((r) => r.status === "new")), sparkColor: "var(--series-violet)",
-    })}
-    ${kpiTile({
       label: "Active alerts", icon: "shield", tone: "critical",
       value: activeAlerts.length,
       sub: activeAlerts.length ? "Need attention" : "No active alerts",
       subTone: activeAlerts.length ? "critical" : "good",
     })}
   `;
-}
-
-function renderDashboard(container) {
-  const lanCurrent = latestLanByMac(state.lanRows);
-
-  container.innerHTML = `
-    <div class="page-section kpi-row">
-      ${topKpiRowHtml()}
-    </div>
-
-    <div class="page-section grid-2">
-      <div class="card">
-        <div class="card-head"><h2>Risk distribution</h2><span class="card-sub">based on exposed ports and linked alerts</span></div>
-        <div id="donut-risk"></div>
-      </div>
-      <div class="card" id="recent-alerts-mount"></div>
-    </div>
-
-    <div class="page-section card" id="nearby-section-mount"></div>
-
-    <div class="page-section card" id="host-section-mount"></div>
-
-    <div class="page-section grid-3">
-      <div class="card">
-        <div class="card-head"><h2>Vendor distribution</h2></div>
-        <div id="donut-vendor"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Host status</h2></div>
-        <div id="donut-status"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Network activity <span class="card-sub">last 24h</span></h2></div>
-        <div class="bar-chart" id="chart-lan-activity" data-empty="No data"></div>
-      </div>
-    </div>
-  `;
-
-  renderDonut(document.getElementById("donut-risk"), riskSegments(lanCurrent), "Devices");
-  renderRecentAlertsWidget(document.getElementById("recent-alerts-mount"));
-  renderNearbySection(document.getElementById("nearby-section-mount"));
-  renderHostSection(document.getElementById("host-section-mount"));
-  renderDonut(document.getElementById("donut-vendor"), vendorSegments(lanCurrent), "Total");
-  renderDonut(document.getElementById("donut-status"), statusSegments(lanCurrent), "Total");
-  renderBarChart(document.getElementById("chart-lan-activity"), hourlyCounts(state.lanRows));
 }
 
 function renderHost(container) {
@@ -3125,13 +2935,12 @@ function renderAiuto(container) {
     <div class="card help-section">
       <h3>Pages</h3>
       <ul>
-        <li><strong>Dashboard</strong> — overview: active hosts, WiFi probes, new devices, alerts, distribution by vendor and status, 24h activity.</li>
+        <li><strong>Dashboard</strong> (home) — active hosts and active alerts at the top, then an isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); below the house, a Host summary (totals, active/offline, risk distribution) plus panels with the full list for each category and scan status. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons) — see the disclaimer on the page. The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Click a card or a row for details.</li>
         <li><strong>Host</strong> — full list of known LAN devices, with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. From there, or from a row's action menu, you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>WiFi</strong> — 802.11 probe requests nearby: KPIs and channel distribution at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks — and at the bottom the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is no longer shown here: it remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
-        <li><strong>Nearby</strong> — isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); below the house, panels with the full list for each category, scan status and legend. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons) — see the disclaimer on the page. Click a card or a row for details, use the filters at the top to hide a category (wherever it appears).</li>
         <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
         <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
         <li><strong>Settings</strong> — daemon module status (inferred from loaded data), data sources (JSON Lines), theme.</li>
@@ -3165,8 +2974,7 @@ function renderAiuto(container) {
 // quando avrà senso (subnet/VLAN multiple, routing reale) — va solo
 // riaggiunta qui sotto per riabilitarla in sidebar/ricerca globale.
 const ROUTES = [
-  { id: "dintorni", label: "Nearby", icon: "home", title: "Nearby", subtitle: "Isometric radar view of SSIDs requested, adjacent networks, and WiFi/Bluetooth devices nearby", render: renderHouseRadarPage },
-  { id: "dashboard", label: "Dashboard", icon: "grid", title: "Dashboard", subtitle: "Local network overview", render: renderDashboard },
+  { id: "dintorni", label: "Dashboard", icon: "home", title: "Dashboard", subtitle: "Local network overview", render: renderHouseRadarPage },
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Full list of LAN devices", render: renderHost },
   { id: "scansioni", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
