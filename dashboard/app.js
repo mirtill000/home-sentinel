@@ -110,7 +110,7 @@ const state = {
   lanSort: { key: "last_seen", dir: -1 },
   wifiSort: { key: "timestamp", dir: -1 },
   bleSort: { key: "timestamp", dir: -1 },
-  route: "dashboard",
+  route: "dintorni",
   refreshTimer: null,
   lastFetchOk: null,
   openMenuMac: null,
@@ -1177,6 +1177,17 @@ function riskSegments(devices) {
     { label: "High", value: counts.High, color: "var(--status-serious)" },
     { label: "Critical", value: counts.Critical, color: "var(--status-critical)" },
   ];
+}
+
+/** Riepilogo compatto della pagina Host (device totali/attivi/offline + distribuzione del rischio),
+ * per la pagina Nearby ora che è la home: stessa logica di conteggio già usata dal KPI "Active hosts"
+ * e dal donut "Risk distribution" della Dashboard, non una nuova definizione di "attivo". */
+function computeHostSummary() {
+  const lanCurrent = latestLanByMac(state.lanRows);
+  const total = lanCurrent.length;
+  const active = lanCurrent.filter((d) => d.status !== "offline").length;
+  const segments = riskSegments(lanCurrent);
+  return { total, active, offline: total - active, risk: Object.fromEntries(segments.map((s) => [s.label, s.value])) };
 }
 
 /** Probe per canale WiFi, ordinati per numero di canale (non per frequenza): si legge come uno spettro. */
@@ -2261,7 +2272,24 @@ function renderDintorniPanels(data) {
   const mount = document.getElementById("dintorni-panels");
   if (!mount) return;
 
+  const hostSummary = computeHostSummary();
+
   mount.innerHTML = [
+    `<div class="dintorni-panel">
+      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("monitor")}<span>Host summary</span></div>
+      <div class="dintorni-status-rows">
+        <div class="dintorni-status-row"><span>Total hosts</span><strong>${hostSummary.total}</strong></div>
+        <div class="dintorni-status-row"><span>Active</span><strong>${hostSummary.active}</strong></div>
+        <div class="dintorni-status-row"><span>Offline</span><strong>${hostSummary.offline}</strong></div>
+      </div>
+      <div class="legend-strip" style="margin:10px 0;gap:8px;">
+        <span class="badge risk-badge tone-critical">${hostSummary.risk.Critical || 0} Critical</span>
+        <span class="badge risk-badge tone-serious">${hostSummary.risk.High || 0} High</span>
+        <span class="badge risk-badge tone-warning">${hostSummary.risk.Medium || 0} Medium</span>
+        <span class="badge risk-badge tone-good">${hostSummary.risk.Low || 0} Low</span>
+      </div>
+      <button type="button" class="btn btn-primary" id="dintorni-host-view-all" style="width:100%;justify-content:center;">${ICON("monitor")}View all hosts</button>
+    </div>`,
     `<div class="dintorni-panel">
       <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Scan status</span></div>
       <div class="dintorni-status-rows">
@@ -2331,6 +2359,9 @@ function renderDintorniPanels(data) {
   document.getElementById("dintorni-last-updated").textContent = lastUpdatedEl ? lastUpdatedEl.textContent : "—";
   document.getElementById("dintorni-refresh").addEventListener("click", () => {
     document.getElementById("refresh-now")?.click();
+  });
+  document.getElementById("dintorni-host-view-all").addEventListener("click", () => {
+    window.location.hash = "#/host";
   });
   mount.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
@@ -3116,13 +3147,13 @@ function renderAiuto(container) {
 // quando avrà senso (subnet/VLAN multiple, routing reale) — va solo
 // riaggiunta qui sotto per riabilitarla in sidebar/ricerca globale.
 const ROUTES = [
+  { id: "dintorni", label: "Nearby", icon: "home", title: "Nearby", subtitle: "Isometric radar view of SSIDs requested, adjacent networks, and WiFi/Bluetooth devices nearby", render: renderHouseRadarPage },
   { id: "dashboard", label: "Dashboard", icon: "grid", title: "Dashboard", subtitle: "Local network overview", render: renderDashboard },
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Full list of LAN devices", render: renderHost },
   { id: "scansioni", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "WiFi probes", subtitle: "802.11 probe requests detected nearby", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "BLE devices", subtitle: "Passive Bluetooth Low Energy scan nearby", render: renderBlePage },
-  { id: "dintorni", label: "Nearby", icon: "home", title: "Nearby", subtitle: "Isometric radar view of SSIDs requested, adjacent networks, and WiFi/Bluetooth devices nearby", render: renderHouseRadarPage },
   { id: "avvisi", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Historical trend of devices and alerts", render: renderTrend },
   { id: "impostazioni", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
@@ -3153,7 +3184,7 @@ function updateNavBadge() {
 }
 
 function onRouteChange() {
-  const hash = window.location.hash.replace(/^#\/?/, "") || "dashboard";
+  const hash = window.location.hash.replace(/^#\/?/, "") || "dintorni";
   const [id, param] = hash.split("/");
   state.expandedMac = null;
   state.openMenuMac = null;
