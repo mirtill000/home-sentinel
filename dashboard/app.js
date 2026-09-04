@@ -48,11 +48,13 @@ const SETTINGS_KEYS = {
   lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", bleUrl: "hs.bleUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
   netLabel: "hs.net.label", netGateway: "hs.net.gateway",
   alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl", wifiTrafficUrl: "hs.wifiTrafficUrl",
+  wifiNetworksUrl: "hs.wifiNetworksUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
   netLabel: "", netGateway: "",
   alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl", wifiTrafficUrl: "wifi_traffic.jsonl",
+  wifiNetworksUrl: "wifi_networks.jsonl",
 };
 
 function getSetting(key) {
@@ -93,6 +95,7 @@ const state = {
   alertsRows: [],
   fingerprintRows: [],
   wifiTrafficRows: [],
+  wifiNetworksRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -112,7 +115,7 @@ const state = {
   trendRangeDays: 7,
   deviceProfileMac: null,
   timelineKindFilter: "all",
-  radarFilters: { network: true, probe: true, ble: true },
+  radarFilters: { network: true, probe: true, ap: true, ble: true },
   pagination: {},
 };
 
@@ -283,6 +286,14 @@ async function loadAllOnce() {
   } catch {
     state.wifiTrafficRows = state.wifiTrafficRows || [];
     state.sourceStatus.wifiTraffic = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("wifiNetworksUrl"));
+    state.wifiNetworksRows = r.rows;
+    state.sourceStatus.wifiNetworks = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.wifiNetworksRows = state.wifiNetworksRows || [];
+    state.sourceStatus.wifiNetworks = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -1843,6 +1854,7 @@ function computeHouseRadar() {
   const knownLanMacs = new Set(latestLanByMac(state.lanRows).map((d) => d.mac));
   const networks = new Map();
   const probes = new Map();
+  const aps = new Map();
   const ble = new Map();
 
   for (const r of state.wifiRows) {
@@ -1869,6 +1881,19 @@ function computeHouseRadar() {
     }
   }
 
+  for (const r of state.wifiNetworksRows || []) {
+    const ts = parseTs(r.timestamp);
+    if (ts === null || ts < cutoff || !r.bssid) continue;
+    const rssi = typeof r.rssi === "number" ? r.rssi : null;
+    if (!aps.has(r.bssid)) aps.set(r.bssid, { key: r.bssid, bssid: r.bssid, label: (r.ssid && r.ssid.trim()) || "(hidden network)", vendor: r.vendor || "", channel: null, rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
+    const e = aps.get(r.bssid);
+    e.sightings += 1;
+    if (r.ssid && r.ssid.trim()) e.label = r.ssid.trim();
+    if (typeof r.channel === "number") e.channel = r.channel;
+    if (rssi !== null) { e.rssiSum += rssi; e.rssiCount += 1; }
+    if (ts > e.lastTs) e.lastTs = ts;
+  }
+
   for (const r of state.bleRows) {
     const ts = parseTs(r.timestamp);
     if (ts === null || ts < cutoff) continue;
@@ -1890,12 +1915,13 @@ function computeHouseRadar() {
     .sort((a, b) => b.avgRssi - a.avgRssi)
     .slice(0, RADAR_MAX_PER_CATEGORY);
 
-  return { networks: finalize(networks), probes: finalize(probes), ble: finalize(ble) };
+  return { networks: finalize(networks), probes: finalize(probes), aps: finalize(aps), ble: finalize(ble) };
 }
 
 const RADAR_CATEGORY_META = {
   network: { label: "SSIDs requested", color: "var(--cat-1)", icon: "wifi" },
   probe: { label: "WiFi devices", color: "var(--cat-2)", icon: "wifi" },
+  ap: { label: "Adjacent networks", color: "var(--cat-3)", icon: "wifi" },
   ble: { label: "Bluetooth devices", color: "var(--cat-7)", icon: "bluetooth" },
 };
 
@@ -1921,15 +1947,12 @@ function renderHouseRadarPage(container) {
     <div class="page-section card">
       <div class="card-head">
         <h2>Nearby</h2>
-        <span class="card-sub">SSIDs requested, WiFi and Bluetooth devices detected in the last 24h, by signal strength</span>
+        <span class="card-sub">SSIDs requested, adjacent networks, and WiFi/Bluetooth devices detected in the last 24h, by signal strength</span>
       </div>
       <div class="radar-legend" id="radar-legend"></div>
-      <div class="dintorni-layout">
-        <div class="dintorni-col" id="dintorni-col-left"></div>
-        <div class="dintorni-col dintorni-col-center" id="radar-mount"></div>
-        <div class="dintorni-col" id="dintorni-col-right"></div>
-      </div>
-      <p class="field-hint">Purely illustrative view, not a real map: the distance of the cards from the house only reflects the average signal (RSSI) over the last 24 hours — strong signal = closer, weak = farther — not a physical distance, and the arrangement around the house is random (no direction data exists). The rings around the router are decorative, not a real coverage measurement. Devices already present on your LAN are not shown here (they're not "external"); WiFi/BLE MACs are often randomized by modern devices and may make the same device appear more than once. <strong>"SSIDs requested" is not a list of WiFi networks physically present here</strong>: these are network names that devices nearby have requested in probe requests, i.e. the networks they have saved — a phone asks about dozens of known networks at once (home, work, past trips) regardless of where it actually is; a name you don't recognize isn't necessarily a network nearby.</p>
+      <div class="dintorni-map-wrap" id="radar-mount"></div>
+      <div class="dintorni-panels-grid" id="dintorni-panels"></div>
+      <p class="field-hint">Purely illustrative view, not a real map: the distance of the cards from the house only reflects the average signal (RSSI) over the last 24 hours — strong signal = closer, weak = farther — not a physical distance, and the arrangement around the house is random (no direction data exists). The rings around the router are decorative, not a real coverage measurement. Devices already present on your LAN are not shown here (they're not "external"); WiFi/BLE MACs are often randomized by modern devices and may make the same device appear more than once. <strong>"SSIDs requested" is not a list of WiFi networks physically present here</strong>: these are network names that devices nearby have requested in probe requests, i.e. the networks they have saved — a phone asks about dozens of known networks at once (home, work, past trips) regardless of where it actually is; a name you don't recognize isn't necessarily a network nearby. <strong>"Adjacent networks" is different</strong>: it comes from the beacon frames access points broadcast themselves, so BSSID, SSID and channel reflect networks genuinely detected around you — signal strength is still the only distance proxy.</p>
     </div>
   `;
   renderHouseRadarLegend(document.getElementById("radar-legend"));
@@ -1938,7 +1961,7 @@ function renderHouseRadarPage(container) {
 
 function renderDintorniAll() {
   const data = computeHouseRadar();
-  renderDintorniSidePanels(data);
+  renderDintorniPanels(data);
   renderHouseRadar(document.getElementById("radar-mount"), data);
 }
 
@@ -1970,12 +1993,22 @@ function dintorniPanelHtml({ title, icon, color, rows, totalCount, rowHtml, empt
     </div>`;
 }
 
-function renderDintorniSidePanels(data) {
-  const left = document.getElementById("dintorni-col-left");
-  const right = document.getElementById("dintorni-col-right");
-  if (!left || !right) return;
+function renderDintorniPanels(data) {
+  const mount = document.getElementById("dintorni-panels");
+  if (!mount) return;
 
-  left.innerHTML = [
+  mount.innerHTML = [
+    `<div class="dintorni-panel">
+      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Scan status</span></div>
+      <div class="dintorni-status-rows">
+        <div class="dintorni-status-row"><span>Last updated</span><strong id="dintorni-last-updated">—</strong></div>
+        <div class="dintorni-status-row"><span>SSIDs requested</span><strong>${data.networks.length}</strong></div>
+        <div class="dintorni-status-row"><span>WiFi devices</span><strong>${data.probes.length}</strong></div>
+        <div class="dintorni-status-row"><span>Adjacent networks</span><strong>${data.aps.length}</strong></div>
+        <div class="dintorni-status-row"><span>Bluetooth devices</span><strong>${data.ble.length}</strong></div>
+      </div>
+      <button type="button" class="btn btn-primary dintorni-refresh" id="dintorni-refresh">${ICON("refresh")}Refresh now</button>
+    </div>`,
     state.radarFilters.network ? dintorniPanelHtml({
       title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
       rows: data.networks, totalCount: data.networks.length,
@@ -1997,20 +2030,18 @@ function renderDintorniSidePanels(data) {
         <span class="dintorni-row-meta">${formatRelativeTime(e.lastTs)}</span>
       </button>`,
     }) : "",
-  ].join("");
-
-  right.innerHTML = `
-    <div class="dintorni-panel">
-      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Scan status</span></div>
-      <div class="dintorni-status-rows">
-        <div class="dintorni-status-row"><span>Last updated</span><strong id="dintorni-last-updated">—</strong></div>
-        <div class="dintorni-status-row"><span>SSIDs requested</span><strong>${data.networks.length}</strong></div>
-        <div class="dintorni-status-row"><span>WiFi devices</span><strong>${data.probes.length}</strong></div>
-        <div class="dintorni-status-row"><span>Bluetooth devices</span><strong>${data.ble.length}</strong></div>
-      </div>
-      <button type="button" class="btn btn-primary dintorni-refresh" id="dintorni-refresh">${ICON("refresh")}Refresh now</button>
-    </div>
-    ${state.radarFilters.ble ? dintorniPanelHtml({
+    state.radarFilters.ap ? dintorniPanelHtml({
+      title: "Adjacent networks", icon: "wifi", color: RADAR_CATEGORY_META.ap.color,
+      rows: data.aps, totalCount: data.aps.length,
+      emptyText: "No WiFi network beacons detected in the last 24h.",
+      rowHtml: (e) => `<div class="dintorni-row">
+        <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
+        <span class="dintorni-row-name" title="${escapeHtml(e.label)} — BSSID ${escapeHtml(e.bssid)}">${escapeHtml(e.label)}</span>
+        <span class="dintorni-row-meta">Ch. ${e.channel ?? "?"}</span>
+        <span class="badge dintorni-dbm">${e.avgRssi} dBm</span>
+      </div>`,
+    }) : "",
+    state.radarFilters.ble ? dintorniPanelHtml({
       title: "Bluetooth devices", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
       rows: data.ble, totalCount: data.ble.length,
       emptyText: "No Bluetooth devices detected in the last 24h.",
@@ -2019,27 +2050,26 @@ function renderDintorniSidePanels(data) {
         <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
         <span class="badge dintorni-dbm">${e.avgRssi} dBm</span>
       </button>`,
-    }) : ""}
-    <div class="dintorni-panel">
+    }) : "",
+    `<div class="dintorni-panel">
       <div class="dintorni-panel-head"><span>Legend</span></div>
       <div class="dintorni-legend-rows">
         <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-1)"></span>SSID requested in probes (not necessarily present here)</div>
         <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-2)"></span>WiFi device (probe)</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-3)"></span>Adjacent network (from beacons)</div>
         <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-7)"></span>Bluetooth device</div>
         <div class="dintorni-legend-row"><span class="dot" style="background:var(--status-good)"></span>Strong signal / <span class="dot" style="background:var(--status-warning)"></span>medium / <span class="dot" style="background:var(--status-critical)"></span>weak</div>
       </div>
-    </div>
-  `;
+    </div>`,
+  ].join("");
 
   const lastUpdatedEl = document.getElementById("last-updated");
   document.getElementById("dintorni-last-updated").textContent = lastUpdatedEl ? lastUpdatedEl.textContent : "—";
   document.getElementById("dintorni-refresh").addEventListener("click", () => {
     document.getElementById("refresh-now")?.click();
   });
-  [left, right].forEach((col) => {
-    col.querySelectorAll("[data-mac-link]").forEach((btn) => {
-      btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
-    });
+  mount.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
   });
 }
 
@@ -2057,6 +2087,7 @@ function renderHouseRadar(container, data) {
   const items = [];
   if (state.radarFilters.network) for (const e of data.networks.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "network" });
   if (state.radarFilters.probe) for (const e of data.probes.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "probe" });
+  if (state.radarFilters.ap) for (const e of data.aps.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "ap" });
   if (state.radarFilters.ble) for (const e of data.ble.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "ble" });
 
   const pulseRings = [46, 78, 110].map((r) => `<circle cx="${routerPoint.x.toFixed(1)}" cy="${routerPoint.y.toFixed(1)}" r="${r}" class="radar-pulse"/>`).join("");
@@ -2092,9 +2123,13 @@ function renderHouseRadar(container, data) {
     const y = cy + radius * Math.sin(angle) * radiusSquash;
     const meta = RADAR_CATEGORY_META[e.category];
     const label = e.label.length > 11 ? `${e.label.slice(0, 10)}…` : e.label;
-    const valueText = e.category === "probe" ? formatRelativeTime(e.lastTs) : `${e.avgRssi} dBm`;
+    const valueText = e.category === "probe" ? formatRelativeTime(e.lastTs)
+      : e.category === "ap" ? `Ch.${e.channel ?? "?"} · ${e.avgRssi}dBm`
+      : `${e.avgRssi} dBm`;
     const tip = e.category === "network"
       ? `${e.label} — SSID requested by ${e.macs.size} devices — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)}`
+      : e.category === "ap"
+      ? `${e.label} — BSSID ${e.bssid} — channel ${e.channel ?? "unknown"} — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)}`
       : `${e.label} — ${e.avgRssi} dBm — ${e.sightings} sightings — ${formatRelativeTime(e.lastTs)}`;
 
     lines.push(`<line x1="${routerPoint.x.toFixed(1)}" y1="${routerPoint.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" class="radar-callout-line"/>`);
@@ -2524,6 +2559,7 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("BLE scan (--ble)", "ble")}
         ${moduleStatusRow("Fingerprinting (--fingerprint)", "fingerprint")}
         ${moduleStatusRow("Estimated WiFi traffic", "wifiTraffic")}
+        ${moduleStatusRow("Adjacent WiFi networks (beacons)", "wifiNetworks")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
     </div>
@@ -2540,6 +2576,7 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-alerts-url">Detection alert log (.jsonl)</label><input type="text" id="set-alerts-url" value="${escapeHtml(getSetting("alertsUrl"))}"></div>
         <div class="field"><label for="set-fingerprint-url">Device fingerprint log (.jsonl)</label><input type="text" id="set-fingerprint-url" value="${escapeHtml(getSetting("fingerprintUrl"))}"></div>
         <div class="field"><label for="set-wifi-traffic-url">WiFi traffic log (.jsonl)</label><input type="text" id="set-wifi-traffic-url" value="${escapeHtml(getSetting("wifiTrafficUrl"))}"></div>
+        <div class="field"><label for="set-wifi-networks-url">Adjacent WiFi networks log (.jsonl)</label><input type="text" id="set-wifi-networks-url" value="${escapeHtml(getSetting("wifiNetworksUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -2552,7 +2589,7 @@ function renderImpostazioni(container) {
           </select>
         </div>
       </div>
-      <p class="field-hint">If the dashboard is opened as a local file (<code>file://</code>) fetching via URL won't work due to browser security restrictions: use the "load a local file" fields, or serve this folder with <code>python3 -m http.server</code>. With very large logs, 1-5s intervals re-read the whole file every cycle: if you notice slowdowns, increase the interval. The alert/fingerprint logs are optional: if the corresponding detection modules aren't active on the daemon, the missing file doesn't cause errors.</p>
+      <p class="field-hint">If the dashboard is opened as a local file (<code>file://</code>) fetching via URL won't work due to browser security restrictions: use the "load a local file" fields, or serve this folder with <code>python3 -m http.server</code>. With very large logs, 1-5s intervals re-read the whole file every cycle: if you notice slowdowns, increase the interval. The alert/fingerprint/traffic/adjacent-networks logs are optional: if the corresponding detection modules aren't active on the daemon, the missing file doesn't cause errors.</p>
     </div>
 
     <div class="page-section card">
@@ -2584,6 +2621,7 @@ function renderImpostazioni(container) {
   document.getElementById("set-alerts-url").addEventListener("change", (e) => { setSetting("alertsUrl", e.target.value.trim() || SETTINGS_DEFAULTS.alertsUrl); loadAll(); });
   document.getElementById("set-fingerprint-url").addEventListener("change", (e) => { setSetting("fingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.fingerprintUrl); loadAll(); });
   document.getElementById("set-wifi-traffic-url").addEventListener("change", (e) => { setSetting("wifiTrafficUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiTrafficUrl); loadAll(); });
+  document.getElementById("set-wifi-networks-url").addEventListener("change", (e) => { setSetting("wifiNetworksUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiNetworksUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -2614,6 +2652,7 @@ function renderEsporta(container) {
     ${exportCardHtml("BLE scan", `${state.bleRows.length} rows`, "ble")}
     ${exportCardHtml("Device fingerprints", `${state.fingerprintRows.length} rows`, "fingerprint")}
     ${exportCardHtml("Estimated WiFi traffic", `${state.wifiTrafficRows.length} rows`, "wifi-traffic")}
+    ${exportCardHtml("Adjacent WiFi networks", `${state.wifiNetworksRows.length} rows`, "wifi-networks")}
     ${exportCardHtml("Alerts", `${alerts.length} alerts`, "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
@@ -2652,6 +2691,7 @@ function doExport(key, format) {
   else if (key === "ble") { rows = state.bleRows; filename = "ble_discovery"; }
   else if (key === "fingerprint") { rows = state.fingerprintRows; filename = "fingerprint_discovery"; }
   else if (key === "wifi-traffic") { rows = state.wifiTrafficRows; filename = "wifi_traffic"; }
+  else if (key === "wifi-networks") { rows = state.wifiNetworksRows; filename = "wifi_networks"; }
   else if (key === "alerts") {
     rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
     filename = "alerts";
@@ -2663,7 +2703,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>How it works</h3>
-      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
+      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
     </div>
     <div class="card help-section">
       <h3>Device status</h3>
@@ -2682,7 +2722,7 @@ function renderAiuto(container) {
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>WiFi</strong> — 802.11 probe requests nearby: KPIs and channel distribution at the top, then the "SSIDs requested" table — a summary per network name requested in probes, not a list of physically present networks — and at the bottom the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is no longer shown here: it remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
-        <li><strong>Nearby</strong> — isometric house at the center with cards connected by guide lines for SSIDs requested in probes, WiFi and Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); side panels with the full list for each category, scan status and legend. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here — see the disclaimer on the page. Click a card or a row for details, use the filters at the top to hide a category (wherever it appears).</li>
+        <li><strong>Nearby</strong> — isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position); below the house, panels with the full list for each category, scan status and legend. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons) — see the disclaimer on the page. Click a card or a row for details, use the filters at the top to hide a category (wherever it appears).</li>
         <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
         <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
         <li><strong>Settings</strong> — daemon module status (inferred from loaded data), data sources (JSON Lines), theme.</li>
@@ -2722,7 +2762,7 @@ const ROUTES = [
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "WiFi probes", subtitle: "802.11 probe requests detected nearby", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "BLE devices", subtitle: "Passive Bluetooth Low Energy scan nearby", render: renderBlePage },
-  { id: "dintorni", label: "Nearby", icon: "home", title: "Nearby", subtitle: "Isometric radar view of SSIDs requested, WiFi and Bluetooth devices nearby", render: renderHouseRadarPage },
+  { id: "dintorni", label: "Nearby", icon: "home", title: "Nearby", subtitle: "Isometric radar view of SSIDs requested, adjacent networks, and WiFi/Bluetooth devices nearby", render: renderHouseRadarPage },
   { id: "avvisi", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Historical trend of devices and alerts", render: renderTrend },
   { id: "impostazioni", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
