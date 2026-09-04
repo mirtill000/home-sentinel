@@ -261,8 +261,8 @@ a posteriori:
   uso, `--no-wifi-networks` per disabilitarlo): non è un vero e proprio
   detector di sicurezza, ma usa la stessa cattura beacon dell'evil twin
   (indipendentemente da `--home-ssid`) per loggare su `wifi_networks.jsonl`
-  ogni rete WiFi realmente rilevata nei dintorni — la pagina "Nearby" della
-  dashboard la mostra come categoria distinta dagli "SSID cercati" (che non
+  ogni rete WiFi realmente rilevata nei dintorni — la pagina "Dashboard"
+  la mostra come categoria distinta dagli "SSID cercati" (che non
   sono reti realmente presenti, solo richieste dai client).
 - **Fingerprinting device** (`--fingerprint`, opzionale): esegue mDNS,
   SSDP/UPnP, query NetBIOS e banner grabbing sulle porte aperte di ogni
@@ -316,18 +316,15 @@ operativo, un cross-check con una fonte esterna al Pi:
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
+utilizzabile offline) con 11 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
-e alert di detection. **Nearby è la home**: è la prima voce del menu
-laterale e la pagina che si apre di default (`dashboard/` senza `#/...`
-nell'URL). In cima, prima della casetta isometrica, i 4 KPI principali
-(host attivi, probe WiFi 24h, dispositivi nuovi, alert attivi — stessi
-identici numeri della Dashboard, calcolati in un solo posto) e gli ultimi
-5 alert attivi con pulsante di dismiss, così le informazioni più urgenti
-sono visibili subito senza dover cambiare pagina; più giù, tra i pannelli
-sotto la mappa, un riepilogo compatto della pagina Host (host
-totali/attivi/offline, distribuzione del rischio) con un pulsante per
-aprire l'elenco completo. In qualsiasi punto della dashboard, **Ctrl+K**
+e alert di detection. **Dashboard è la home** (sottotitolo "Local network
+overview"): è la prima voce del menu laterale e la pagina che si apre di
+default (`dashboard/` senza `#/...` nell'URL). In cima, prima della
+casetta isometrica, due KPI essenziali (host attivi, alert attivi); più
+giù, tra i pannelli sotto la mappa, un riepilogo compatto della pagina
+Host (host totali/attivi/offline, distribuzione del rischio) con un
+pulsante per aprire l'elenco completo. In qualsiasi punto della dashboard, **Ctrl+K**
 (⌘K su Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni
 tabella ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno
 scorrimento pagine.
@@ -342,12 +339,6 @@ ripiega in automatico sul download completo, senza errori, solo senza il
 vantaggio di velocità). Quando succede, un avviso compare nella pagina
 interessata e nel pannello "Stato moduli" in Impostazioni.
 
-- **Dashboard** — KPI (host attivi, probe WiFi 24h, dispositivi nuovi,
-  alert attivi), distribuzione per rischio e ultimi avvisi, widget
-  "Dispositivi nei dintorni" (card compatte con segnale a barre e presenza
-  ripetuta, incrociando probe WiFi e BLE — niente più MAC in primo piano,
-  poco utile per un device esterno), tabella host, distribuzione per
-  vendor/stato, attività di rete 24h.
 - **Host** — elenco completo dei dispositivi LAN, con tipo di device (se
   `--fingerprint` è attivo) e punteggio di rischio 0-100 (euristica su porte
   esposte e alert collegati); il nome host apre il **profilo completo** del
@@ -386,19 +377,22 @@ interessata e nel pannello "Stato moduli" in Impostazioni.
   BLE"** — un riepilogo per MAC con nome, manufacturer, segnale e
   avvistamenti, ricercabile e paginata — e in fondo il log advertisement
   grezzo.
-- **Nearby** (ex "Dintorni", ora la home) — in cima i 4 KPI principali e
-  gli ultimi 5 alert attivi (vedi sopra), poi la casetta isometrica grande
-  e centrata, con riquadri collegati da linee guida per SSID cercati nei
-  probe, reti WiFi adiacenti realmente rilevate, dispositivi WiFi e
-  Bluetooth visti nelle ultime 24h (più vicini = segnale medio più forte —
-  non la posizione reale, vedi il disclaimer nella pagina stessa). Sotto
-  la casetta, in una griglia (non più ai lati, per non rimpicciolire la
-  mappa): un riepilogo della pagina Host (host totali/attivi/offline,
-  distribuzione del rischio, pulsante per l'elenco completo), stato della
-  scansione, elenco completo per categoria e legenda. Filtri per
-  categoria in alto (nascondono la categoria ovunque compaia), click su
-  un riquadro o una riga per aprire il profilo del device (dove
-  disponibile). Importante: gli "SSID cercati" sono le reti *salvate* sui
+- **Dashboard** (ex "Nearby"/"Dintorni", è la home) — in cima i 2 KPI
+  essenziali (vedi sopra), poi la casetta isometrica grande e centrata,
+  con riquadri collegati da linee guida per SSID cercati nei probe, reti
+  WiFi adiacenti realmente rilevate, dispositivi WiFi e Bluetooth visti
+  nelle ultime 24h (più vicini = segnale medio più forte — non la
+  posizione reale, vedi il disclaimer nella pagina stessa). La casetta
+  mostra sempre fino a 10 riquadri in totale, distribuiti tra le sole
+  categorie attive nei filtri in alto (nascondere una categoria
+  ridistribuisce i suoi posti alle altre, invece di un numero fisso per
+  categoria). Sotto la casetta, in una griglia (non più ai lati, per non
+  rimpicciolire la mappa): un riepilogo della pagina Host (host
+  totali/attivi/offline, distribuzione del rischio, pulsante per
+  l'elenco completo), stato della scansione ed elenco completo per
+  categoria. Filtri per categoria in alto (nascondono la categoria
+  ovunque compaia), click su un riquadro o una riga per aprire il
+  profilo del device (dove disponibile). Importante: gli "SSID cercati" sono le reti *salvate* sui
   device nei dintorni (dal probe request), non le reti WiFi fisicamente
   presenti in zona — un telefono chiede di decine di reti note
   indipendentemente da dove si trova davvero, e il canale non è mai
