@@ -1873,10 +1873,11 @@ function computeHouseRadar() {
 
     if (r.ssid && r.ssid.trim()) {
       const key = r.ssid.trim();
-      if (!networks.has(key)) networks.set(key, { key, label: key, macs: new Set(), rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
+      if (!networks.has(key)) networks.set(key, { key, label: key, macs: new Set(), channels: new Map(), rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0 });
       const e = networks.get(key);
       e.sightings += 1;
       e.macs.add(r.mac);
+      if (r.channel !== null && r.channel !== undefined && r.channel !== "") e.channels.set(r.channel, (e.channels.get(r.channel) || 0) + 1);
       if (rssi !== null) { e.rssiSum += rssi; e.rssiCount += 1; }
       if (ts > e.lastTs) e.lastTs = ts;
     }
@@ -1907,7 +1908,14 @@ function computeHouseRadar() {
 
   const finalize = (map) => [...map.values()]
     .filter((e) => e.rssiCount > 0)
-    .map((e) => ({ ...e, avgRssi: Math.round(e.rssiSum / e.rssiCount) }))
+    .map((e) => {
+      const out = { ...e, avgRssi: Math.round(e.rssiSum / e.rssiCount) };
+      if (e.channels) {
+        out.commonChannel = [...e.channels.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+        out.deviceCount = e.macs.size;
+      }
+      return out;
+    })
     .sort((a, b) => b.avgRssi - a.avgRssi)
     .slice(0, RADAR_MAX_PER_CATEGORY);
 
@@ -1920,12 +1928,16 @@ const RADAR_CATEGORY_META = {
   ble: { label: "Dispositivi Bluetooth", color: "var(--cat-7)", icon: "bluetooth" },
 };
 
-/** Casa in stile isometrico: pura decorazione SVG, nessun dato reale — solo un punto di riferimento visivo al centro del radar. */
-function isoHouseSvg(cx, cy) {
-  const s = 1; // unità isometrica in px, applicata dentro iso()
+/**
+ * Geometria isometrica condivisa della casa: pura decorazione SVG, nessun
+ * dato reale. Espone anche `routerPoint` (sulla soglia della porta), usato
+ * come origine visiva delle linee guida e degli anelli di "copertura" —
+ * anche questi decorativi, non una vera misura di copertura del segnale.
+ */
+function computeHouseGeometry(cx, cy) {
   const IX = { x: 0.866, y: 0.5 };
   const IY = { x: -0.866, y: 0.5 };
-  const unit = 34;
+  const unit = 40;
   const w = 1.7, d = 1.7, h = 1.25, roofRise = 1.0;
   const iso = (a, b, c) => ({
     x: cx + (a * IX.x + b * IY.x) * unit,
@@ -1941,8 +1953,16 @@ function isoHouseSvg(cx, cy) {
   const doorBottom = iso(w * 0.32, 0, 0);
   const doorTop2 = iso(w * 0.62, 0, h * 0.55);
   const doorBottom2 = iso(w * 0.62, 0, 0);
-  const pt = (p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+  const routerPoint = {
+    x: (doorTop.x + doorTop2.x + doorBottom.x + doorBottom2.x) / 4,
+    y: (doorTop.y + doorTop2.y + doorBottom.y + doorBottom2.y) / 4,
+  };
+  return { A, B, D, EA, EB, ED, ridgeFront, ridgeBack, doorTop, doorBottom, doorTop2, doorBottom2, routerPoint };
+}
 
+function isoHouseSvg(geo) {
+  const pt = (p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+  const { A, B, D, EA, EB, ED, ridgeFront, ridgeBack, doorTop, doorBottom, doorTop2, doorBottom2 } = geo;
   return `
     <polygon points="${pt(A)} ${pt(B)} ${pt(EB)} ${pt(EA)}" class="iso-wall iso-wall-right"/>
     <polygon points="${pt(A)} ${pt(D)} ${pt(ED)} ${pt(EA)}" class="iso-wall iso-wall-left"/>
@@ -1953,6 +1973,9 @@ function isoHouseSvg(cx, cy) {
   `;
 }
 
+const DINTORNI_PANEL_ROWS = 6;
+const DINTORNI_CALLOUTS_PER_CATEGORY = 3;
+
 function renderHouseRadarPage(container) {
   container.innerHTML = `
     <div class="page-section card">
@@ -1961,12 +1984,22 @@ function renderHouseRadarPage(container) {
         <span class="card-sub">reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, per intensità di segnale</span>
       </div>
       <div class="radar-legend" id="radar-legend"></div>
-      <div id="radar-mount"></div>
-      <p class="field-hint">Vista puramente illustrativa, non una mappa reale: la distanza dal centro riflette solo il segnale medio (RSSI) nelle ultime 24 ore — segnale forte = anello interno, debole = anello esterno — non una distanza fisica. L'angolo attorno alla casa è casuale (nessun dato di direzione esiste), quindi non indica dove si trova davvero un dispositivo. I dispositivi già presenti sulla tua rete LAN non sono mostrati qui (non sono "esterni"); MAC WiFi/BLE spesso randomizzati dai device moderni possono far comparire lo stesso dispositivo più volte.</p>
+      <div class="dintorni-layout">
+        <div class="dintorni-col" id="dintorni-col-left"></div>
+        <div class="dintorni-col dintorni-col-center" id="radar-mount"></div>
+        <div class="dintorni-col" id="dintorni-col-right"></div>
+      </div>
+      <p class="field-hint">Vista puramente illustrativa, non una mappa reale: la distanza dei riquadri dalla casa riflette solo il segnale medio (RSSI) nelle ultime 24 ore — segnale forte = più vicino, debole = più lontano — non una distanza fisica, e la disposizione attorno alla casa è casuale (nessun dato di direzione esiste). Gli anelli attorno al router sono decorativi, non una misura di copertura reale. I dispositivi già presenti sulla tua rete LAN non sono mostrati qui (non sono "esterni"); MAC WiFi/BLE spesso randomizzati dai device moderni possono far comparire lo stesso dispositivo più volte. Il canale mostrato per una rete è quello più frequente osservato nei probe, non un dato fisso dell'access point.</p>
     </div>
   `;
   renderHouseRadarLegend(document.getElementById("radar-legend"));
-  renderHouseRadar(document.getElementById("radar-mount"));
+  renderDintorniAll();
+}
+
+function renderDintorniAll() {
+  const data = computeHouseRadar();
+  renderDintorniSidePanels(data);
+  renderHouseRadar(document.getElementById("radar-mount"), data);
 }
 
 function renderHouseRadarLegend(container) {
@@ -1980,58 +2013,167 @@ function renderHouseRadarLegend(container) {
       const key = btn.dataset.radarToggle;
       state.radarFilters[key] = !state.radarFilters[key];
       renderHouseRadarLegend(container);
-      renderHouseRadar(document.getElementById("radar-mount"));
+      renderDintorniAll();
     });
   });
 }
 
-function renderHouseRadar(container) {
-  const data = computeHouseRadar();
-  const W = 760, H = 640, cx = W / 2, cy = H / 2 + 40;
-  const ringGap = 90, houseClearance = 70;
-  const ringRadii = [houseClearance + ringGap, houseClearance + ringGap * 2, houseClearance + ringGap * 3];
+function dintorniPanelHtml({ title, icon, color, rows, totalCount, rowHtml, emptyText }) {
+  const shown = rows.slice(0, DINTORNI_PANEL_ROWS);
+  const more = totalCount - shown.length;
+  return `
+    <div class="dintorni-panel">
+      <div class="dintorni-panel-head" style="color:${color}">${ICON(icon)}<span>${escapeHtml(title)}</span></div>
+      ${shown.length
+        ? `<div class="dintorni-panel-rows">${shown.map(rowHtml).join("")}</div>${more > 0 ? `<div class="dintorni-panel-more">+ ${more} altri</div>` : ""}`
+        : `<p class="dintorni-panel-empty">${escapeHtml(emptyText)}</p>`}
+    </div>`;
+}
+
+function renderDintorniSidePanels(data) {
+  const left = document.getElementById("dintorni-col-left");
+  const right = document.getElementById("dintorni-col-right");
+  if (!left || !right) return;
+
+  left.innerHTML = [
+    state.radarFilters.network ? dintorniPanelHtml({
+      title: "Reti WiFi", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
+      rows: data.networks, totalCount: data.networks.length,
+      emptyText: "Nessuna rete rilevata nelle ultime 24h.",
+      rowHtml: (e) => `<div class="dintorni-row">
+        <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
+        <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
+        ${e.commonChannel !== null && e.commonChannel !== undefined ? `<span class="dintorni-row-meta">Ch. ${escapeHtml(e.commonChannel)}</span>` : ""}
+        <span class="badge dintorni-dbm">${e.avgRssi} dBm</span>
+      </div>`,
+    }) : "",
+    state.radarFilters.probe ? dintorniPanelHtml({
+      title: "Probe WiFi", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
+      rows: data.probes, totalCount: data.probes.length,
+      emptyText: "Nessun probe rilevato nelle ultime 24h.",
+      rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
+        <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
+        <span class="dintorni-row-name mono" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
+        <span class="dintorni-row-meta">${formatRelativeTime(e.lastTs)}</span>
+      </button>`,
+    }) : "",
+  ].join("");
+
+  right.innerHTML = `
+    <div class="dintorni-panel">
+      <div class="dintorni-panel-head" style="color:var(--brand)">${ICON("radar")}<span>Stato scansione</span></div>
+      <div class="dintorni-status-rows">
+        <div class="dintorni-status-row"><span>Ultimo aggiornamento</span><strong id="dintorni-last-updated">—</strong></div>
+        <div class="dintorni-status-row"><span>Reti rilevate</span><strong>${data.networks.length}</strong></div>
+        <div class="dintorni-status-row"><span>Dispositivi WiFi</span><strong>${data.probes.length}</strong></div>
+        <div class="dintorni-status-row"><span>Dispositivi Bluetooth</span><strong>${data.ble.length}</strong></div>
+      </div>
+      <button type="button" class="btn btn-primary dintorni-refresh" id="dintorni-refresh">${ICON("refresh")}Aggiorna ora</button>
+    </div>
+    ${state.radarFilters.ble ? dintorniPanelHtml({
+      title: "Dispositivi Bluetooth", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
+      rows: data.ble, totalCount: data.ble.length,
+      emptyText: "Nessun dispositivo Bluetooth rilevato nelle ultime 24h.",
+      rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
+        <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
+        <span class="dintorni-row-name" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
+        <span class="badge dintorni-dbm">${e.avgRssi} dBm</span>
+      </button>`,
+    }) : ""}
+    <div class="dintorni-panel">
+      <div class="dintorni-panel-head"><span>Legenda</span></div>
+      <div class="dintorni-legend-rows">
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-1)"></span>Rete WiFi (per SSID)</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-2)"></span>Dispositivo WiFi (probe)</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--cat-7)"></span>Dispositivo Bluetooth</div>
+        <div class="dintorni-legend-row"><span class="dot" style="background:var(--status-good)"></span>Segnale forte / <span class="dot" style="background:var(--status-warning)"></span>medio / <span class="dot" style="background:var(--status-critical)"></span>debole</div>
+      </div>
+    </div>
+  `;
+
+  const lastUpdatedEl = document.getElementById("last-updated");
+  document.getElementById("dintorni-last-updated").textContent = lastUpdatedEl ? lastUpdatedEl.textContent : "—";
+  document.getElementById("dintorni-refresh").addEventListener("click", () => {
+    document.getElementById("refresh-now")?.click();
+  });
+  [left, right].forEach((col) => {
+    col.querySelectorAll("[data-mac-link]").forEach((btn) => {
+      btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+    });
+  });
+}
+
+/** Colore per fascia di segnale (stessa soglia di radarRing), coerente tra pannelli laterali e casa. */
+function signalTierColor(rssi) {
+  const ring = radarRing(rssi);
+  return ["var(--status-good)", "var(--status-warning)", "var(--status-critical)"][ring];
+}
+
+function renderHouseRadar(container, data) {
+  const W = 620, H = 460, cx = W / 2, cy = 230;
+  const geo = computeHouseGeometry(cx, cy);
+  const { routerPoint } = geo;
 
   const items = [];
-  if (state.radarFilters.network) for (const e of data.networks) items.push({ ...e, category: "network" });
-  if (state.radarFilters.probe) for (const e of data.probes) items.push({ ...e, category: "probe" });
-  if (state.radarFilters.ble) for (const e of data.ble) items.push({ ...e, category: "ble" });
+  if (state.radarFilters.network) for (const e of data.networks.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "network" });
+  if (state.radarFilters.probe) for (const e of data.probes.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "probe" });
+  if (state.radarFilters.ble) for (const e of data.ble.slice(0, DINTORNI_CALLOUTS_PER_CATEGORY)) items.push({ ...e, category: "ble" });
+
+  const pulseRings = [46, 78, 110].map((r) => `<circle cx="${routerPoint.x.toFixed(1)}" cy="${routerPoint.y.toFixed(1)}" r="${r}" class="radar-pulse"/>`).join("");
 
   if (!items.length) {
     container.innerHTML = `<div class="radar-wrap"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
-      ${ringRadii.map((r) => `<circle cx="${cx}" cy="${cy}" r="${r}" class="radar-ring"/>`).join("")}
-      ${isoHouseSvg(cx, cy)}
+      ${pulseRings}
+      ${isoHouseSvg(geo)}
+      <circle cx="${routerPoint.x.toFixed(1)}" cy="${routerPoint.y.toFixed(1)}" r="5" class="radar-router-dot"/>
     </svg></div>
     <p class="empty-state">Nessun dato nelle ultime 24h per le categorie selezionate.</p>`;
     return;
   }
 
-  // Distribuisce più nodi sullo stesso anello/categoria su raggi leggermente diversi, per non sovrapporli.
-  const ringSlots = new Map();
-  const nodeEls = items.map((e) => {
+  const baseRadii = [120, 165, 210];
+  const cardW = 106, cardH = 34;
+  const lines = [];
+  const cards = [];
+
+  // Un solo giro completo diviso per il numero totale di item, indipendentemente
+  // dalla fascia di segnale di ciascuno: garantisce a ogni item un settore
+  // angolare esclusivo, evitando sovrapposizioni tra item di fasce diverse che
+  // altrimenti potrebbero finire vicini sullo stesso raggio visivo.
+  const angleStep = (2 * Math.PI) / items.length;
+  const baseAngle = radarHashAngle("dintorni-radar-base");
+
+  items.forEach((e, i) => {
     const ring = radarRing(e.avgRssi);
-    const slotKey = `${e.category}:${ring}`;
-    const slot = (ringSlots.get(slotKey) || 0);
-    ringSlots.set(slotKey, slot + 1);
-    const angle = radarHashAngle(e.key) + (slot % 3) * 0.12;
-    const jitter = (slot % 3) * 14;
-    const radius = ringRadii[ring] - 30 + jitter;
+    const angle = baseAngle + i * angleStep;
+    const radius = baseRadii[ring] + (i % 2) * 16;
     const x = cx + radius * Math.cos(angle);
-    const y = cy + radius * Math.sin(angle) * 0.62; // schiaccia verticalmente per restare coerente con la prospettiva isometrica della casa
+    const y = cy + radius * Math.sin(angle) * 0.62;
     const meta = RADAR_CATEGORY_META[e.category];
-    const countLabel = e.category === "network" ? ` — ${e.macs.size} device` : "";
-    const tip = `${e.label}${countLabel} — ${e.avgRssi} dBm — ${e.sightings} avvistamenti — ${formatRelativeTime(e.lastTs)}`;
-    return `<g class="radar-node" data-tip="${escapeHtml(tip)}" ${e.mac ? `data-mac="${escapeHtml(e.mac)}"` : ""} transform="translate(${x.toFixed(1)},${y.toFixed(1)})">
-      <circle r="7" style="fill:${meta.color}"/>
-    </g>`;
+    const label = e.label.length > 11 ? `${e.label.slice(0, 10)}…` : e.label;
+    const valueText = e.category === "network"
+      ? `${e.avgRssi} dBm${e.commonChannel !== null && e.commonChannel !== undefined ? ` · Ch. ${e.commonChannel}` : ""}`
+      : e.category === "probe" ? formatRelativeTime(e.lastTs) : `${e.avgRssi} dBm`;
+    const tip = `${e.label} — ${e.avgRssi} dBm — ${e.sightings} avvistamenti — ${formatRelativeTime(e.lastTs)}`;
+
+    lines.push(`<line x1="${routerPoint.x.toFixed(1)}" y1="${routerPoint.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" class="radar-callout-line"/>`);
+    cards.push(`<g class="radar-callout" data-tip="${escapeHtml(tip)}" ${e.mac ? `data-mac="${escapeHtml(e.mac)}"` : ""} transform="translate(${(x - cardW / 2).toFixed(1)},${(y - cardH / 2).toFixed(1)})">
+      <rect width="${cardW}" height="${cardH}" rx="8" class="radar-callout-card" style="--callout-accent:${meta.color}"/>
+      <circle cx="14" cy="${cardH / 2}" r="4" style="fill:${meta.color}"/>
+      <text x="24" y="16" class="radar-callout-label">${escapeHtml(label)}</text>
+      <text x="24" y="29" class="radar-callout-value">${escapeHtml(valueText)}</text>
+    </g>`);
   });
 
   container.innerHTML = `<div class="radar-wrap"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
-    ${ringRadii.map((r, i) => `<ellipse cx="${cx}" cy="${cy}" rx="${r}" ry="${(r * 0.62).toFixed(1)}" class="radar-ring"/><text x="${cx}" y="${(cy - r * 0.62 - 6).toFixed(1)}" text-anchor="middle" class="radar-ring-label">${["segnale forte", "medio", "debole"][i]}</text>`).join("")}
-    ${nodeEls.join("")}
-    ${isoHouseSvg(cx, cy)}
+    ${pulseRings}
+    ${lines.join("")}
+    ${isoHouseSvg(geo)}
+    <circle cx="${routerPoint.x.toFixed(1)}" cy="${routerPoint.y.toFixed(1)}" r="5" class="radar-router-dot"/>
+    ${cards.join("")}
   </svg></div>`;
 
-  container.querySelectorAll(".radar-node").forEach((el) => {
+  container.querySelectorAll(".radar-callout").forEach((el) => {
     attachTooltip(el, el.dataset.tip);
     if (el.dataset.mac) el.addEventListener("click", () => goToDevice(el.dataset.mac));
   });
@@ -2599,7 +2741,7 @@ function renderAiuto(container) {
         <li><strong>Timeline</strong> — feed cronologico unificato di tutti gli eventi notevoli (nuovi/offline, alert, fingerprint), filtrabile per categoria.</li>
         <li><strong>WiFi</strong> — probe request 802.11 nei dintorni: KPI e distribuzione per canale in alto, poi la tabella "Dispositivi WiFi" — un riepilogo per MAC con traffico stimato, SSID cercati e probe totali — e in fondo il log probe grezzo per l'analisi riga per riga.</li>
         <li><strong>BLE</strong> — attività Bluetooth Low Energy nei dintorni: KPI e attività 24h in alto, poi la tabella "Dispositivi BLE" — un riepilogo per MAC con nome, manufacturer, segnale e numero di avvistamenti — e in fondo il log advertisement grezzo per l'analisi riga per riga.</li>
-        <li><strong>Dintorni</strong> — vista radar isometrica con una casetta al centro: reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h, disposti su anelli concentrici in base al segnale medio (non alla posizione reale). Clicca un pallino per il dettaglio, usa i filtri in alto per nascondere una categoria.</li>
+        <li><strong>Dintorni</strong> — casetta isometrica al centro con riquadri collegati da linee guida per reti WiFi, dispositivi WiFi e Bluetooth rilevati nelle ultime 24h (più vicini = segnale più forte, non posizione reale); pannelli laterali con l'elenco completo di ciascuna categoria, stato scansione e legenda. Clicca un riquadro o una riga per il dettaglio, usa i filtri in alto per nascondere una categoria (ovunque compaia).</li>
         <li><strong>Avvisi</strong> — nuovi dispositivi e porte a rischio aperte (calcolati dalla dashboard), più gli alert dei moduli di detection lato daemon se attivi (ARP spoofing, rogue DHCP, evil twin WiFi, possibile deauth/disassoc flood, nuove porte su device noti); filtrabili per tipologia e stato, con filtri salvabili come preset.</li>
         <li><strong>Trend</strong> — andamento di nuovi dispositivi e alert negli ultimi 7/30 giorni, calcolato sulla cronologia già caricata.</li>
         <li><strong>Impostazioni</strong> — stato dei moduli del daemon (dedotto dai dati caricati), sorgenti dati (JSON Lines), tema.</li>
