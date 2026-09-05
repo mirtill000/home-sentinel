@@ -3,9 +3,16 @@
 # daemon (di default in /var/log/home-sentinel/), così i percorsi di
 # default della dashboard (lan_discovery.jsonl, wifi_probes.jsonl,
 # ble_discovery.jsonl, fingerprint_discovery.jsonl, alerts_detection.jsonl,
-# wifi_traffic.jsonl, wifi_networks.jsonl) funzionano subito quando la si
-# serve da qui (es. python3 -m http.server),
+# wifi_traffic.jsonl, wifi_networks.jsonl, dhcp_leases.jsonl,
+# trend_daily.jsonl, os_fingerprint.jsonl, dhcp_events.jsonl) funzionano
+# subito quando la si serve da qui (es. python3 -m http.server),
 # senza toccare Impostazioni né passare parametri via URL.
+#
+# Gli ultimi quattro (dhcp_leases, trend_daily, os_fingerprint, dhcp_events)
+# sono prodotti dai moduli opzionali di discovery avanzata (--dhcp-discovery,
+# --os-fingerprint, --dhcp-lease-source) e dal trend rollup (attivo di
+# default salvo --no-trend-rollup): finché il modulo relativo non è attivo
+# sul daemon, il file resta semplicemente assente.
 #
 # Uso:
 #   ./link-logs.sh [directory log sorgente]
@@ -19,7 +26,7 @@ set -euo pipefail
 SRC_DIR="${1:-/var/log/home-sentinel}"
 DEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-FILES=(lan_discovery.jsonl wifi_probes.jsonl ble_discovery.jsonl fingerprint_discovery.jsonl alerts_detection.jsonl wifi_traffic.jsonl wifi_networks.jsonl)
+FILES=(lan_discovery.jsonl wifi_probes.jsonl ble_discovery.jsonl fingerprint_discovery.jsonl alerts_detection.jsonl wifi_traffic.jsonl wifi_networks.jsonl dhcp_leases.jsonl trend_daily.jsonl os_fingerprint.jsonl dhcp_events.jsonl)
 
 for f in "${FILES[@]}"; do
   src="$SRC_DIR/$f"
