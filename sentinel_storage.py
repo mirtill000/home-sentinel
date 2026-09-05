@@ -171,6 +171,19 @@ CREATE TABLE IF NOT EXISTS deep_port_scans (
 CREATE INDEX IF NOT EXISTS idx_deepscan_mac ON deep_port_scans(mac);
 CREATE INDEX IF NOT EXISTS idx_deepscan_ts ON deep_port_scans(timestamp);
 
+CREATE TABLE IF NOT EXISTS handshake_captures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    ssid TEXT NOT NULL,
+    bssid TEXT NOT NULL,
+    sta_mac TEXT NOT NULL,
+    frame_count INTEGER NOT NULL,
+    messages TEXT NOT NULL,
+    pcap_path TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handshake_bssid ON handshake_captures(bssid);
+CREATE INDEX IF NOT EXISTS idx_handshake_ts ON handshake_captures(timestamp);
+
 CREATE TABLE IF NOT EXISTS dhcp_leases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -374,6 +387,19 @@ class SqliteStore:
                 (
                     row["timestamp"], row["mac"], row["ip"],
                     json.dumps(row.get("open_ports", [])), json.dumps(row.get("new_ports", [])),
+                ),
+            )
+            self._conn.commit()
+
+    def insert_handshake_capture(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO handshake_captures "
+                "(timestamp, ssid, bssid, sta_mac, frame_count, messages, pcap_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["timestamp"], row["ssid"], row["bssid"], row["sta_mac"],
+                    row["frame_count"], json.dumps(row.get("messages", [])), row["pcap_path"],
                 ),
             )
             self._conn.commit()
