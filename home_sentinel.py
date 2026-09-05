@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -43,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from scapy.all import ARP, Ether, conf, sniff, srp
+    from scapy.all import ARP, ICMP, IP, TCP, Ether, conf, send, sniff, sr, srp
     from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11Deauth, Dot11Disas, Dot11Elt, Dot11ProbeReq
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
@@ -181,6 +182,60 @@ def arp_scan(subnet: str, iface: str | None, timeout: float = 2.0, retries: int 
     return list(found.items())
 
 
+def icmp_sweep(ips: list[str], iface: str | None, timeout: float = 1.5) -> list[str]:
+    """Ping sweep di fallback (--icmp-fallback): prova un ICMP echo request diretto alle sole IP
+    che l'ARP scan non ha trovato, per gli host che rispondono a ping ma per qualche motivo hanno
+    perso o ignorato la richiesta ARP broadcast anche dopo i retry di arp_scan (raro sulla stessa
+    subnet — bridge/proxy-ARP non standard, o un'altra collisione sfortunata). Non sostituisce
+    l'ARP scan come metodo primario: un host con firewall che blocca ICMP (Windows di default,
+    molti IoT) non risponderebbe qui pur essendo raggiungibile — per questo resta un fallback
+    opzionale, provato solo sulle IP ancora mancanti. Ritorna solo le IP vive: il MAC va risolto
+    a parte con un ARP diretto (vedi _do_cycle), non ricavabile in modo affidabile da qui.
+    """
+    if not ips:
+        return []
+    packets = [IP(dst=ip) / ICMP() for ip in ips]
+    kwargs = {"timeout": timeout, "verbose": False}
+    if iface:
+        kwargs["iface"] = iface
+    answered, _ = sr(packets, **kwargs)
+    return list({received[IP].src for _, received in answered})
+
+
+def tcp_syn_sweep(ips: list[str], ports: list[int], iface: str | None, timeout: float = 1.5) -> list[str]:
+    """Ultimo fallback (--tcp-fallback): un SYN TCP a poche porte comuni per le IP non trovate né
+    da ARP né da ICMP — utile per host con firewall che blocca il ping ma non il traffico TCP
+    (es. Windows blocca ICMP echo di default ma risponde comunque con SYN-ACK o RST a una porta
+    aperta o chiusa: basta una risposta qualsiasi a confermare che l'host è vivo, la porta in sé
+    non conta qui). Un SYN-ACK ricevuto viene chiuso subito con un RST, per non lasciare
+    connessioni a metà sull'host remoto — qui non passiamo mai dallo stack TCP del sistema
+    operativo (i pacchetti sono creati a mano con scapy), quindi tocca a noi chiuderle
+    esplicitamente invece di lasciare che il kernel lo faccia da solo.
+    """
+    if not ips or not ports:
+        return []
+    packets = [IP(dst=ip) / TCP(dport=port, flags="S") for ip in ips for port in ports]
+    kwargs = {"timeout": timeout, "verbose": False}
+    if iface:
+        kwargs["iface"] = iface
+    answered, _ = sr(packets, **kwargs)
+    alive: set[str] = set()
+    for sent, received in answered:
+        if not received.haslayer(TCP):
+            continue
+        alive.add(received[IP].src)
+        if received[TCP].flags & 0x12 == 0x12:  # SYN-ACK: porta aperta, chiudi con un RST
+            rst = IP(dst=received[IP].src) / TCP(
+                sport=sent[TCP].sport, dport=sent[TCP].dport,
+                seq=received[TCP].ack, flags="R",
+            )
+            send_kwargs = {"verbose": False}
+            if iface:
+                send_kwargs["iface"] = iface
+            send(rst, **send_kwargs)
+    return list(alive)
+
+
 class JsonlLogger:
     """Writer JSON Lines thread-safe, append-only, con flush ad ogni riga.
 
@@ -274,6 +329,10 @@ class LanDiscoveryService:
         dhcp_leases_log: JsonlLogger | None = None,
         arp_timeout: float = 2.0,
         arp_retries: int = 2,
+        icmp_fallback: bool = False,
+        tcp_fallback: bool = False,
+        tcp_fallback_ports: list[int] | None = None,
+        fallback_timeout: float = 1.5,
     ):
         self.subnet = subnet
         self.iface = iface
@@ -282,6 +341,10 @@ class LanDiscoveryService:
         self.port_scan_interval = port_scan_interval
         self.arp_timeout = arp_timeout
         self.arp_retries = arp_retries
+        self.icmp_fallback = icmp_fallback
+        self.tcp_fallback = tcp_fallback
+        self.tcp_fallback_ports = tcp_fallback_ports or [80, 443, 22, 445, 3389]
+        self.fallback_timeout = fallback_timeout
         self.log = log
         self.stop_event = stop_event
         self.sqlite_store = sqlite_store
@@ -366,8 +429,45 @@ class LanDiscoveryService:
             time.sleep(min(0.5, max(0.0, deadline - time.time())))
         self._rescan_now.clear()
 
+    def _fallback_discovery(self, arp_found_ips: set[str]) -> list[tuple[str, str]]:
+        """Cascata di fallback (--icmp-fallback, --tcp-fallback) per gli host che l'ARP scan
+        (coi suoi retry) non ha trovato: prova prima un ping ICMP, poi — per chi resta muto
+        anche a quello — un SYN TCP a poche porte comuni, entrambi solo sulle IP mancanti (mai
+        sull'intera subnet, per non appesantire ogni ciclo). Queste due sonde dicono solo "quali
+        IP sono vive", non il loro MAC: per chi risulta vivo si chiude con un ultimo ARP diretto
+        e mirato (a differenza della richiesta broadcast del giro principale, qui è unicast verso
+        poche IP specifiche già confermate raggiungibili, quindi con altissima probabilità di
+        successo) per recuperare il MAC — la vera chiave con cui ogni device è tracciato nel
+        resto del sistema (risk score, nome personalizzato, identità collegate...). Se anche
+        questo fallisse (mai osservato: un host raggiungibile via IP su un segmento locale è per
+        forza risolvibile via ARP, altrimenti scapy stesso non avrebbe potuto instradargli i
+        pacchetti ICMP/TCP) quell'host viene semplicemente scartato, senza errori.
+        """
+        missing = [
+            str(ip) for ip in ipaddress.ip_network(self.subnet, strict=False).hosts()
+            if str(ip) not in arp_found_ips
+        ]
+        if not missing:
+            return []
+
+        alive: set[str] = set()
+        if self.icmp_fallback:
+            alive.update(icmp_sweep(missing, self.iface, timeout=self.fallback_timeout))
+        if self.tcp_fallback:
+            still_missing = [ip for ip in missing if ip not in alive]
+            alive.update(tcp_syn_sweep(still_missing, self.tcp_fallback_ports, self.iface, timeout=self.fallback_timeout))
+        if not alive:
+            return []
+
+        resolved = arp_scan(list(alive), self.iface, timeout=self.arp_timeout, retries=1)
+        if len(resolved) < len(alive):
+            LOG.debug("Fallback discovery: %d IP vive ma non risolte via ARP (%s)", len(alive) - len(resolved), sorted(alive - {ip for ip, _ in resolved}))
+        return resolved
+
     def _do_cycle(self) -> None:
         found = arp_scan(self.subnet, self.iface, timeout=self.arp_timeout, retries=self.arp_retries)
+        if self.icmp_fallback or self.tcp_fallback:
+            found = found + self._fallback_discovery({ip for ip, _ in found})
         now = time.time()
         seen_macs = set()
 
@@ -1014,6 +1114,25 @@ def parse_args() -> argparse.Namespace:
              "dallo scan; 0 per disabilitare)",
     )
     p.add_argument(
+        "--icmp-fallback", action="store_true",
+        help="Se un host resta senza risposta anche dopo tutti i retry ARP, prova un ping ICMP diretto prima di "
+             "considerarlo assente (fallback opzionale, non sostituisce l'ARP: un host con firewall che blocca "
+             "ICMP — es. Windows di default — non risponderebbe comunque)",
+    )
+    p.add_argument(
+        "--tcp-fallback", action="store_true",
+        help="Ultimo fallback per gli host ancora senza risposta dopo ARP e (se attivo) ICMP: prova un SYN TCP a "
+             "--tcp-fallback-ports, utile per host con firewall che blocca il ping ma non il TCP",
+    )
+    p.add_argument(
+        "--tcp-fallback-ports", default="80,443,22,445,3389",
+        help="Porte usate da --tcp-fallback, separate da virgola (default: 80,443,22,445,3389)",
+    )
+    p.add_argument(
+        "--fallback-timeout", type=float, default=1.5,
+        help="Attesa risposte per i fallback ICMP/TCP (s)",
+    )
+    p.add_argument(
         "--ports",
         default=",".join(str(port) for port in DEFAULT_PORTS),
         help=(
@@ -1306,6 +1425,7 @@ def main() -> None:
 
     lan_log = make_logger(args.lan_log)
     ports = [int(port) for port in args.ports.split(",") if port.strip()]
+    tcp_fallback_ports = [int(port) for port in args.tcp_fallback_ports.split(",") if port.strip()]
     dhcp_leases_log = make_logger(args.dhcp_leases_log) if args.dhcp_lease_source else None
     lan_service = LanDiscoveryService(
         subnet=args.subnet,
@@ -1326,6 +1446,10 @@ def main() -> None:
         dhcp_leases_log=dhcp_leases_log,
         arp_timeout=args.arp_timeout,
         arp_retries=args.arp_retries,
+        icmp_fallback=args.icmp_fallback,
+        tcp_fallback=args.tcp_fallback,
+        tcp_fallback_ports=tcp_fallback_ports,
+        fallback_timeout=args.fallback_timeout,
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
 

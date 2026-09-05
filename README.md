@@ -130,6 +130,37 @@ l'intero range DHCP effettivo e che `--lan-iface` sia la stessa interfaccia
 di rete del segmento in cui si trovano quegli host (l'ARP non attraversa
 router/VLAN diverse).
 
+Se anche con `--arp-retries` più alto restano host mancanti, sono
+disponibili due fallback opzionali (disattivati di default: costano tempo
+extra ad ogni ciclo, quindi solo chi ne ha bisogno li attiva), provati solo
+sulle IP della subnet ancora senza risposta dopo l'ARP — mai sull'intera
+subnet, per non appesantire ogni ciclo quando la rete è già a posto:
+
+- **`--icmp-fallback`** — un ping ICMP diretto (non broadcast) a ogni IP
+  mancante. Copre il caso limite di un host che perde/ignora la richiesta
+  ARP anche dopo i retry (raro sulla stessa subnet — bridge o proxy-ARP non
+  standard) ma non un firewall che blocca solo l'ARP: se un host non
+  risponde all'ARP è quasi sempre perché non è raggiungibile affatto, non
+  perché "l'ARP è bloccato ma il ping no". **Non è il sostituto dell'ARP**:
+  il contrario è più comune — un firewall che blocca l'ICMP (Windows lo fa
+  di default, molti IoT pure) ma non tocca l'ARP, quindi da solo l'ICMP
+  scoprirebbe *meno* host, non di più.
+- **`--tcp-fallback`** — ultima risorsa per gli host ancora muti dopo ARP e
+  ICMP: un SYN TCP a `--tcp-fallback-ports` (default `80,443,22,445,3389`).
+  Un host con firewall che blocca il ping ma non il TCP (di nuovo, il caso
+  Windows) risponde comunque con un SYN-ACK (porta aperta) o un RST (porta
+  chiusa) — la risposta in sé, quale che sia, basta a confermarne la
+  presenza; un SYN-ACK ricevuto viene chiuso subito con un RST per non
+  lasciare connessioni a metà sull'host remoto.
+
+Entrambi i fallback dicono solo "quali IP sono vive": il MAC — la chiave
+con cui ogni device è tracciato nel resto del sistema — viene comunque
+recuperato con un ultimo ARP diretto e mirato solo a quelle IP (a
+differenza della richiesta broadcast del giro principale, qui è unicast
+verso poche IP già confermate raggiungibili, quindi con altissima
+probabilità di successo). `--fallback-timeout` (default 1.5s) regola
+l'attesa di entrambi.
+
 Il port scan (`--ports`) di default copre le porte **1-1024** ("well-known")
 più **50 porte "alte"** comuni per servizi self-hosted/home-lab/IoT tipici
 di una rete domestica (NAS, home automation, media server, dev/db — es.
