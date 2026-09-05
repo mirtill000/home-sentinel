@@ -33,7 +33,10 @@ Type=simple
 # detection"): "--fingerprint \" per classificare il tipo di device,
 # "--detect-rogue-dhcp \" per il rilevamento rogue DHCP,
 # "--home-ssid CasaWiFi \" per il rilevamento evil twin WiFi (richiede
-# --wifi-iface).
+# --wifi-iface); "--capture-handshakes \" per la cattura passiva
+# dell'handshake WPA/WPA2 delle reti in --home-ssid (audit offline della
+# robustezza della propria password con aircrack-ng/hashcat, richiede
+# --home-ssid già configurato — mai per reti diverse dalle proprie).
 #
 # Moduli di discovery avanzata opzionali, non detector di sicurezza (vedi
 # README, sezione "Moduli di discovery avanzata"): "--dhcp-discovery \" per

@@ -46,6 +46,7 @@ from pathlib import Path
 try:
     from scapy.all import ARP, ICMP, IP, TCP, Ether, conf, send, sniff, sr, srp
     from scapy.layers.dot11 import Dot11, Dot11Beacon, Dot11Deauth, Dot11Disas, Dot11Elt, Dot11ProbeReq
+    from scapy.layers.eap import EAPOL
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "scapy non è installato. Installa le dipendenze con: pip install -r requirements.txt"
@@ -68,6 +69,7 @@ from sentinel_detection import (
 )
 from sentinel_dhcp_leases import fetch_dhcp_leases
 from sentinel_fingerprint import fingerprint_device, netbios_probe
+from sentinel_handshake import HandshakeCapture
 from sentinel_storage import SqliteStore
 
 LOG = logging.getLogger("home_sentinel")
@@ -726,6 +728,7 @@ class WifiProbeMonitor:
         traffic_flush_interval: float = 60.0,
         networks_log: JsonlLogger | None = None,
         networks_log_interval: float = 30.0,
+        handshake_capture: HandshakeCapture | None = None,
     ):
         self.iface = iface
         self.channels = channels
@@ -740,6 +743,7 @@ class WifiProbeMonitor:
         self.traffic_flush_interval = traffic_flush_interval
         self.networks_log = networks_log
         self.networks_log_interval = networks_log_interval
+        self.handshake_capture = handshake_capture
         self._current_channel = channels[0]
         self._traffic_lock = threading.Lock()
         self._traffic_counters: dict[str, dict[str, int]] = {}
@@ -782,6 +786,9 @@ class WifiProbeMonitor:
 
         if self.traffic_log is not None and pkt.haslayer(Dot11) and pkt.type == 2:
             self._handle_data_frame(pkt)
+
+        if self.handshake_capture is not None and pkt.haslayer(EAPOL):
+            self.handshake_capture.observe_eapol(pkt)
 
         if not pkt.haslayer(Dot11ProbeReq):
             return
@@ -838,6 +845,8 @@ class WifiProbeMonitor:
 
         if self.evil_twin_detector is not None:
             self.evil_twin_detector.observe_beacon(ssid, bssid or "")
+        if self.handshake_capture is not None:
+            self.handshake_capture.observe_beacon(ssid, bssid or "")
 
         if self.networks_log is not None and bssid:
             self._log_network(bssid.lower(), ssid, channel, pkt)
@@ -954,6 +963,8 @@ class WifiProbeMonitor:
         try:
             while not self.stop_event.is_set():
                 sniff(iface=self.iface, prn=self._handle_packet, store=False, timeout=1)
+                if self.handshake_capture is not None:
+                    self.handshake_capture.sweep()
         except Exception:
             LOG.exception("WiFi probe monitor terminato con errore")
         finally:
@@ -1554,6 +1565,38 @@ def parse_args() -> argparse.Namespace:
         help="SSID di casa da monitorare per possibili evil twin, separati da virgola "
         "(richiede --wifi-iface; ogni BSSID nuovo per un SSID monitorato genera un alert)",
     )
+    p.add_argument(
+        "--capture-handshakes",
+        action="store_true",
+        help="Cattura passivamente il 4-way handshake EAPOL (WPA/WPA2) delle reti elencate in "
+        "--home-ssid, per un audit offline della robustezza della propria password con "
+        "aircrack-ng/hashcat (richiede --wifi-iface e --home-ssid; nessun frame viene mai "
+        "inviato, solo ascolto passivo di handshake che avvengono comunque)",
+    )
+    p.add_argument(
+        "--handshake-pcap-dir",
+        default="/var/log/home-sentinel/handshakes",
+        help="Cartella dove salvare i file .pcap degli handshake catturati",
+    )
+    p.add_argument(
+        "--handshake-log",
+        default="/var/log/home-sentinel/handshake_captures.jsonl",
+        help="Percorso file JSON Lines degli eventi di cattura handshake (metadati, non il pcap)",
+    )
+    p.add_argument(
+        "--handshake-window-s",
+        type=float,
+        default=2.0,
+        help="Secondi di inattività su una coppia AP/stazione prima di salvare l'handshake "
+        "parziale raccolto finora (se ha già raggiunto --handshake-min-frames)",
+    )
+    p.add_argument(
+        "--handshake-min-frames",
+        type=int,
+        default=2,
+        help="Numero minimo di frame EAPOL per considerare la cattura utile a un tentativo di "
+        "audit offline (di norma servono almeno i messaggi 1 e 2 del 4-way handshake)",
+    )
 
     p.add_argument(
         "--no-deauth-detection",
@@ -1719,6 +1762,19 @@ def main() -> None:
             wifi_traffic_log = make_logger(args.wifi_traffic_log)
         if not args.no_wifi_networks:
             wifi_networks_log = make_logger(args.wifi_networks_log)
+        handshake_capture = None
+        if args.capture_handshakes:
+            if home_ssids:
+                handshake_capture = HandshakeCapture(
+                    watched_ssids=home_ssids,
+                    pcap_dir=Path(args.handshake_pcap_dir),
+                    log=make_logger(args.handshake_log),
+                    sqlite_store=sqlite_store,
+                    window_seconds=args.handshake_window_s,
+                    min_frames=args.handshake_min_frames,
+                )
+            else:
+                LOG.warning("--capture-handshakes richiede --home-ssid: cattura handshake disabilitata")
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
@@ -1733,12 +1789,15 @@ def main() -> None:
             traffic_flush_interval=args.wifi_traffic_interval,
             networks_log=wifi_networks_log,
             networks_log_interval=args.wifi_networks_interval,
+            handshake_capture=handshake_capture,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
     else:
         LOG.info("Nessuna --wifi-iface indicata: modulo probe monitor disabilitato")
         if home_ssids:
             LOG.warning("--home-ssid richiede --wifi-iface: rilevamento evil twin disabilitato")
+        if args.capture_handshakes:
+            LOG.warning("--capture-handshakes richiede --wifi-iface: cattura handshake disabilitata")
 
     ble_log = None
     if args.ble:

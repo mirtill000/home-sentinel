@@ -218,6 +218,21 @@ del device se trovato via mDNS (es. "Cucina Alexa" — richiede fino a due
 query mDNS, vedi `sentinel_fingerprint.py`), `banners` i banner raccolti
 sulle porte aperte (chiave = porta).
 
+**`handshake_captures.jsonl`** (`--capture-handshakes`, opzionale, richiede `--home-ssid`):
+`{timestamp, ssid, bssid, sta_mac, frame_count, messages, pcap_path}`
+Una riga per ogni handshake EAPOL (WPA/WPA2) catturato passivamente per una
+rete elencata in `--home-ssid` — solo metadati, il file `.pcap` vero e
+proprio (percorso in `pcap_path`) va in `--handshake-pcap-dir` e non
+contiene mai la password in chiaro, solo il materiale crittografico
+dell'handshake per un tentativo di audit offline con aircrack-ng/hashcat.
+`messages` è l'elenco dei messaggi 1-4 del 4-way handshake classificati
+dai flag del frame EAPOL-Key (può essere parziale, es. `[1, 2]`, se il
+terzo/quarto messaggio non sono stati catturati — comunque spesso
+sufficiente per un tentativo di cracking con dizionario), `frame_count`
+il totale dei frame EAPOL raccolti per quella sessione (bssid + MAC
+stazione), anche quelli non classificabili. Vedi "Moduli di detection"
+sotto per come e quando scatta la cattura.
+
 **`deep_port_scan.jsonl`** (`--deep-port-scan`, opzionale):
 `{timestamp, mac, ip, open_ports, new_ports}`
 Una riga per ogni deep port scan eseguito (una volta ogni
@@ -347,6 +362,25 @@ a posteriori:
 - **Evil twin WiFi** (`--home-ssid`, richiede `--wifi-iface` già attivo):
   osserva i beacon 802.11 catturati durante il channel hopping e segnala
   un SSID monitorato trasmesso da un BSSID mai visto prima.
+- **Cattura handshake WPA/WPA2** (`--capture-handshakes`, opzionale,
+  richiede `--home-ssid` già configurato): non è un detector — non genera
+  alert — ma un audit tool per verificare la robustezza della propria
+  password WiFi. Ascolta passivamente i frame EAPOL del 4-way handshake
+  per le reti elencate in `--home-ssid` (nessun frame viene mai inviato,
+  a differenza di un attacco che forzerebbe la riconnessione dei client
+  con un deauth attivo — qui si aspetta un handshake che avviene comunque,
+  es. un client che si riconnette dopo essere stato fuori portata) e
+  salva un file `.pcap` per ogni handshake raccolto, pronto per un
+  tentativo di cracking offline con un dizionario tramite aircrack-ng o
+  hashcat. **Scoping deliberato**: cattura solo per le reti in
+  `--home-ssid`, mai indiscriminatamente per le reti dei vicini
+  rilevate — un handshake completo, a differenza di un beacon o un
+  probe, è materiale sufficiente per un tentativo di cracking della
+  password di quella rete specifica, quindi va raccolto solo per reti
+  che l'operatore è autorizzato a testare. Vedi `handshake_captures.jsonl`
+  sopra per il formato dei metadati, `--handshake-window-s` e
+  `--handshake-min-frames` per la sensibilità della cattura di handshake
+  parziali (meno di 4 messaggi, comunque spesso utilizzabili).
 - **Log reti WiFi adiacenti** (attivo di default quando `--wifi-iface` è in
   uso, `--no-wifi-networks` per disabilitarlo): non è un vero e proprio
   detector di sicurezza, ma usa la stessa cattura beacon dell'evil twin
