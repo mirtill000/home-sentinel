@@ -160,6 +160,17 @@ CREATE TABLE IF NOT EXISTS os_fingerprints (
 CREATE INDEX IF NOT EXISTS idx_osfp_mac ON os_fingerprints(mac);
 CREATE INDEX IF NOT EXISTS idx_osfp_ts ON os_fingerprints(timestamp);
 
+CREATE TABLE IF NOT EXISTS deep_port_scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    open_ports TEXT NOT NULL,
+    new_ports TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deepscan_mac ON deep_port_scans(mac);
+CREATE INDEX IF NOT EXISTS idx_deepscan_ts ON deep_port_scans(timestamp);
+
 CREATE TABLE IF NOT EXISTS dhcp_leases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -353,6 +364,17 @@ class SqliteStore:
                 "INSERT INTO os_fingerprints (timestamp, mac, ip, ttl, window, os_guess) VALUES (?, ?, ?, ?, ?, ?)",
                 (row["timestamp"], row["mac"], row.get("ip", ""), row.get("ttl"),
                  row.get("window"), row.get("os_guess", "")),
+            )
+            self._conn.commit()
+
+    def insert_deep_port_scan(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO deep_port_scans (timestamp, mac, ip, open_ports, new_ports) VALUES (?, ?, ?, ?, ?)",
+                (
+                    row["timestamp"], row["mac"], row["ip"],
+                    json.dumps(row.get("open_ports", [])), json.dumps(row.get("new_ports", [])),
+                ),
             )
             self._conn.commit()
 

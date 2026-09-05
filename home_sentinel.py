@@ -85,6 +85,30 @@ COMMON_HIGH_PORTS = [
 ]
 DEFAULT_PORTS = sorted(set(range(1, 1025)) | set(COMMON_HIGH_PORTS))
 
+# Range di default per il deep port scan opzionale (--deep-port-scan): tutte le porte TCP, non solo
+# 1-1024 + le porte "alte" comuni di DEFAULT_PORTS — per non perdere un servizio su una porta non
+# standard, al costo di uno scan molto più lungo per questo si esegue una volta ogni
+# --deep-port-scan-interval (default una settimana), non ad ogni ciclo di port scan normale.
+DEFAULT_DEEP_PORTS = "1-65535"
+
+
+def parse_port_spec(spec: str) -> list[int]:
+    """Elenco porte da una stringa comma-separated che ammette anche range "start-end"
+    (es. "22,80,8000-8100"): a differenza del semplice comma-split usato per --ports,
+    serve per esprimere in modo compatto un intervallo enorme come le 65535 porte TCP
+    del deep port scan senza doverle elencare una per una."""
+    ports: set[int] = set()
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start, end = token.split("-", 1)
+            ports.update(range(int(start), int(end) + 1))
+        else:
+            ports.add(int(token))
+    return sorted(ports)
+
 
 # --------------------------------------------------------------------------
 # Utility
@@ -341,12 +365,18 @@ class LanDiscoveryService:
         tcp_fallback: bool = False,
         tcp_fallback_ports: list[int] | None = None,
         fallback_timeout: float = 1.5,
+        deep_ports: list[int] | None = None,
+        deep_port_scan_interval: float = 604800.0,
+        deep_scan_log: JsonlLogger | None = None,
     ):
         self.subnet = subnet
         self.iface = iface
         self.interval = interval
         self.ports = ports
         self.port_scan_interval = port_scan_interval
+        self.deep_ports = deep_ports
+        self.deep_port_scan_interval = deep_port_scan_interval
+        self.deep_scan_log = deep_scan_log
         self.arp_timeout = arp_timeout
         self.arp_retries = arp_retries
         self.icmp_fallback = icmp_fallback
@@ -366,6 +396,7 @@ class LanDiscoveryService:
         self.dhcp_leases_log = dhcp_leases_log
         self.devices: dict[str, DeviceState] = {}
         self._last_port_scan: dict[str, float] = {}
+        self._last_deep_port_scan: dict[str, float] = {}
         self._ip_owner: dict[str, str] = {}
         self._dhcp_hostnames: dict[str, str] = {}
         self._dhcp_lock = threading.Lock()
@@ -526,6 +557,9 @@ class LanDiscoveryService:
                     if mdns_name and not hostname:
                         hostname = mdns_name
 
+            if self.deep_ports is not None:
+                open_ports = self._maybe_deep_scan(ip, mac, vendor, open_ports, now)
+
             self.devices[mac] = DeviceState(
                 ip=ip, hostname=hostname, vendor=vendor, last_seen=now, online=True, open_ports=open_ports,
             )
@@ -592,6 +626,54 @@ class LanDiscoveryService:
                 "possibile ARP spoofing/poisoning",
                 ip=ip, mac=mac, details={"mac_precedente": prev_mac, "mac_nuovo": mac},
             )
+
+    def _maybe_deep_scan(self, ip: str, mac: str, vendor: str, open_ports: list[int], now: float) -> list[int]:
+        """Deep port scan opzionale (--deep-port-scan): scansiona --deep-ports (default tutte le
+        65535 porte TCP) invece del solo elenco --ports usato dal port scan normale, ma una volta
+        ogni --deep-port-scan-interval (default una settimana) per device, non ad ogni ciclo — è
+        un'operazione molto più lenta, va tenuta rara.
+
+        La prima volta che si vede un MAC in questo metodo (device nuovo, o riavvio del daemon: lo
+        stato in memoria di _last_deep_port_scan non sopravvive a un riavvio) si registra solo il
+        timestamp di baseline, senza scansionare subito: altrimenti ogni device nuovo o un semplice
+        riavvio del servizio scatenerebbe una scansione pesante e sequenziale su tutti i device già
+        noti, molto più invasiva del "nuovo port scan immediato" già accettato per --ports.
+
+        Ritorna l'elenco porte aggiornato (unione con quelle già trovate dallo scan normale, se il
+        deep scan gira in questo ciclo), da riportare così com'è altrimenti.
+        """
+        last_deep = self._last_deep_port_scan.get(mac)
+        if last_deep is None:
+            self._last_deep_port_scan[mac] = now
+            return open_ports
+        if now - last_deep < self.deep_port_scan_interval:
+            return open_ports
+
+        self._last_deep_port_scan[mac] = now
+        deep_open_ports = scan_ports(ip, self.deep_ports)
+        new_ports = sorted(set(deep_open_ports) - set(open_ports))
+        merged_ports = sorted(set(open_ports) | set(deep_open_ports))
+
+        if self.deep_scan_log is not None:
+            row = {
+                "timestamp": now_iso(), "mac": mac, "ip": ip,
+                "open_ports": deep_open_ports, "new_ports": new_ports,
+            }
+            self.deep_scan_log.write(row)
+            if self.sqlite_store:
+                self.sqlite_store.insert_deep_port_scan(row)
+        LOG.info(
+            "Deep port scan ip=%s mac=%s porte_totali=%d nuove_rispetto_al_normale=%s",
+            ip, mac, len(deep_open_ports), new_ports,
+        )
+
+        # Rifà il fingerprint (banner grabbing incluso) sull'elenco completo solo se il deep scan ha
+        # trovato porte in più: altrimenti sarebbe un fingerprint ridondante identico all'ultimo già
+        # fatto dal port scan normale.
+        if new_ports and self.fingerprint_log is not None:
+            self._fingerprint_and_log(ip, mac, merged_ports, vendor)
+
+        return merged_ports
 
     def _fingerprint_and_log(self, ip: str, mac: str, open_ports: list[int], vendor: str) -> str:
         """Esegue il fingerprint e lo logga; ritorna il nome mDNS del device (stringa vuota se non trovato/fallito),
@@ -1213,6 +1295,30 @@ def parse_args() -> argparse.Namespace:
         help="Intervallo minimo tra due port-scan dello stesso device (s)",
     )
     p.add_argument(
+        "--deep-port-scan",
+        action="store_true",
+        help="Abilita un secondo port scan periodico più ampio (default: tutte le 65535 porte TCP, "
+        "vedi --deep-ports) ma molto meno frequente (--deep-port-scan-interval) del port scan "
+        "normale, per non perdere servizi su porte non standard",
+    )
+    p.add_argument(
+        "--deep-ports",
+        default=DEFAULT_DEEP_PORTS,
+        help="Porte per il deep port scan, stesso formato di --ports più i range 'start-end' "
+        "(default: tutte, 1-65535)",
+    )
+    p.add_argument(
+        "--deep-port-scan-interval",
+        type=float,
+        default=604800.0,
+        help="Intervallo minimo tra due deep port-scan dello stesso device (s, default una settimana)",
+    )
+    p.add_argument(
+        "--deep-scan-log",
+        default="/var/log/home-sentinel/deep_port_scan.jsonl",
+        help="Percorso file JSON Lines degli esiti del deep port scan",
+    )
+    p.add_argument(
         "--lan-log",
         default="/var/log/home-sentinel/lan_discovery.jsonl",
         help="Percorso file JSON Lines output LAN discovery",
@@ -1555,6 +1661,8 @@ def main() -> None:
     ports = [int(port) for port in args.ports.split(",") if port.strip()]
     tcp_fallback_ports = [int(port) for port in args.tcp_fallback_ports.split(",") if port.strip()]
     dhcp_leases_log = make_logger(args.dhcp_leases_log) if args.dhcp_lease_source else None
+    deep_ports = parse_port_spec(args.deep_ports) if args.deep_port_scan else None
+    deep_scan_log = make_logger(args.deep_scan_log) if args.deep_port_scan else None
     lan_service = LanDiscoveryService(
         subnet=args.subnet,
         iface=args.lan_iface,
@@ -1578,6 +1686,9 @@ def main() -> None:
         tcp_fallback=args.tcp_fallback,
         tcp_fallback_ports=tcp_fallback_ports,
         fallback_timeout=args.fallback_timeout,
+        deep_ports=deep_ports,
+        deep_port_scan_interval=args.deep_port_scan_interval,
+        deep_scan_log=deep_scan_log,
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
 
