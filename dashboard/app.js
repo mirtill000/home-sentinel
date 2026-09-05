@@ -53,6 +53,7 @@ const SETTINGS_KEYS = {
   dhcpEventsUrl: "hs.dhcpEventsUrl", osFingerprintUrl: "hs.osFingerprintUrl", dhcpLeasesUrl: "hs.dhcpLeasesUrl",
   trendDailyUrl: "hs.trendDailyUrl",
   bleIdentityLinksUrl: "hs.bleIdentityLinksUrl", blePresenceUrl: "hs.blePresenceUrl",
+  deepScanUrl: "hs.deepScanUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
@@ -62,6 +63,7 @@ const SETTINGS_DEFAULTS = {
   dhcpEventsUrl: "dhcp_events.jsonl", osFingerprintUrl: "os_fingerprint.jsonl", dhcpLeasesUrl: "dhcp_leases.jsonl",
   trendDailyUrl: "trend_daily.jsonl",
   bleIdentityLinksUrl: "ble_identity_links.jsonl", blePresenceUrl: "ble_presence.jsonl",
+  deepScanUrl: "deep_port_scan.jsonl",
 };
 
 function getSetting(key) {
@@ -108,6 +110,7 @@ const state = {
   trendDailyRows: [],
   bleIdentityLinksRows: [],
   blePresenceRows: [],
+  deepScanRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -362,6 +365,14 @@ async function loadAllOnce() {
   } catch {
     state.blePresenceRows = state.blePresenceRows || [];
     state.sourceStatus.blePresence = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("deepScanUrl"));
+    state.deepScanRows = r.rows;
+    state.sourceStatus.deepScan = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.deepScanRows = state.deepScanRows || [];
+    state.sourceStatus.deepScan = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -3201,6 +3212,7 @@ function renderDeviceProfile(container, mac) {
   ];
   const osFingerprint = latestFingerprintByMac(state.osFingerprintRows).get(mac);
   const latestLease = latestFingerprintByMac(state.dhcpLeasesRows).get(mac);
+  const deepScan = latestFingerprintByMac(state.deepScanRows).get(mac);
 
   container.innerHTML = `
     ${backButton}
@@ -3220,6 +3232,9 @@ function renderDeviceProfile(container, mac) {
         <div><span>mDNS name</span>${escapeHtml(fingerprint?.mdns_name) || "—"}</div>
         <div><span>OS guess</span>${escapeHtml(osFingerprint?.os_guess) || "—"}</div>
         <div><span>Open ports</span>${formatPorts(lanCurrent?.open_ports) || "—"}</div>
+        <div><span>Deep port scan</span>${deepScan
+          ? `${formatTs(deepScan.timestamp)} — ${Array.isArray(deepScan.open_ports) ? deepScan.open_ports.length : 0} open${Array.isArray(deepScan.new_ports) && deepScan.new_ports.length ? `, ${deepScan.new_ports.length} new: ${formatPorts(deepScan.new_ports)}` : ""}`
+          : "—"}</div>
         <div><span>First seen</span>${formatTs(firstSeenTs(mac))}</div>
         <div><span>Last LAN activity</span>${lanCurrent ? formatTs(lanCurrent.timestamp) : "—"}</div>
       </div>
@@ -3578,6 +3593,7 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("Daily trend rollup (--no-trend-rollup to disable)", "trendDaily")}
         ${moduleStatusRow("BLE identity link suggestions (--no-ble-identity-linking to disable)", "bleIdentityLinks")}
         ${moduleStatusRow("BLE presence tracking (--ble-home-macs)", "blePresence")}
+        ${moduleStatusRow("Deep port scan (--deep-port-scan)", "deepScan")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
       <p class="field-hint">Missing hosts that a tool like <code>nmap</code> does find? LAN discovery already retries hosts that don't answer the first ARP request (<code>--arp-retries</code>, default 2); two more fallbacks — <code>--icmp-fallback</code> and <code>--tcp-fallback</code> — can be enabled on the daemon for hosts still missing after that. These are daemon flags, not dashboard settings: see the README for details.</p>
@@ -3602,6 +3618,7 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-trend-daily-url">Daily trend rollup log (.jsonl)</label><input type="text" id="set-trend-daily-url" value="${escapeHtml(getSetting("trendDailyUrl"))}"></div>
         <div class="field"><label for="set-ble-identity-links-url">BLE identity link suggestions log (.jsonl)</label><input type="text" id="set-ble-identity-links-url" value="${escapeHtml(getSetting("bleIdentityLinksUrl"))}"></div>
         <div class="field"><label for="set-ble-presence-url">BLE presence log (.jsonl)</label><input type="text" id="set-ble-presence-url" value="${escapeHtml(getSetting("blePresenceUrl"))}"></div>
+        <div class="field"><label for="set-deep-scan-url">Deep port scan log (.jsonl)</label><input type="text" id="set-deep-scan-url" value="${escapeHtml(getSetting("deepScanUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -3668,6 +3685,7 @@ function renderImpostazioni(container) {
   document.getElementById("set-trend-daily-url").addEventListener("change", (e) => { setSetting("trendDailyUrl", e.target.value.trim() || SETTINGS_DEFAULTS.trendDailyUrl); loadAll(); });
   document.getElementById("set-ble-identity-links-url").addEventListener("change", (e) => { setSetting("bleIdentityLinksUrl", e.target.value.trim() || SETTINGS_DEFAULTS.bleIdentityLinksUrl); loadAll(); });
   document.getElementById("set-ble-presence-url").addEventListener("change", (e) => { setSetting("blePresenceUrl", e.target.value.trim() || SETTINGS_DEFAULTS.blePresenceUrl); loadAll(); });
+  document.getElementById("set-deep-scan-url").addEventListener("change", (e) => { setSetting("deepScanUrl", e.target.value.trim() || SETTINGS_DEFAULTS.deepScanUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -3794,7 +3812,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>How it works</h3>
-      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning (each row includes a heuristic <code>device_type</code>, e.g. wearable, audio, or a possible tracker), <code>ble_identity_links.jsonl</code> for suggested BLE identity links across a rotated address, <code>ble_presence.jsonl</code> for arrival/departure events of the home BLE MACs configured with <code>--ble-home-macs</code>, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, <code>trend_daily.jsonl</code> for the daily rollup behind the Trend page, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
+      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning (each row includes a heuristic <code>device_type</code>, e.g. wearable, audio, or a possible tracker), <code>ble_identity_links.jsonl</code> for suggested BLE identity links across a rotated address, <code>ble_presence.jsonl</code> for arrival/departure events of the home BLE MACs configured with <code>--ble-home-macs</code>, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>deep_port_scan.jsonl</code> for the optional weekly deep port scan (all 65535 TCP ports, vs. the common-ports set scanned normally), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, <code>trend_daily.jsonl</code> for the daily rollup behind the Trend page, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
       <p class="field-hint">LAN discovery finding fewer hosts than a tool like <code>nmap</code>? The daemon's ARP scan already retries hosts that don't answer the first broadcast (<code>--arp-retries</code>, default 2 — collisions are common on WiFi when many hosts reply at once); if some are still missing, two optional fallbacks can be enabled on the daemon: <code>--icmp-fallback</code> (a direct ping) and, as a last resort, <code>--tcp-fallback</code> (a SYN probe to a few common ports, for hosts whose firewall blocks ping but not TCP). Neither is a dashboard setting — see the README for the full explanation and when each one helps.</p>
     </div>
     <div class="card help-section">
@@ -3809,7 +3827,7 @@ function renderAiuto(container) {
       <h3>Pages</h3>
       <ul>
         <li><strong>Dashboard</strong> (home) — active hosts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with a quick preview for each category — a "View all" button on each jumps to the corresponding page (Host, WiFi or BLE) with the complete, searchable list and full details; for the three WiFi-related categories it shows only that one table, not the whole WiFi page ("Show all WiFi data" returns to the full page). "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
-        <li><strong>Host</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
+        <li><strong>Host</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts). A device's full profile also shows its last optional deep port scan (<code>--deep-port-scan</code>), if any, with how many ports it found beyond the regular scan.</li>
         <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then three tables (each searchable and paginated, across all loaded history) — "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it), "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons, filterable by security type — Open/WEP/WPA/WPA2-WPA3 — and by band, 2.4 vs 5 GHz; security is classified from the beacon itself and requires <code>--wifi-iface</code>). At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs (including a "Possible trackers" count) and 24h activity at the top, then the "BLE devices" table — a summary per MAC with a heuristic device type (wearable, audio, possible tracker...), manufacturer, signal and number of sightings, trackers highlighted — a "Presence" card with arrival/departure events for the home MACs configured with <code>--ble-home-macs</code>, and at the bottom the raw advertisement log for row-by-row analysis. From a device's full profile you can also see and act on suggested identity links across a rotated BLE address (same advertised name/services reappearing on a new MAC shortly after the old one went quiet) — a suggestion only, never applied automatically.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
@@ -3830,6 +3848,7 @@ function renderAiuto(container) {
         <li>BLE device type, tracker detection and evil-twin/spoofing detection are heuristics based on publicly documented advertisement formats (Apple Find My/Continuity type bytes, Tile/Samsung service UUIDs), not a certain identification: a device can be misclassified, and a device manufacturer could in principle mimic these patterns.</li>
         <li>BLE identity link suggestions (address rotation) are a best-effort match on the advertised name/manufacturer/service UUIDs: two different devices with no name and identical service UUIDs (e.g. two earbuds of the same model) could occasionally be suggested as the same device — always a suggestion to confirm, never applied automatically.</li>
         <li>BLE presence tracking only reports arrival/departure for the MAC addresses explicitly configured with <code>--ble-home-macs</code> on the daemon: it has no notion of which devices belong to the household beyond that list, and a MAC that rotates (see above) will look like a departure followed by a new arrival unless it's also linked as the same identity.</li>
+        <li>The deep port scan (<code>--deep-port-scan</code>) runs at most once every <code>--deep-port-scan-interval</code> (default one week) per device, and a brand-new device's first deep scan is deferred by a full interval rather than run immediately: it's meant to catch a service on an unusual port eventually, not as fast as the regular port scan.</li>
         <li>The risk score (the "Risk" column in Host) is a heuristic based on exposed ports and linked alerts, not a formal security assessment; marking a device as trusted attenuates it (reduced score, linked alerts one level less severe) but doesn't hide it or exclude it from checks.</li>
         <li>Deauth/disassoc flood detection is threshold-based (number of frames in a time window): very crowded WiFi networks or aggressive roaming can generate occasional false positives, and a very slow/distributed attack over time can stay under the threshold.</li>
         <li>"Trend" and "Timeline" are calculated in the browser from the already-loaded JSONL files: automatic log rotation on the daemon (<code>--max-log-size-mb</code>) and the dashboard's "tail only" loading for larger files (>4MB) reduce the available history accordingly, especially beyond 7-30 days.</li>

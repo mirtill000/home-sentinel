@@ -39,7 +39,10 @@ Type=simple
 # README, sezione "Moduli di discovery avanzata"): "--dhcp-discovery \" per
 # hostname via DHCP e rescan immediata su device nuovo, "--os-fingerprint \"
 # per l'euristica passiva del sistema operativo, "--dhcp-lease-source
-# /percorso/o/URL \" per il cross-check con le lease DHCP del router.
+# /percorso/o/URL \" per il cross-check con le lease DHCP del router,
+# "--deep-port-scan \" per un secondo port scan periodico su tutte le 65535
+# porte TCP (una volta a settimana per device, non ad ogni ciclo) invece
+# delle sole porte comuni scansionate normalmente.
 ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
     --subnet 192.168.1.0/24
 WorkingDirectory=/opt/home-sentinel

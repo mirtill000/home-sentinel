@@ -218,6 +218,18 @@ del device se trovato via mDNS (es. "Cucina Alexa" — richiede fino a due
 query mDNS, vedi `sentinel_fingerprint.py`), `banners` i banner raccolti
 sulle porte aperte (chiave = porta).
 
+**`deep_port_scan.jsonl`** (`--deep-port-scan`, opzionale):
+`{timestamp, mac, ip, open_ports, new_ports}`
+Una riga per ogni deep port scan eseguito (una volta ogni
+`--deep-port-scan-interval` per device, default una settimana — non ad
+ogni ciclo). `open_ports` è l'elenco completo trovato su `--deep-ports`
+(default tutte le 65535 porte TCP), `new_ports` il sottoinsieme non già
+noto dall'ultimo port scan normale (`--ports`) — quello che il deep scan
+ha aggiunto rispetto a quanto già visibile. Le porte in `new_ports`
+vengono unite all'elenco porte del device (colonna "Open ports" in
+dashboard) e possono far scattare l'alert "nuova porta" dell'anomaly
+detector come qualunque altra porta nuova.
+
 **`dhcp_events.jsonl`** (`--dhcp-discovery`, indipendente da `--detect-rogue-dhcp`
 ma sullo stesso sniff loop DHCP su `--dhcp-iface`):
 `{timestamp, event, mac, hostname, requested_ip}`
@@ -416,6 +428,22 @@ operativo, un cross-check con una fonte esterna al Pi:
   `ble_presence.jsonl` sopra): utile per un segnale "casa occupata/vuota" a
   valle (automazioni, riduzione rumore alert quando la casa è occupata),
   non è un detector di sicurezza.
+- **Deep port scan** (`--deep-port-scan`, opzionale, vedi `deep_port_scan.jsonl`
+  sopra): un secondo port scan periodico su un elenco molto più ampio di
+  `--ports` (default `--deep-ports 1-65535`, tutte le porte TCP) ma molto
+  meno frequente (`--deep-port-scan-interval`, default una settimana) per
+  device, per non perdere un servizio su una porta non standard senza dover
+  rallentare il port scan normale (che resta sulle porte comuni, ad ogni
+  `--port-scan-interval`). Le eventuali porte trovate solo dal deep scan
+  vengono unite all'elenco porte del device (colonna "Open ports" in
+  dashboard) e, se `--fingerprint` è attivo, rifanno scattare il banner
+  grabbing su di esse — stessa infrastruttura del fingerprinting LAN, solo
+  con un elenco porte più ampio. Alla prima comparsa di un device (o al
+  riavvio del daemon, che non ricorda l'ultimo deep scan tra un riavvio e
+  l'altro) il primo deep scan viene rimandato di un intervallo intero,
+  invece di scattare subito: altrimenti ogni device nuovo o un semplice
+  riavvio del servizio scatenerebbe una scansione pesante e sequenziale su
+  tutti i device già noti.
 
 ## Dashboard
 
