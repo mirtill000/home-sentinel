@@ -51,6 +51,14 @@ except ImportError as exc:  # pragma: no cover
         "scapy non è installato. Installa le dipendenze con: pip install -r requirements.txt"
     ) from exc
 
+from sentinel_ble import (
+    BleEvilTwinDetector,
+    BleIdentityLinker,
+    BlePresenceTracker,
+    BleTrackerWatchdog,
+    classify_ble_device,
+    detect_tracker_kind,
+)
 from sentinel_detection import (
     AlertManager,
     AnomalyDetector,
@@ -892,26 +900,76 @@ class BleScanMonitor:
         stop_event: threading.Event,
         adapter: str | None = None,
         sqlite_store: SqliteStore | None = None,
+        active_scan: bool = False,
+        tracker_watchdog: BleTrackerWatchdog | None = None,
+        identity_linker: BleIdentityLinker | None = None,
+        identity_log: JsonlLogger | None = None,
+        evil_twin_detector: BleEvilTwinDetector | None = None,
+        presence_tracker: BlePresenceTracker | None = None,
+        presence_log: JsonlLogger | None = None,
     ):
         self.log = log
         self.stop_event = stop_event
         self.adapter = adapter
         self.sqlite_store = sqlite_store
+        self.active_scan = active_scan
+        self.tracker_watchdog = tracker_watchdog
+        self.identity_linker = identity_linker
+        self.identity_log = identity_log
+        self.evil_twin_detector = evil_twin_detector
+        self.presence_tracker = presence_tracker
+        self.presence_log = presence_log
 
     def _handle_detection(self, device, advertisement_data) -> None:
+        mac = device.address.lower()
+        name = advertisement_data.local_name or device.name or ""
+        manufacturer_data = advertisement_data.manufacturer_data
+        manufacturer_ids = sorted(manufacturer_data.keys())
+        service_uuids = list(advertisement_data.service_uuids)
+
         row = {
             "timestamp": now_iso(),
-            "mac": device.address.lower(),
-            "name": advertisement_data.local_name or device.name or "",
+            "mac": mac,
+            "name": name,
             "rssi": advertisement_data.rssi,
             "tx_power": advertisement_data.tx_power,
-            "manufacturer_ids": sorted(advertisement_data.manufacturer_data.keys()),
-            "service_uuids": list(advertisement_data.service_uuids),
+            "manufacturer_ids": manufacturer_ids,
+            "service_uuids": service_uuids,
+            "device_type": classify_ble_device(name, manufacturer_data, service_uuids),
         }
         self.log.write(row)
         if self.sqlite_store:
             self.sqlite_store.insert_ble_event(row)
-        LOG.debug("BLE device mac=%s name=%r rssi=%s", row["mac"], row["name"], row["rssi"])
+        LOG.debug("BLE device mac=%s name=%r rssi=%s type=%s", mac, name, row["rssi"], row["device_type"])
+
+        if self.tracker_watchdog is not None:
+            tracker_kind = detect_tracker_kind(name, manufacturer_data, service_uuids)
+            self.tracker_watchdog.observe(mac, tracker_kind)
+
+        if self.identity_linker is not None and self.identity_log is not None:
+            link = self.identity_linker.observe(mac, name, manufacturer_ids, service_uuids)
+            if link is not None:
+                self.identity_log.write(link)
+                if self.sqlite_store:
+                    self.sqlite_store.insert_ble_identity_link(link)
+                LOG.info(
+                    "BLE: possibile stesso device su nuovo MAC (rotazione indirizzo) %s -> %s",
+                    link["mac_old"], link["mac_new"],
+                )
+
+        if self.evil_twin_detector is not None:
+            self.evil_twin_detector.observe(name, mac)
+
+        if self.presence_tracker is not None and self.presence_log is not None:
+            event = self.presence_tracker.observe(mac)
+            if event is not None:
+                self._write_presence_event(event)
+
+    def _write_presence_event(self, event: dict) -> None:
+        self.presence_log.write(event)
+        if self.sqlite_store:
+            self.sqlite_store.insert_ble_presence(event)
+        LOG.info("BLE presence: %s %s", event["mac"], event["event"])
 
     async def _run_async(self) -> None:
         try:
@@ -921,16 +979,22 @@ class BleScanMonitor:
                 "bleak non è installato. Installa le dipendenze con: pip install -r requirements.txt"
             ) from exc
 
-        kwargs = {}
+        kwargs = {"scanning_mode": "active" if self.active_scan else "passive"}
         if self.adapter:
             kwargs["bluez"] = {"adapter": self.adapter}
 
-        LOG.info("BLE scan monitor avviato%s", f" su {self.adapter}" if self.adapter else "")
+        LOG.info(
+            "BLE scan monitor avviato%s (scan %s)",
+            f" su {self.adapter}" if self.adapter else "", "attivo" if self.active_scan else "passivo",
+        )
         scanner = BleakScanner(detection_callback=self._handle_detection, **kwargs)
         await scanner.start()
         try:
             while not self.stop_event.is_set():
                 await asyncio.sleep(1)
+                if self.presence_tracker is not None and self.presence_log is not None:
+                    for event in self.presence_tracker.sweep():
+                        self._write_presence_event(event)
         finally:
             try:
                 await scanner.stop()
@@ -1214,6 +1278,70 @@ def parse_args() -> argparse.Namespace:
         "--ble-log",
         default="/var/log/home-sentinel/ble_discovery.jsonl",
         help="Percorso file JSON Lines output scan BLE",
+    )
+    p.add_argument(
+        "--ble-active",
+        action="store_true",
+        help="Scan BLE attivo invece di passivo: richiede scan response ai device, rivelando spesso più "
+        "informazioni (nome completo, altri UUID) ma rendendo il Pi stesso più visibile via radio",
+    )
+    p.add_argument(
+        "--no-ble-tracker-detection",
+        action="store_true",
+        help="Disabilita l'alert su tracker BLE (AirTag/Find My/Tile/SmartTag) presenti da troppo tempo "
+        "(attivo di default insieme a --ble)",
+    )
+    p.add_argument(
+        "--ble-trusted-macs",
+        default="",
+        help="MAC BLE esclusi dall'alert tracker (es. il proprio AirTag), separati da virgola",
+    )
+    p.add_argument(
+        "--ble-tracker-window-hours",
+        type=float,
+        default=3.0,
+        help="Ore di presenza continuativa di un tracker BLE oltre le quali scatta l'alert",
+    )
+    p.add_argument(
+        "--no-ble-identity-linking",
+        action="store_true",
+        help="Disabilita i suggerimenti di collegamento identità per rotazione di indirizzo BLE (RPA) "
+        "(attivo di default insieme a --ble)",
+    )
+    p.add_argument(
+        "--ble-identity-log",
+        default="/var/log/home-sentinel/ble_identity_links.jsonl",
+        help="Percorso file JSON Lines dei suggerimenti di collegamento identità BLE",
+    )
+    p.add_argument(
+        "--ble-identity-rotation-window-s",
+        type=float,
+        default=1200.0,
+        help="Finestra massima (secondi) tra la sparizione di un MAC e la comparsa di uno nuovo con "
+        "la stessa firma pubblicitaria perché siano suggeriti come lo stesso device",
+    )
+    p.add_argument(
+        "--ble-watch-names",
+        default="",
+        help="Nomi BLE 'di casa' da monitorare per possibile spoofing/clone (es. una serratura smart), "
+        "separati da virgola",
+    )
+    p.add_argument(
+        "--ble-home-macs",
+        default="",
+        help="MAC BLE 'di casa' (es. gli smartphone del nucleo familiare) per il tracking presenza/assenza, "
+        "separati da virgola",
+    )
+    p.add_argument(
+        "--ble-presence-log",
+        default="/var/log/home-sentinel/ble_presence.jsonl",
+        help="Percorso file JSON Lines degli eventi di presenza/assenza BLE",
+    )
+    p.add_argument(
+        "--ble-presence-away-timeout-s",
+        type=float,
+        default=300.0,
+        help="Secondi senza advertisement da un MAC 'di casa' prima di considerarlo assente",
     )
 
     p.add_argument(
@@ -1504,8 +1632,40 @@ def main() -> None:
     ble_log = None
     if args.ble:
         ble_log = make_logger(args.ble_log)
+
+        ble_tracker_watchdog = None
+        if not args.no_ble_tracker_detection:
+            ble_trusted_macs = {m.strip().lower() for m in args.ble_trusted_macs.split(",") if m.strip()}
+            ble_tracker_watchdog = BleTrackerWatchdog(
+                alert_manager=alert_manager, trusted_macs=ble_trusted_macs,
+                window_seconds=args.ble_tracker_window_hours * 3600.0,
+            )
+
+        ble_identity_linker = None
+        ble_identity_log = None
+        if not args.no_ble_identity_linking:
+            ble_identity_linker = BleIdentityLinker(rotation_window_seconds=args.ble_identity_rotation_window_s)
+            ble_identity_log = make_logger(args.ble_identity_log)
+
+        ble_watch_names = {s.strip() for s in args.ble_watch_names.split(",") if s.strip()}
+        ble_evil_twin_detector = BleEvilTwinDetector(ble_watch_names, alert_manager) if ble_watch_names else None
+
+        ble_home_macs = {m.strip().lower() for m in args.ble_home_macs.split(",") if m.strip()}
+        ble_presence_tracker = None
+        ble_presence_log = None
+        if ble_home_macs:
+            ble_presence_tracker = BlePresenceTracker(
+                home_macs=ble_home_macs, away_timeout_seconds=args.ble_presence_away_timeout_s,
+            )
+            ble_presence_log = make_logger(args.ble_presence_log)
+
         ble_service = BleScanMonitor(
             log=ble_log, stop_event=stop_event, adapter=args.ble_adapter, sqlite_store=sqlite_store,
+            active_scan=args.ble_active,
+            tracker_watchdog=ble_tracker_watchdog,
+            identity_linker=ble_identity_linker, identity_log=ble_identity_log,
+            evil_twin_detector=ble_evil_twin_detector,
+            presence_tracker=ble_presence_tracker, presence_log=ble_presence_log,
         )
         threads.append(threading.Thread(target=ble_service.run, name="ble-scan", daemon=True))
     else:

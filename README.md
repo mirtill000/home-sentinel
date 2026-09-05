@@ -176,12 +176,35 @@ restringere o ampliare l'insieme.
 Una riga per ogni probe request 802.11 catturato durante il channel
 hopping. `rssi` è un numero, oppure `null` se il radiotap non lo riporta.
 
-**`ble_discovery.jsonl`**: `{timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids}`
-Una riga per ogni advertisement BLE ricevuto durante lo scan passivo.
-`name` è la stringa pubblicizzata dal device (vuota se non presente),
-`manufacturer_ids` un array di company ID Bluetooth SIG (es. `76` = Apple),
-`service_uuids` un array di UUID dei servizi GATT annunciati. `tx_power`
-è `null` se il device non lo include nell'advertisement.
+**`ble_discovery.jsonl`**: `{timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids, device_type}`
+Una riga per ogni advertisement BLE ricevuto durante lo scan (passivo di
+default, `--ble-active` per uno scan attivo — richiede scan response ai
+device, spesso più informazioni ma rende il Pi stesso più visibile via
+radio). `name` è la stringa pubblicizzata dal device (vuota se non
+presente), `manufacturer_ids` un array di company ID Bluetooth SIG (es.
+`76` = Apple), `service_uuids` un array di UUID dei servizi GATT annunciati.
+`tx_power` è `null` se il device non lo include nell'advertisement.
+`device_type` è una classificazione euristica (es. "Wearable/fitness",
+"Auricolari Apple (AirPods)", "Possibile tracker (...)" — vedi "Moduli di
+detection BLE" sotto), stringa vuota se non riconosciuto.
+
+**`ble_identity_links.jsonl`** (attivo di default insieme a `--ble`, `--no-ble-identity-linking` per disabilitarlo):
+`{timestamp, mac_old, mac_new, signature_name}`
+Suggerimenti (mai collegamenti applicati automaticamente) di continuità
+d'identità quando la stessa "firma" pubblicitaria (nome + manufacturer +
+service UUID) ricompare su un nuovo MAC entro `--ble-identity-rotation-window-s`
+(default 1200s = 20 min) dalla sparizione del precedente — il pattern
+tipico di una rotazione di indirizzo BLE privato risolvibile (RPA). La
+dashboard li mostra come suggerimento scartabile nel profilo device,
+stesso principio della "Group by identity" lato LAN/WiFi.
+
+**`ble_presence.jsonl`** (`--ble-home-macs`, opzionale):
+`{timestamp, mac, event, duration_s}`
+Un evento per ogni transizione presente/assente di un MAC BLE "di casa"
+(es. lo smartphone di un componente della famiglia): `event` è `"arrived"`
+o `"left"` (con `duration_s` la durata della presenza appena conclusa,
+assente su `"arrived"`). Un MAC è considerato assente dopo
+`--ble-presence-away-timeout-s` (default 300s) senza nuovi advertisement.
 
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
@@ -339,6 +362,19 @@ a posteriori:
   channel hopping, aggregata ogni `--wifi-traffic-interval` secondi (default
   60) su `wifi_traffic.jsonl` e, se attivo, sullo specchio SQLite. È una
   stima relativa (vedi sopra), non una misura di banda reale.
+- **Tracker BLE (anti-stalking)** (attivo di default insieme a `--ble`,
+  `--no-ble-tracker-detection` per disabilitarlo): riconosce nell'advertisement
+  i pattern pubblici noti di Apple Find My (AirTag e accessori "separati dal
+  proprietario"), Tile e Samsung SmartTag; segnala un alert se un tracker
+  resta nei paraggi per più di `--ble-tracker-window-hours` (default 3h) di
+  presenza continuativa — possibile tracker lasciato addosso o nei bagagli,
+  non solo un device di casa. `--ble-trusted-macs` esclude i propri tracker
+  (es. il tuo AirTag) dall'alert. Euristica basata su formati pubblici noti,
+  non un'identificazione garantita al 100%.
+- **Evil twin/spoofing BLE** (`--ble-watch-names`, opzionale): come l'evil
+  twin WiFi ma per BLE — segnala un nome BLE monitorato (es. una serratura
+  smart) trasmesso da un MAC nuovo/inatteso rispetto a quelli già noti per
+  quel nome.
 
 ## Moduli di discovery avanzata
 
@@ -367,6 +403,19 @@ operativo, un cross-check con una fonte esterna al Pi:
   scan, per rilevare device presenti nelle lease ma silenziosi sull'ARP
   scan (spenti, addormentati, o firewallati contro ARP non richiesti — non
   necessariamente un problema, solo un dato in più).
+- **Classificazione tipo device BLE** (sempre attiva insieme a `--ble`,
+  nessun flag dedicato): euristica su nome/manufacturer/service UUID
+  dell'advertisement, scrive il campo `device_type` su `ble_discovery.jsonl`
+  (vedi sopra) — stesso principio del fingerprinting LAN, ma senza sonde
+  aggiuntive: usa solo i dati già ricevuti passivamente.
+- **Suggerimenti identità BLE per rotazione indirizzo** (attivo di default
+  insieme a `--ble`, `--no-ble-identity-linking` per disabilitarlo, vedi
+  `ble_identity_links.jsonl` sopra): non è un detector di sicurezza, solo un
+  suggerimento di continuità d'identità mai applicato automaticamente.
+- **Tracking presenza/assenza BLE** (`--ble-home-macs`, opzionale, vedi
+  `ble_presence.jsonl` sopra): utile per un segnale "casa occupata/vuota" a
+  valle (automazioni, riduzione rumore alert quando la casa è occupata),
+  non è un detector di sicurezza.
 
 ## Dashboard
 

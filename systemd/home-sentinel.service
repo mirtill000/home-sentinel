@@ -18,7 +18,16 @@ Type=simple
 # non lo supporta bene.
 #
 # Aggiungi "--ble \" per abilitare lo scan BLE: qui invece basta il
-# Bluetooth onboard del Pi 3, nessun adattatore esterno necessario.
+# Bluetooth onboard del Pi 3, nessun adattatore esterno necessario. Con
+# --ble sono già attivi di default (nessun flag aggiuntivo richiesto) la
+# classificazione euristica del tipo di device, il rilevamento tracker
+# BLE (AirTag/Tile/SmartTag, vedi --ble-trusted-macs per escludere i
+# propri) e i suggerimenti di collegamento identità per rotazione
+# indirizzo (--no-ble-tracker-detection/--no-ble-identity-linking per
+# disabilitarli); "--ble-watch-names Serratura \" per il rilevamento
+# evil twin/spoofing BLE, "--ble-home-macs aa:bb:cc:...\" per il tracking
+# presenza/assenza, "--ble-active \" per uno scan attivo invece che
+# passivo (vedi README, sezione "Moduli di detection BLE").
 #
 # Moduli di detection opzionali (vedi README, sezione "Moduli di
 # detection"): "--fingerprint \" per classificare il tipo di device,

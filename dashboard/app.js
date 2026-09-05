@@ -51,6 +51,7 @@ const SETTINGS_KEYS = {
   wifiNetworksUrl: "hs.wifiNetworksUrl",
   dhcpEventsUrl: "hs.dhcpEventsUrl", osFingerprintUrl: "hs.osFingerprintUrl", dhcpLeasesUrl: "hs.dhcpLeasesUrl",
   trendDailyUrl: "hs.trendDailyUrl",
+  bleIdentityLinksUrl: "hs.bleIdentityLinksUrl", blePresenceUrl: "hs.blePresenceUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
@@ -59,6 +60,7 @@ const SETTINGS_DEFAULTS = {
   wifiNetworksUrl: "wifi_networks.jsonl",
   dhcpEventsUrl: "dhcp_events.jsonl", osFingerprintUrl: "os_fingerprint.jsonl", dhcpLeasesUrl: "dhcp_leases.jsonl",
   trendDailyUrl: "trend_daily.jsonl",
+  bleIdentityLinksUrl: "ble_identity_links.jsonl", blePresenceUrl: "ble_presence.jsonl",
 };
 
 function getSetting(key) {
@@ -103,6 +105,8 @@ const state = {
   osFingerprintRows: [],
   dhcpLeasesRows: [],
   trendDailyRows: [],
+  bleIdentityLinksRows: [],
+  blePresenceRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -341,6 +345,22 @@ async function loadAllOnce() {
   } catch {
     state.trendDailyRows = state.trendDailyRows || [];
     state.sourceStatus.trendDaily = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("bleIdentityLinksUrl"));
+    state.bleIdentityLinksRows = r.rows;
+    state.sourceStatus.bleIdentityLinks = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.bleIdentityLinksRows = state.bleIdentityLinksRows || [];
+    state.sourceStatus.bleIdentityLinks = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("blePresenceUrl"));
+    state.blePresenceRows = r.rows;
+    state.sourceStatus.blePresence = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.blePresenceRows = state.blePresenceRows || [];
+    state.sourceStatus.blePresence = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -726,6 +746,19 @@ function suggestedIdentityMatches(mac) {
     .filter((d) => !alreadyLinked.has(d.mac) && (d.hostname || "").trim() === hostname)
     .map((d) => d.mac)
     .filter((m) => !isIdentitySuggestionDismissed(mac, m));
+}
+
+/** MAC suggeriti dal daemon (ble_identity_links.jsonl) come possibile stesso device di `mac` su
+ * un indirizzo BLE ruotato (RPA) — mai applicato automaticamente, solo un suggerimento scartabile,
+ * stesso principio di suggestedIdentityMatches. */
+function suggestedBleIdentityMatches(mac) {
+  const alreadyLinked = new Set(macsInIdentity(mac));
+  const candidates = new Set();
+  for (const link of state.bleIdentityLinksRows) {
+    if (link.mac_old === mac && !alreadyLinked.has(link.mac_new)) candidates.add(link.mac_new);
+    if (link.mac_new === mac && !alreadyLinked.has(link.mac_old)) candidates.add(link.mac_old);
+  }
+  return [...candidates].filter((m) => !isIdentitySuggestionDismissed(mac, m));
 }
 
 function trustBadgeHtml(mac) {
@@ -1466,6 +1499,8 @@ const ALERT_TYPE_META = {
   possibile_rogue_dhcp: { label: "Possible rogue DHCP", icon: "server" },
   possibile_evil_twin: { label: "Possible WiFi evil twin", icon: "wifi" },
   possibile_deauth_flood: { label: "Possible WiFi deauth/disassoc attack", icon: "wifi" },
+  possibile_tracker_ble: { label: "Possible BLE tracker (AirTag/Tile/SmartTag)", icon: "bluetooth" },
+  possibile_ble_spoofing: { label: "Possible BLE spoofing/clone", icon: "bluetooth" },
   nuova_porta: { label: "New port open on known device", icon: "alert-triangle" },
   nuovo_dispositivo: { label: "New device detected", icon: "monitor" },
   porta_rischio: { label: "Risky port open", icon: "alert-triangle" },
@@ -2207,6 +2242,15 @@ function renderBlePage(container) {
         value: new Set(bleLast24h.flatMap((r) => (Array.isArray(r.manufacturer_ids) ? r.manufacturer_ids : []).filter((id) => BLE_COMPANY_IDS[id]))).size,
         sub: "From recognized Bluetooth SIG company IDs",
       })}
+      ${(() => {
+        const trackerCount = computeBleDeviceOverview(state.bleRows).filter((e) => e.isTracker).length;
+        return kpiTile({
+          label: "Possible trackers", icon: "shield", tone: trackerCount ? "critical" : "good",
+          value: trackerCount,
+          sub: trackerCount ? "AirTag/Tile/SmartTag-like advertisement seen" : "None detected",
+          subTone: trackerCount ? "critical" : "good",
+        });
+      })()}
     </div>
 
     <div class="page-section card">
@@ -2216,12 +2260,46 @@ function renderBlePage(container) {
 
     <div class="page-section card" id="ble-devices-mount"></div>
 
+    <div class="page-section card" id="ble-presence-mount"></div>
+
     <div class="page-section card" id="ble-section-mount"></div>
   `;
 
   renderBarChart(document.getElementById("chart-ble-activity"), hourlyCounts(state.bleRows));
   renderBleDevicesTable(document.getElementById("ble-devices-mount"));
+  renderBlePresenceCard(document.getElementById("ble-presence-mount"));
   renderBleSection(document.getElementById("ble-section-mount"));
+}
+
+/**
+ * Eventi di presenza/assenza per i MAC BLE "di casa" configurati sul daemon
+ * (--ble-home-macs): mostra gli ultimi arrivi/uscite così com'è nel log,
+ * la dashboard non conosce quali MAC sono stati configurati lato daemon.
+ */
+function renderBlePresenceCard(container) {
+  const rows = state.blePresenceRows.slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Presence</h2>
+      <span class="card-sub">arrival/departure events for the home MAC addresses configured on the daemon (<code>--ble-home-macs</code>)</span>
+    </div>
+    ${rows.length ? `
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Timestamp</th><th>Device</th><th>Event</th><th>Duration</th></tr></thead>
+          <tbody>${rows.slice(0, 30).map((r) => `<tr>
+            <td>${formatTs(r.timestamp)}</td>
+            <td><button class="link-cell" data-mac-link="${escapeHtml(r.mac)}">${escapeHtml(displayName(r.mac, r.mac))}</button></td>
+            <td>${r.event === "arrived" ? '<span class="badge status-online"><span class="dot"></span>Arrived</span>' : '<span class="badge status-offline"><span class="dot"></span>Left</span>'}</td>
+            <td>${typeof r.duration_s === "number" ? formatDuration(r.duration_s * 1000) : '<span class="muted">—</span>'}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>
+    ` : '<p class="empty-state">No presence events — configure <code>--ble-home-macs</code> on the daemon to enable this.</p>'}
+  `;
+  container.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
 }
 
 /**
@@ -2236,10 +2314,11 @@ function computeBleDeviceOverview(rows) {
   const byMac = new Map();
   for (const r of rows) {
     if (!r.mac) continue;
-    if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, name: "", rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0, manufacturerIds: new Set() });
+    if (!byMac.has(r.mac)) byMac.set(r.mac, { mac: r.mac, name: "", deviceType: "", rssiSum: 0, rssiCount: 0, sightings: 0, lastTs: 0, manufacturerIds: new Set() });
     const e = byMac.get(r.mac);
     e.sightings += 1;
     if (!e.name && r.name) e.name = r.name;
+    if (r.device_type) e.deviceType = r.device_type;
     if (typeof r.rssi === "number") { e.rssiSum += r.rssi; e.rssiCount += 1; }
     const ts = parseTs(r.timestamp) || 0;
     if (ts > e.lastTs) e.lastTs = ts;
@@ -2249,6 +2328,7 @@ function computeBleDeviceOverview(rows) {
     ...e,
     avgRssi: e.rssiCount ? Math.round(e.rssiSum / e.rssiCount) : null,
     manufacturer: e.manufacturerIds.size ? bleCompanyLabel([...e.manufacturerIds][0]) : "",
+    isTracker: e.deviceType.startsWith("Possibile tracker"),
   }));
 }
 
@@ -2263,7 +2343,7 @@ function renderBleDevicesTable(container) {
     </div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Device</th><th>Manufacturer</th><th>Average signal</th><th>Sightings</th><th>Last seen</th></tr></thead>
+        <thead><tr><th>Device</th><th>Type</th><th>Manufacturer</th><th>Average signal</th><th>Sightings</th><th>Last seen</th></tr></thead>
         <tbody id="ble-devices-body"></tbody>
       </table>
       <p class="empty-state hidden" id="ble-devices-empty">No BLE advertisements — check the data source in Settings.</p>
@@ -2281,15 +2361,16 @@ function renderBleDevicesTableBody() {
   const search = searchEl.value.trim().toLowerCase();
   const all = computeBleDeviceOverview(state.bleRows);
   const rows = all
-    .filter((e) => !search || `${e.mac} ${displayName(e.mac, "")} ${e.name} ${e.manufacturer}`.toLowerCase().includes(search))
-    .sort((a, b) => b.sightings - a.sightings);
+    .filter((e) => !search || `${e.mac} ${displayName(e.mac, "")} ${e.name} ${e.manufacturer} ${e.deviceType}`.toLowerCase().includes(search))
+    .sort((a, b) => (b.isTracker - a.isTracker) || (b.sightings - a.sightings));
 
   const info = paginate(rows, "ble-devices");
-  body.innerHTML = info.pageRows.map((e) => `<tr>
+  body.innerHTML = info.pageRows.map((e) => `<tr${e.isTracker ? ' class="row-flagged"' : ""}>
     <td>
       <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(displayName(e.mac, e.name || e.mac))}</button>
       ${trustBadgeHtml(e.mac)}
     </td>
+    <td>${e.isTracker ? `<span class="badge risk-badge tone-critical" title="${escapeHtml(e.deviceType)}">${ICON("shield")}Tracker</span>` : escapeHtml(e.deviceType) || '<span class="muted">—</span>'}</td>
     <td>${escapeHtml(e.manufacturer) || '<span class="muted">—</span>'}</td>
     <td>${signalBarsHtml(e.avgRssi)}</td>
     <td>${e.sightings}</td>
@@ -2318,6 +2399,7 @@ function renderBleSection(container) {
           <th data-sort="timestamp">Timestamp</th>
           <th data-sort="mac">MAC</th>
           <th data-sort="name">Name</th>
+          <th>Type</th>
           <th>Manufacturer</th>
           <th data-sort="rssi">Signal</th>
           <th>Services</th>
@@ -2356,10 +2438,11 @@ function renderBleTableBody() {
   rows = sortRows(rows, state.bleSort.key, state.bleSort.dir);
 
   const info = paginate(rows, "ble-raw");
-  body.innerHTML = info.pageRows.map((r) => `<tr>
+  body.innerHTML = info.pageRows.map((r) => `<tr${r.device_type && r.device_type.startsWith("Possibile tracker") ? ' class="row-flagged"' : ""}>
     <td>${formatTs(r.timestamp)}</td>
     <td class="mono">${escapeHtml(r.mac)}</td>
     <td>${escapeHtml(r.name) || '<span class="muted">—</span>'}</td>
+    <td>${escapeHtml(r.device_type) || '<span class="muted">—</span>'}</td>
     <td>${escapeHtml(r._manufacturers.join(", ")) || '<span class="muted">—</span>'}</td>
     <td>${signalBarsHtml(r.rssi)}</td>
     <td>${Array.isArray(r.service_uuids) && r.service_uuids.length ? r.service_uuids.length : '<span class="muted">—</span>'}</td>
@@ -3006,7 +3089,10 @@ function renderDeviceProfile(container, mac) {
   const label = getDeviceLabel(mac);
   const title = displayName(mac, lanCurrent?.hostname || fingerprint?.device_type || mac);
   const linkedMacs = macsInIdentity(mac).filter((m) => m !== mac);
-  const identitySuggestions = suggestedIdentityMatches(mac);
+  const identitySuggestions = [
+    ...suggestedIdentityMatches(mac).map((m) => ({ mac: m, reason: "hostname" })),
+    ...suggestedBleIdentityMatches(mac).map((m) => ({ mac: m, reason: "ble" })),
+  ];
   const osFingerprint = latestFingerprintByMac(state.osFingerprintRows).get(mac);
   const latestLease = latestFingerprintByMac(state.dhcpLeasesRows).get(mac);
 
@@ -3024,7 +3110,7 @@ function renderDeviceProfile(container, mac) {
       <div class="detail-grid">
         <div><span>IP</span>${lanCurrent ? escapeHtml(lanCurrent.ip) : "—"}</div>
         <div><span>Vendor</span>${escapeHtml(lanCurrent?.vendor) || "—"}</div>
-        <div><span>Device type</span>${escapeHtml(fingerprint?.device_type) || "—"}</div>
+        <div><span>Device type</span>${escapeHtml(fingerprint?.device_type || bleHits[0]?.device_type) || "—"}</div>
         <div><span>mDNS name</span>${escapeHtml(fingerprint?.mdns_name) || "—"}</div>
         <div><span>OS guess</span>${escapeHtml(osFingerprint?.os_guess) || "—"}</div>
         <div><span>Open ports</span>${formatPorts(lanCurrent?.open_ports) || "—"}</div>
@@ -3052,12 +3138,14 @@ function renderDeviceProfile(container, mac) {
           <input type="text" id="device-link-mac-input" class="mono" placeholder="aa:bb:cc:dd:ee:ff">
           <button class="btn" id="device-link-mac-btn">Link as same device</button>
         </div>
-        ${identitySuggestions.map((m) => `
+        ${identitySuggestions.map((s) => `
           <div class="device-identity-suggestion">
-            <span>Same hostname also seen on <span class="mono">${escapeHtml(m)}</span> — could be the same device?</span>
+            <span>${s.reason === "ble"
+              ? `Possible BLE address rotation to <span class="mono">${escapeHtml(s.mac)}</span> — same advertised name/services seen shortly after this MAC went quiet, could be the same device?`
+              : `Same hostname also seen on <span class="mono">${escapeHtml(s.mac)}</span> — could be the same device?`}</span>
             <div class="device-identity-suggestion-actions">
-              <button class="btn btn-primary" data-link-suggestion="${escapeHtml(m)}">Same device</button>
-              <button class="btn" data-dismiss-suggestion="${escapeHtml(m)}">Not the same</button>
+              <button class="btn btn-primary" data-link-suggestion="${escapeHtml(s.mac)}">Same device</button>
+              <button class="btn" data-dismiss-suggestion="${escapeHtml(s.mac)}">Not the same</button>
             </div>
           </div>
         `).join("")}
@@ -3113,10 +3201,11 @@ function renderDeviceProfile(container, mac) {
       <div class="card">
         <div class="card-head"><h2>BLE advertisements</h2><span class="card-sub">${bleHits.length} captured</span></div>
         <div class="table-scroll">
-          <table class="data-table"><thead><tr><th>Timestamp</th><th>Name</th><th>RSSI</th></tr></thead>
+          <table class="data-table"><thead><tr><th>Timestamp</th><th>Name</th><th>Type</th><th>RSSI</th></tr></thead>
           <tbody>${bleHits.slice(0, 30).map((r) => `<tr>
-            <td>${formatTs(r.timestamp)}</td><td>${escapeHtml(r.name) || '<span class="muted">—</span>'}</td><td>${r.rssi ?? '<span class="muted">—</span>'}</td>
-          </tr>`).join("") || '<tr><td colspan="3"><p class="empty-state">No BLE advertisements for this MAC.</p></td></tr>'}</tbody></table>
+            <td>${formatTs(r.timestamp)}</td><td>${escapeHtml(r.name) || '<span class="muted">—</span>'}</td>
+            <td>${escapeHtml(r.device_type) || '<span class="muted">—</span>'}</td><td>${r.rssi ?? '<span class="muted">—</span>'}</td>
+          </tr>`).join("") || '<tr><td colspan="4"><p class="empty-state">No BLE advertisements for this MAC.</p></td></tr>'}</tbody></table>
         </div>
       </div>
     </div>
@@ -3355,6 +3444,8 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("Passive OS fingerprint (--os-fingerprint)", "osFingerprint")}
         ${moduleStatusRow("DHCP lease cross-check (--dhcp-lease-source)", "dhcpLeases")}
         ${moduleStatusRow("Daily trend rollup (--no-trend-rollup to disable)", "trendDaily")}
+        ${moduleStatusRow("BLE identity link suggestions (--no-ble-identity-linking to disable)", "bleIdentityLinks")}
+        ${moduleStatusRow("BLE presence tracking (--ble-home-macs)", "blePresence")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
       <p class="field-hint">Missing hosts that a tool like <code>nmap</code> does find? LAN discovery already retries hosts that don't answer the first ARP request (<code>--arp-retries</code>, default 2); two more fallbacks — <code>--icmp-fallback</code> and <code>--tcp-fallback</code> — can be enabled on the daemon for hosts still missing after that. These are daemon flags, not dashboard settings: see the README for details.</p>
@@ -3377,6 +3468,8 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-os-fingerprint-url">Passive OS fingerprint log (.jsonl)</label><input type="text" id="set-os-fingerprint-url" value="${escapeHtml(getSetting("osFingerprintUrl"))}"></div>
         <div class="field"><label for="set-dhcp-leases-url">DHCP lease cross-check log (.jsonl)</label><input type="text" id="set-dhcp-leases-url" value="${escapeHtml(getSetting("dhcpLeasesUrl"))}"></div>
         <div class="field"><label for="set-trend-daily-url">Daily trend rollup log (.jsonl)</label><input type="text" id="set-trend-daily-url" value="${escapeHtml(getSetting("trendDailyUrl"))}"></div>
+        <div class="field"><label for="set-ble-identity-links-url">BLE identity link suggestions log (.jsonl)</label><input type="text" id="set-ble-identity-links-url" value="${escapeHtml(getSetting("bleIdentityLinksUrl"))}"></div>
+        <div class="field"><label for="set-ble-presence-url">BLE presence log (.jsonl)</label><input type="text" id="set-ble-presence-url" value="${escapeHtml(getSetting("blePresenceUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -3426,6 +3519,8 @@ function renderImpostazioni(container) {
   document.getElementById("set-os-fingerprint-url").addEventListener("change", (e) => { setSetting("osFingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.osFingerprintUrl); loadAll(); });
   document.getElementById("set-dhcp-leases-url").addEventListener("change", (e) => { setSetting("dhcpLeasesUrl", e.target.value.trim() || SETTINGS_DEFAULTS.dhcpLeasesUrl); loadAll(); });
   document.getElementById("set-trend-daily-url").addEventListener("change", (e) => { setSetting("trendDailyUrl", e.target.value.trim() || SETTINGS_DEFAULTS.trendDailyUrl); loadAll(); });
+  document.getElementById("set-ble-identity-links-url").addEventListener("change", (e) => { setSetting("bleIdentityLinksUrl", e.target.value.trim() || SETTINGS_DEFAULTS.bleIdentityLinksUrl); loadAll(); });
+  document.getElementById("set-ble-presence-url").addEventListener("change", (e) => { setSetting("blePresenceUrl", e.target.value.trim() || SETTINGS_DEFAULTS.blePresenceUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -3515,7 +3610,7 @@ function renderAiuto(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>How it works</h3>
-      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, <code>trend_daily.jsonl</code> for the daily rollup behind the Trend page, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
+      <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning (each row includes a heuristic <code>device_type</code>, e.g. wearable, audio, or a possible tracker), <code>ble_identity_links.jsonl</code> for suggested BLE identity links across a rotated address, <code>ble_presence.jsonl</code> for arrival/departure events of the home BLE MACs configured with <code>--ble-home-macs</code>, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, <code>trend_daily.jsonl</code> for the daily rollup behind the Trend page, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
       <p class="field-hint">LAN discovery finding fewer hosts than a tool like <code>nmap</code>? The daemon's ARP scan already retries hosts that don't answer the first broadcast (<code>--arp-retries</code>, default 2 — collisions are common on WiFi when many hosts reply at once); if some are still missing, two optional fallbacks can be enabled on the daemon: <code>--icmp-fallback</code> (a direct ping) and, as a last resort, <code>--tcp-fallback</code> (a SYN probe to a few common ports, for hosts whose firewall blocks ping but not TCP). Neither is a dashboard setting — see the README for the full explanation and when each one helps.</p>
     </div>
     <div class="card help-section">
@@ -3532,10 +3627,10 @@ function renderAiuto(container) {
         <li><strong>Dashboard</strong> (home) — active hosts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with a quick preview for each category — a "View all" button on each jumps to the corresponding page (Host, WiFi or BLE) with the complete, searchable list and full details; for the three WiFi-related categories it shows only that one table, not the whole WiFi page ("Show all WiFi data" returns to the full page). "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
         <li><strong>Host</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts).</li>
         <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then three tables (each searchable and paginated, across all loaded history) — "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it), "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons, filterable by security type — Open/WEP/WPA/WPA2-WPA3 — and by band, 2.4 vs 5 GHz; security is classified from the beacon itself and requires <code>--wifi-iface</code>). At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
-        <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs and 24h activity at the top, then the "BLE devices" table — a summary per MAC with name, manufacturer, signal and number of sightings — and at the bottom the raw advertisement log for row-by-row analysis.</li>
+        <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs (including a "Possible trackers" count) and 24h activity at the top, then the "BLE devices" table — a summary per MAC with a heuristic device type (wearable, audio, possible tracker...), manufacturer, signal and number of sightings, trackers highlighted — a "Presence" card with arrival/departure events for the home MACs configured with <code>--ble-home-macs</code>, and at the bottom the raw advertisement log for row-by-row analysis. From a device's full profile you can also see and act on suggested identity links across a rotated BLE address (same advertised name/services reappearing on a new MAC shortly after the old one went quiet) — a suggestion only, never applied automatically.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
-        <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
+        <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, BLE tracker presence, possible BLE spoofing, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
         <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
         <li><strong>Settings</strong> — daemon module status (inferred from loaded data), data sources (JSON Lines), theme.</li>
         <li><strong>Export</strong> — download the current data as CSV or JSON.</li>
@@ -3548,6 +3643,9 @@ function renderAiuto(container) {
         <li>Estimated WiFi traffic is not real bandwidth (Mbps): the Pi is not the gateway, so it only counts the bytes of data frames captured during channel hopping on a monitor-mode interface — a partial fraction of the real traffic, useful as a relative indicator (who transmits more compared to other devices) but not as an absolute bandwidth measurement.</li>
         <li>WiFi probe MACs and BLE addresses are often randomized by modern devices: they should be read as an indicator of activity nearby, not as a unique identifier over time.</li>
         <li>BLE manufacturer names come from a partial, curated list of the most common Bluetooth SIG company IDs: an unrecognized ID is shown as "ID 0x...".</li>
+        <li>BLE device type, tracker detection and evil-twin/spoofing detection are heuristics based on publicly documented advertisement formats (Apple Find My/Continuity type bytes, Tile/Samsung service UUIDs), not a certain identification: a device can be misclassified, and a device manufacturer could in principle mimic these patterns.</li>
+        <li>BLE identity link suggestions (address rotation) are a best-effort match on the advertised name/manufacturer/service UUIDs: two different devices with no name and identical service UUIDs (e.g. two earbuds of the same model) could occasionally be suggested as the same device — always a suggestion to confirm, never applied automatically.</li>
+        <li>BLE presence tracking only reports arrival/departure for the MAC addresses explicitly configured with <code>--ble-home-macs</code> on the daemon: it has no notion of which devices belong to the household beyond that list, and a MAC that rotates (see above) will look like a departure followed by a new arrival unless it's also linked as the same identity.</li>
         <li>The risk score (the "Risk" column in Host) is a heuristic based on exposed ports and linked alerts, not a formal security assessment; marking a device as trusted attenuates it (reduced score, linked alerts one level less severe) but doesn't hide it or exclude it from checks.</li>
         <li>Deauth/disassoc flood detection is threshold-based (number of frames in a time window): very crowded WiFi networks or aggressive roaming can generate occasional false positives, and a very slow/distributed attack over time can stay under the threshold.</li>
         <li>"Trend" and "Timeline" are calculated in the browser from the already-loaded JSONL files: automatic log rotation on the daemon (<code>--max-log-size-mb</code>) and the dashboard's "tail only" loading for larger files (>4MB) reduce the available history accordingly, especially beyond 7-30 days.</li>
