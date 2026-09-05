@@ -34,6 +34,7 @@ const ICON_PATHS = {
   "chevron-right": `<path d="M9 6l6 6-6 6"/>`,
   layers: `<path d="M12 3 2.5 8 12 13l9.5-5L12 3z"/><path d="M2.5 13 12 18l9.5-5"/><path d="M2.5 18 12 23l9.5-5"/>`,
   home: `<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v10h12V10"/><path d="M10 20v-6h4v6"/>`,
+  menu: `<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>`,
 };
 
 function ICON(name) {
@@ -368,6 +369,7 @@ async function loadAllOnce() {
   document.getElementById("last-updated").textContent = new Date().toLocaleTimeString("en-GB");
 
   updateStatusPill();
+  checkAlertNotifications();
   renderCurrentRoute();
 }
 
@@ -1583,6 +1585,89 @@ function toggleDismiss(id) {
   if (state.dismissedAlerts.has(id)) state.dismissedAlerts.delete(id);
   else state.dismissedAlerts.add(id);
   localStorage.setItem(DISMISSED_KEY, JSON.stringify([...state.dismissedAlerts]));
+}
+
+/* Snooze: a differenza di Dismiss (nascosto per sempre finché non lo ripristini a mano), un alert
+ * snoozato torna da solo tra "Attivi" una volta scaduta la finestra — utile per un alert ricorrente
+ * a bassa severità (es. un vicino che scansiona periodicamente) che non vuoi né silenziare per
+ * sempre né continuare a vedere ogni giorno. */
+const SNOOZED_KEY = "hs.alerts.snoozed";
+function getSnoozedMap() {
+  try { return JSON.parse(localStorage.getItem(SNOOZED_KEY) || "{}"); } catch { return {}; }
+}
+function saveSnoozedMap(map) { localStorage.setItem(SNOOZED_KEY, JSON.stringify(map)); }
+function snoozedUntil(id) {
+  const until = getSnoozedMap()[id];
+  return typeof until === "number" ? until : null;
+}
+function isSnoozed(id) {
+  const until = snoozedUntil(id);
+  return until !== null && until > Date.now();
+}
+function snoozeAlert(id, hours) {
+  const map = getSnoozedMap();
+  map[id] = Date.now() + hours * 3600 * 1000;
+  saveSnoozedMap(map);
+}
+function unsnoozeAlert(id) {
+  const map = getSnoozedMap();
+  delete map[id];
+  saveSnoozedMap(map);
+}
+
+/* Notifiche desktop per nuovi alert critici (Notifications API del browser): funzionano solo mentre
+ * questa scheda resta aperta (non è una vera push), utile comunque per non dover controllare
+ * manualmente la pagina Alerts. Mai attive di default: richiedono un permesso esplicito del browser,
+ * concedibile solo a partire da un'azione utente (click) — da qui il toggle in Impostazioni invece
+ * di una richiesta automatica all'avvio. */
+const NOTIFICATIONS_ENABLED_KEY = "hs.notifications.enabled";
+function getNotificationsEnabled() { return localStorage.getItem(NOTIFICATIONS_ENABLED_KEY) === "1"; }
+function setNotificationsEnabled(v) { localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, v ? "1" : "0"); }
+
+const NOTIFIED_ALERTS_KEY = "hs.alerts.notified";
+function getNotifiedAlertIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(NOTIFIED_ALERTS_KEY) || "[]")); } catch { return new Set(); }
+}
+function markAlertsNotified(ids) {
+  const set = getNotifiedAlertIds();
+  for (const id of ids) set.add(id);
+  let arr = [...set];
+  if (arr.length > 500) arr = arr.slice(arr.length - 500); // evita una crescita illimitata nel tempo
+  localStorage.setItem(NOTIFIED_ALERTS_KEY, JSON.stringify(arr));
+}
+
+/** Richiede il permesso di notifica (deve partire da un click utente) e, se concesso, marca come già
+ * notificati tutti gli alert critici già presenti ora: senza questa baseline la prima attivazione
+ * spammerebbe una notifica per ogni alert critico di tutto lo storico già caricato. */
+async function enableDesktopNotifications() {
+  if (typeof Notification === "undefined") return "unsupported";
+  const perm = await Notification.requestPermission();
+  if (perm === "granted") {
+    markAlertsNotified(computeAlerts().filter((a) => a.severity === "critical").map((a) => a.id));
+    setNotificationsEnabled(true);
+  }
+  return perm;
+}
+function disableDesktopNotifications() { setNotificationsEnabled(false); }
+
+/** Da chiamare ad ogni ciclo di refresh: notifica (una volta sola per alert) i nuovi alert di
+ * severità critica non ancora notificati né già scartati con Dismiss. */
+function checkAlertNotifications() {
+  if (!getNotificationsEnabled()) return;
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  const notified = getNotifiedAlertIds();
+  const fresh = computeAlerts().filter((a) => a.severity === "critical" && !isDismissed(a.id) && !notified.has(a.id));
+  if (!fresh.length) return;
+  for (const a of fresh.slice(0, 5)) { // limite di buon senso: non aprire decine di notifiche in un colpo
+    try {
+      const n = new Notification(a.title, { body: a.desc, tag: a.id });
+      n.onclick = () => { window.focus(); window.location.hash = "#/alerts"; };
+    } catch {
+      // alcuni browser rifiutano new Notification() in contesti particolari (es. permesso appena
+      // revocato in un'altra scheda): non bloccante, si ritenterà al prossimo ciclo di refresh.
+    }
+  }
+  markAlertsNotified(fresh.map((a) => a.id));
 }
 
 function computeScanCycles() {
@@ -3303,15 +3388,28 @@ function renderScansioniBody(container) {
 
 function alertItemHtml(a) {
   const dismissed = isDismissed(a.id);
+  const snoozed = isSnoozed(a.id);
   const identifier = a.mac ? `MAC ${escapeHtml(a.mac)}` : a.ip ? `IP ${escapeHtml(a.ip)}` : null;
-  return `<div class="alert-item ${dismissed ? "is-dismissed" : ""}">
+  return `<div class="alert-item ${dismissed ? "is-dismissed" : ""} ${snoozed ? "is-snoozed" : ""}">
     <span class="alert-icon sev-${a.severity}">${ICON(a.icon || "alert-triangle")}</span>
     <div class="alert-body">
-      <div class="alert-title">${escapeHtml(a.title)}${a.source === "detect" ? `<span class="source-tag">${ICON("shield")}Detected by daemon</span>` : ""}</div>
+      <div class="alert-title">
+        ${escapeHtml(a.title)}
+        ${a.source === "detect" ? `<span class="source-tag">${ICON("shield")}Detected by daemon</span>` : ""}
+        ${snoozed ? `<span class="source-tag" title="Snoozed until ${formatTs(new Date(snoozedUntil(a.id)).toISOString())}">${ICON("clock")}Snoozed until ${formatTs(new Date(snoozedUntil(a.id)).toISOString())}</span>` : ""}
+      </div>
       <div class="alert-desc">${escapeHtml(a.desc)}</div>
       <div class="alert-meta"><span>${formatTs(a.ts ? new Date(a.ts).toISOString() : "")}</span>${identifier ? `<span>${identifier}</span>` : ""}</div>
     </div>
     <div class="alert-actions">
+      ${snoozed
+        ? `<button class="btn btn-icon" data-unsnooze="${escapeHtml(a.id)}" title="Remove snooze">${ICON("refresh")}</button>`
+        : `<select class="select-control snooze-select" data-snooze="${escapeHtml(a.id)}" title="Snooze">
+             <option value="">Snooze…</option>
+             <option value="1">1 hour</option>
+             <option value="24">24 hours</option>
+             <option value="168">7 days</option>
+           </select>`}
       <button class="btn btn-icon" data-dismiss="${escapeHtml(a.id)}" title="${dismissed ? "Restore" : "Dismiss"}">${ICON(dismissed ? "refresh" : "x")}</button>
     </div>
   </div>`;
@@ -3345,6 +3443,7 @@ function renderAvvisi(container) {
           <select class="select-control" id="alerts-filter">
             <option value="active">Active</option>
             <option value="all">All</option>
+            <option value="snoozed">Snoozed</option>
             <option value="dismissed">Dismissed</option>
           </select>
         </div>
@@ -3370,7 +3469,8 @@ function renderAvvisi(container) {
 
   function renderAlertList() {
     let list = all;
-    if (state.alertsFilter === "active") list = list.filter((a) => !isDismissed(a.id));
+    if (state.alertsFilter === "active") list = list.filter((a) => !isDismissed(a.id) && !isSnoozed(a.id));
+    if (state.alertsFilter === "snoozed") list = list.filter((a) => isSnoozed(a.id));
     if (state.alertsFilter === "dismissed") list = list.filter((a) => isDismissed(a.id));
     if (state.alertsTypeFilter !== "all") list = list.filter((a) => a.type === state.alertsTypeFilter);
     const el = document.getElementById("alert-list");
@@ -3378,6 +3478,17 @@ function renderAvvisi(container) {
     el.innerHTML = list.map(alertItemHtml).join("");
     el.querySelectorAll("[data-dismiss]").forEach((btn) => {
       btn.addEventListener("click", () => { toggleDismiss(btn.dataset.dismiss); renderAlertList(); updateNavBadge(); });
+    });
+    el.querySelectorAll("[data-snooze]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const hours = Number(select.value);
+        if (hours) snoozeAlert(select.dataset.snooze, hours);
+        renderAlertList();
+        updateNavBadge();
+      });
+    });
+    el.querySelectorAll("[data-unsnooze]").forEach((btn) => {
+      btn.addEventListener("click", () => { unsnoozeAlert(btn.dataset.unsnooze); renderAlertList(); updateNavBadge(); });
     });
   }
 
@@ -3507,6 +3618,21 @@ function renderImpostazioni(container) {
     </div>
 
     <div class="page-section card">
+      <div class="card-head"><h2>Notifications</h2><span class="card-sub">desktop notifications for new critical alerts, while this tab stays open</span></div>
+      <div class="settings-grid">
+        <div class="field">
+          <label>Desktop notifications</label>
+          ${typeof Notification === "undefined"
+            ? `<p class="field-hint" style="margin:0;">This browser doesn't support the Notifications API.</p>`
+            : `<button class="btn ${getNotificationsEnabled() && Notification.permission === "granted" ? "btn-primary" : ""}" id="set-notifications-toggle">
+                 ${ICON("bell")}${getNotificationsEnabled() && Notification.permission === "granted" ? "Enabled — disable" : "Enable"}
+               </button>`}
+        </div>
+      </div>
+      <p class="field-hint" id="set-notifications-hint"></p>
+    </div>
+
+    <div class="page-section card">
       <div class="card-head"><h2>Network information</h2><span class="card-sub">gateway label for the Network map (page currently hidden)</span></div>
       <div class="settings-grid">
         <div class="field"><label for="set-net-label">Network name</label><input type="text" id="set-net-label" value="${escapeHtml(getSetting("netLabel"))}" placeholder="Home_Network"></div>
@@ -3550,6 +3676,34 @@ function renderImpostazioni(container) {
   container.querySelectorAll("[data-theme-choice]").forEach((btn) => {
     btn.addEventListener("click", () => setThemeMode(btn.dataset.themeChoice));
   });
+
+  refreshNotificationsHint();
+  document.getElementById("set-notifications-toggle")?.addEventListener("click", async () => {
+    const enabledNow = getNotificationsEnabled() && Notification.permission === "granted";
+    if (enabledNow) {
+      disableDesktopNotifications();
+    } else {
+      const perm = await enableDesktopNotifications();
+      if (perm === "denied") {
+        document.getElementById("set-notifications-hint").textContent =
+          "Blocked at the browser level — check this site's notification permission in your browser settings to re-allow it.";
+      }
+    }
+    renderImpostazioni(container);
+  });
+}
+
+function refreshNotificationsHint() {
+  const hint = document.getElementById("set-notifications-hint");
+  if (!hint) return;
+  if (typeof Notification === "undefined") { hint.textContent = ""; return; }
+  if (Notification.permission === "denied") {
+    hint.textContent = "Blocked at the browser level — check this site's notification permission in your browser settings to re-allow it.";
+  } else if (getNotificationsEnabled() && Notification.permission === "granted") {
+    hint.textContent = "Enabled. You'll get a notification for new critical-severity alerts (ARP spoofing, rogue DHCP, evil twin, deauth flood, BLE tracker/spoofing, critical risky ports...) while this tab is open — not a true push, the tab must stay open.";
+  } else {
+    hint.textContent = "Off. Enabling asks your browser for permission, then only notifies for critical alerts that appear from that point on — not your entire existing history.";
+  }
 }
 
 function exportCardHtml(title, sub, key) {
@@ -3586,12 +3740,21 @@ function renderEsporta(container) {
 
 function stripInternal(dev) { const { _ts, ...rest } = dev; return rest; }
 function toJsonBlob(rows) { return new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" }); }
+/** Un valore che comincia con =, +, - o @ viene interpretato come formula da Excel/LibreOffice/Google
+ * Sheets all'apertura del CSV ("CSV/Formula Injection") — un rischio reale qui perché hostname, nomi
+ * mDNS/SSDP/BLE ecc. arrivano da device non fidati sulla rete (es. un hostname DHCP scelto ad arte).
+ * Prefissare con un apostrofo neutralizza l'interpretazione come formula in tutti e tre i programmi,
+ * senza alterare il valore visualizzato (l'apostrofo iniziale non viene mostrato in cella). */
+function neutralizeCsvFormula(s) {
+  return /^[=+\-@]/.test(s) ? `'${s}` : s;
+}
+
 function toCsvBlob(rows) {
   if (!rows.length) return new Blob([""], { type: "text/csv" });
   const headers = Object.keys(rows[0]);
   const esc = (v) => {
     const raw = Array.isArray(v) ? v.join(";") : v;
-    const s = String(raw ?? "");
+    const s = neutralizeCsvFormula(String(raw ?? ""));
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [headers.join(","), ...rows.map((r) => headers.map((h) => esc(r[h])).join(","))];
@@ -3651,12 +3814,12 @@ function renderAiuto(container) {
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs (including a "Possible trackers" count) and 24h activity at the top, then the "BLE devices" table — a summary per MAC with a heuristic device type (wearable, audio, possible tracker...), manufacturer, signal and number of sightings, trackers highlighted — a "Presence" card with arrival/departure events for the home MACs configured with <code>--ble-home-macs</code>, and at the bottom the raw advertisement log for row-by-row analysis. From a device's full profile you can also see and act on suggested identity links across a rotated BLE address (same advertised name/services reappearing on a new MAC shortly after the old one went quiet) — a suggestion only, never applied automatically.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
-        <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, BLE tracker presence, possible BLE spoofing, new ports on known devices); filterable by type and status, with filters savable as presets.</li>
+        <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, BLE tracker presence, possible BLE spoofing, new ports on known devices); filterable by type and status (Active/All/Snoozed/Dismissed), with filters savable as presets. Besides Dismiss (hidden until restored), each active alert can be Snoozed for 1h/24h/7 days — it reappears among Active on its own once the snooze expires, without needing to remember to restore it. See <strong>Settings</strong> to enable desktop notifications for new critical-severity alerts.</li>
         <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
         <li><strong>Settings</strong> — daemon module status (inferred from loaded data), data sources (JSON Lines), theme.</li>
         <li><strong>Export</strong> — download the current data as CSV or JSON.</li>
       </ul>
-      <p class="field-hint">Press <strong>Ctrl+K</strong> (or <strong>⌘K</strong>) at any time for global search across pages, devices and alerts. The "Collapse" button at the bottom of the side menu shrinks it to icons only, for more room on pages with wide tables.</p>
+      <p class="field-hint">Press <strong>Ctrl+K</strong> (or <strong>⌘K</strong>) at any time for global search across pages, devices and alerts. The "Collapse" button at the bottom of the side menu shrinks it to icons only, for more room on pages with wide tables. On narrower screens the side menu becomes a drawer, opened from the menu button next to the page title.</p>
     </div>
     <div class="card help-section">
       <h3>Known limitations</h3>
@@ -3719,10 +3882,29 @@ function renderSidebarNav() {
   updateNavBadge();
 }
 
+/* ---------------------------------------------------------------------- *
+ * Menu mobile: sotto i 980px .sidebar sparisce (spazio insufficiente per una sidebar fissa),
+ * quindi qui diventa un drawer a comparsa aperto dal bottone hamburger in topbar — senza,
+ * su smartphone non ci sarebbe alcun modo di cambiare pagina se non con Ctrl+K.
+ * ---------------------------------------------------------------------- */
+
+function setMobileNavOpen(open) {
+  document.getElementById("app-shell").classList.toggle("mobile-nav-open", open);
+}
+
+function initMobileNav() {
+  document.getElementById("icon-mobile-nav-open").innerHTML = ICON("menu");
+  document.getElementById("mobile-nav-open").addEventListener("click", () => setMobileNavOpen(true));
+  document.getElementById("sidebar-backdrop").addEventListener("click", () => setMobileNavOpen(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setMobileNavOpen(false);
+  });
+}
+
 function updateNavBadge() {
   const badge = document.getElementById("nav-badge-avvisi");
   if (!badge) return;
-  const count = computeAlerts().filter((a) => !isDismissed(a.id)).length;
+  const count = computeAlerts().filter((a) => !isDismissed(a.id) && !isSnoozed(a.id)).length;
   if (count > 0) { badge.textContent = String(count); badge.classList.remove("hidden"); }
   else { badge.classList.add("hidden"); }
 }
@@ -3752,6 +3934,7 @@ function initSidebarCollapse() {
 }
 
 function onRouteChange() {
+  setMobileNavOpen(false); // qualunque navigazione (menu, cmdk, un link "View all"...) chiude il drawer mobile
   const hash = window.location.hash.replace(/^#\/?/, "") || "dashboard";
   const [id, param] = hash.split("/");
   state.expandedMac = null;
@@ -4021,6 +4204,7 @@ function init() {
 
   renderSidebarNav();
   initSidebarCollapse();
+  initMobileNav();
   setupTopbar();
   setupCmdk();
   updateStatusPill();
