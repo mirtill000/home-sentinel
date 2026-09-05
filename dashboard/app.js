@@ -109,7 +109,7 @@ const state = {
   lanSort: { key: "last_seen", dir: -1 },
   wifiSort: { key: "timestamp", dir: -1 },
   bleSort: { key: "timestamp", dir: -1 },
-  route: "dintorni",
+  route: "dashboard",
   refreshTimer: null,
   lastFetchOk: null,
   openMenuMac: null,
@@ -3357,6 +3357,7 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("Daily trend rollup (--no-trend-rollup to disable)", "trendDaily")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
+      <p class="field-hint">Missing hosts that a tool like <code>nmap</code> does find? LAN discovery already retries hosts that don't answer the first ARP request (<code>--arp-retries</code>, default 2); two more fallbacks — <code>--icmp-fallback</code> and <code>--tcp-fallback</code> — can be enabled on the daemon for hosts still missing after that. These are daemon flags, not dashboard settings: see the README for details.</p>
     </div>
 
     <div class="page-section card">
@@ -3515,6 +3516,7 @@ function renderAiuto(container) {
     <div class="card help-section">
       <h3>How it works</h3>
       <p>Home Sentinel consists of a Python daemon (<code>home_sentinel.py</code>) that continuously writes JSON Lines files — <code>lan_discovery.jsonl</code> for LAN discovery, <code>wifi_probes.jsonl</code> for WiFi probe requests, <code>wifi_networks.jsonl</code> for adjacent WiFi networks detected from their own beacons, <code>ble_discovery.jsonl</code> for BLE scanning, <code>fingerprint_discovery.jsonl</code> for detected device types (including, when found, a device's own mDNS name), <code>dhcp_events.jsonl</code> for DHCP client discovery, <code>os_fingerprint.jsonl</code> for the passive OS heuristic, <code>dhcp_leases.jsonl</code> for the router lease cross-check, <code>trend_daily.jsonl</code> for the daily rollup behind the Trend page, and <code>alerts_detection.jsonl</code> for detection module alerts (one JSON object per line, all optional except LAN; they write by default to <code>/var/log/home-sentinel/</code>) — and this static dashboard that reads and displays them. Configure the sources in <strong>Settings</strong>.</p>
+      <p class="field-hint">LAN discovery finding fewer hosts than a tool like <code>nmap</code>? The daemon's ARP scan already retries hosts that don't answer the first broadcast (<code>--arp-retries</code>, default 2 — collisions are common on WiFi when many hosts reply at once); if some are still missing, two optional fallbacks can be enabled on the daemon: <code>--icmp-fallback</code> (a direct ping) and, as a last resort, <code>--tcp-fallback</code> (a SYN probe to a few common ports, for hosts whose firewall blocks ping but not TCP). Neither is a dashboard setting — see the README for the full explanation and when each one helps.</p>
     </div>
     <div class="card help-section">
       <h3>Device status</h3>
@@ -3566,17 +3568,17 @@ function renderAiuto(container) {
 // quando avrà senso (subnet/VLAN multiple, routing reale) — va solo
 // riaggiunta qui sotto per riabilitarla in sidebar/ricerca globale.
 const ROUTES = [
-  { id: "dintorni", label: "Dashboard", icon: "home", title: "Dashboard", subtitle: "Local network overview", render: renderHouseRadarPage },
+  { id: "dashboard", label: "Dashboard", icon: "home", title: "Dashboard", subtitle: "Local network overview", render: renderHouseRadarPage },
   { id: "host", label: "Host", icon: "monitor", title: "Host", subtitle: "Full list of LAN devices", render: renderHost },
   { id: "wifi", label: "WiFi", icon: "wifi", title: "WiFi probes", subtitle: "802.11 probe requests detected nearby", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "BLE devices", subtitle: "Passive Bluetooth Low Energy scan nearby", render: renderBlePage },
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
-  { id: "scansioni", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
-  { id: "avvisi", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
+  { id: "scans", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
+  { id: "alerts", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Historical trend of devices and alerts", render: renderTrend },
-  { id: "impostazioni", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
-  { id: "esporta", label: "Export", icon: "download", title: "Export", subtitle: "Download the collected data", render: renderEsporta },
-  { id: "aiuto", label: "Help", icon: "help", title: "Help", subtitle: "Quick guide to Home Sentinel", render: renderAiuto },
+  { id: "settings", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
+  { id: "export", label: "Export", icon: "download", title: "Export", subtitle: "Download the collected data", render: renderEsporta },
+  { id: "help", label: "Help", icon: "help", title: "Help", subtitle: "Quick guide to Home Sentinel", render: renderAiuto },
 ];
 
 function getRouteById(id) { return ROUTES.find((r) => r.id === id) || ROUTES[0]; }
@@ -3585,7 +3587,7 @@ function renderSidebarNav() {
   const nav = document.getElementById("sidebar-nav");
   nav.innerHTML = ROUTES.map((r) => `<button class="nav-item ${r.id === state.route ? "active" : ""}" data-route="${r.id}" title="${escapeHtml(r.label)}">
     ${ICON(r.icon)}<span>${escapeHtml(r.label)}</span>
-    ${r.id === "avvisi" ? `<span class="nav-badge hidden" id="nav-badge-avvisi"></span>` : ""}
+    ${r.id === "alerts" ? `<span class="nav-badge hidden" id="nav-badge-avvisi"></span>` : ""}
   </button>`).join("");
   nav.querySelectorAll("[data-route]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -3631,7 +3633,7 @@ function initSidebarCollapse() {
 }
 
 function onRouteChange() {
-  const hash = window.location.hash.replace(/^#\/?/, "") || "dintorni";
+  const hash = window.location.hash.replace(/^#\/?/, "") || "dashboard";
   const [id, param] = hash.split("/");
   state.expandedMac = null;
   state.openMenuMac = null;
@@ -3753,7 +3755,7 @@ function applyThemeMode(mode) {
 function setThemeMode(mode) {
   setSetting("theme", mode);
   applyThemeMode(mode);
-  if (state.route === "impostazioni") renderCurrentRoute();
+  if (state.route === "settings") renderCurrentRoute();
 }
 function updateThemeControls(mode) {
   document.getElementById("theme-toggle").innerHTML = ICON(currentResolvedTheme() === "dark" ? "moon" : "sun");
@@ -3812,7 +3814,7 @@ function computeSearchIndex() {
   for (const a of computeAlerts().slice(0, 100)) {
     items.push({
       type: "alert", label: a.title, sub: a.desc, icon: a.icon,
-      keywords: `${a.title} ${a.desc} ${a.mac || ""}`, action: () => { window.location.hash = "#/avvisi"; },
+      keywords: `${a.title} ${a.desc} ${a.mac || ""}`, action: () => { window.location.hash = "#/alerts"; },
     });
   }
   return items;
