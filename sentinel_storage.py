@@ -52,10 +52,30 @@ CREATE TABLE IF NOT EXISTS ble_events (
     rssi INTEGER,
     tx_power INTEGER,
     manufacturer_ids TEXT,
-    service_uuids TEXT
+    service_uuids TEXT,
+    device_type TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ble_mac ON ble_events(mac);
 CREATE INDEX IF NOT EXISTS idx_ble_ts ON ble_events(timestamp);
+
+CREATE TABLE IF NOT EXISTS ble_identity_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac_old TEXT NOT NULL,
+    mac_new TEXT NOT NULL,
+    signature_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bleidlink_ts ON ble_identity_links(timestamp);
+
+CREATE TABLE IF NOT EXISTS ble_presence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    event TEXT NOT NULL,
+    duration_s REAL
+);
+CREATE INDEX IF NOT EXISTS idx_blepresence_mac ON ble_presence(mac);
+CREATE INDEX IF NOT EXISTS idx_blepresence_ts ON ble_presence(timestamp);
 
 CREATE TABLE IF NOT EXISTS fingerprints (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,6 +186,7 @@ class SqliteStore:
         self._migrate_drop_hour_histogram()
         self._migrate_add_fingerprint_mdns_name()
         self._migrate_add_wifi_networks_security()
+        self._migrate_add_ble_device_type()
         self._conn.commit()
 
     def _migrate_drop_hour_histogram(self) -> None:
@@ -214,6 +235,14 @@ class SqliteStore:
         if "security" not in cols:
             self._conn.execute("ALTER TABLE wifi_networks ADD COLUMN security TEXT")
 
+    def _migrate_add_ble_device_type(self) -> None:
+        """Aggiunge la colonna device_type a un database creato da una versione precedente
+        (classificazione euristica del tipo di device BLE, vedi sentinel_ble.classify_ble_device).
+        ADD COLUMN nullable, stesso ragionamento delle altre migrazioni additive sopra."""
+        cols = [row[1] for row in self._conn.execute("PRAGMA table_info(ble_events)").fetchall()]
+        if "device_type" not in cols:
+            self._conn.execute("ALTER TABLE ble_events ADD COLUMN device_type TEXT")
+
     def insert_lan_event(self, row: dict) -> None:
         with self._lock:
             self._conn.execute(
@@ -240,12 +269,30 @@ class SqliteStore:
     def insert_ble_event(self, row: dict) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO ble_events (timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO ble_events "
+                "(timestamp, mac, name, rssi, tx_power, manufacturer_ids, service_uuids, device_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["timestamp"], row["mac"], row.get("name", ""), row.get("rssi"), row.get("tx_power"),
                     json.dumps(row.get("manufacturer_ids", [])), json.dumps(row.get("service_uuids", [])),
+                    row.get("device_type", ""),
                 ),
+            )
+            self._conn.commit()
+
+    def insert_ble_identity_link(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO ble_identity_links (timestamp, mac_old, mac_new, signature_name) VALUES (?, ?, ?, ?)",
+                (row["timestamp"], row["mac_old"], row["mac_new"], row.get("signature_name", "")),
+            )
+            self._conn.commit()
+
+    def insert_ble_presence(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO ble_presence (timestamp, mac, event, duration_s) VALUES (?, ?, ?, ?)",
+                (row["timestamp"], row["mac"], row["event"], row.get("duration_s")),
             )
             self._conn.commit()
 
