@@ -113,6 +113,23 @@ Il ciclo di scan normalmente segue `--interval` (default 60s), ma con
 immediata invece di aspettare il prossimo ciclo, per accorciare la latenza
 di rilevamento di un device davvero nuovo.
 
+**Host visti da nmap ma non da Home Sentinel**: la causa più comune è la
+richiesta ARP broadcast che apre ogni ciclo di scan — fa rispondere quasi
+simultaneamente tutti gli host attivi sulla subnet, e su una rete WiFi
+(mezzo condiviso) questo produce facilmente collisioni tra le risposte,
+perse senza essere ritrasmesse (a differenza di nmap, che di norma spazia
+le richieste nel tempo). Per compensare, ogni ciclo rimanda la richiesta
+solo agli host ancora senza risposta, fino a `--arp-retries` volte in più
+(default 2; 0 per disabilitare) — chi risponde al primo giro non viene
+ri-interrogato, quindi il costo aggiuntivo resta contenuto quando la rete è
+già stabile. `--arp-timeout` (default 2s) regola l'attesa per ogni giro:
+alzalo se hai molti device che rispondono lentamente (risparmio energetico
+WiFi, reti particolarmente affollate). Se dopo aver alzato entrambi
+continuano a mancare host visti da nmap, verifica che `--subnet` copra
+l'intero range DHCP effettivo e che `--lan-iface` sia la stessa interfaccia
+di rete del segmento in cui si trovano quegli host (l'ARP non attraversa
+router/VLAN diverse).
+
 Il port scan (`--ports`) di default copre le porte **1-1024** ("well-known")
 più **50 porte "alte"** comuni per servizi self-hosted/home-lab/IoT tipici
 di una rete domestica (NAS, home automation, media server, dev/db — es.

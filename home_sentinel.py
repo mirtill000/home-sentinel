@@ -157,13 +157,28 @@ def scan_ports(ip: str, ports: list[int], timeout: float = 0.5) -> list[int]:
     return sorted(open_ports)
 
 
-def arp_scan(subnet: str, iface: str | None, timeout: float = 2.0) -> list[tuple[str, str]]:
+def arp_scan(subnet: str, iface: str | None, timeout: float = 2.0, retries: int = 2, inter: float = 0.002) -> list[tuple[str, str]]:
+    """Scansione ARP della subnet, con retry sugli host che non hanno risposto.
+
+    Un unico giro di richieste ARP broadcast fa rispondere quasi simultaneamente tutti gli host
+    attivi sulla subnet: su una rete WiFi (mezzo condiviso, contention-based) questo produce
+    facilmente collisioni tra le risposte — un host può quindi risultare "assente" per un intero
+    ciclo pur essendo online e raggiungibile, disallineando il risultato da quello di tool come
+    nmap (che di norma spaziano le richieste nel tempo). `retry` usa il meccanismo nativo di
+    scapy per rimandare solo le richieste rimaste senza risposta, fino a `retries` volte in più:
+    chi risponde al primo giro non viene ri-interrogato. `inter` introduce un piccolo ritardo tra
+    l'invio di una richiesta e la successiva, per ridurre la probabilità che più host rispondano
+    nello stesso istante fin dal primo giro.
+    """
     packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=subnet)
-    kwargs = {"timeout": timeout, "verbose": False}
+    kwargs = {"timeout": timeout, "retry": retries, "inter": inter, "verbose": False}
     if iface:
         kwargs["iface"] = iface
     answered, _ = srp(packet, **kwargs)
-    return [(received.psrc, received.hwsrc) for _, received in answered]
+    found: dict[str, str] = {}
+    for _, received in answered:
+        found[received.psrc] = received.hwsrc
+    return list(found.items())
 
 
 class JsonlLogger:
@@ -257,12 +272,16 @@ class LanDiscoveryService:
         dhcp_lease_format: str = "auto",
         dhcp_lease_poll_interval: float = 300.0,
         dhcp_leases_log: JsonlLogger | None = None,
+        arp_timeout: float = 2.0,
+        arp_retries: int = 2,
     ):
         self.subnet = subnet
         self.iface = iface
         self.interval = interval
         self.ports = ports
         self.port_scan_interval = port_scan_interval
+        self.arp_timeout = arp_timeout
+        self.arp_retries = arp_retries
         self.log = log
         self.stop_event = stop_event
         self.sqlite_store = sqlite_store
@@ -348,7 +367,7 @@ class LanDiscoveryService:
         self._rescan_now.clear()
 
     def _do_cycle(self) -> None:
-        found = arp_scan(self.subnet, self.iface)
+        found = arp_scan(self.subnet, self.iface, timeout=self.arp_timeout, retries=self.arp_retries)
         now = time.time()
         seen_macs = set()
 
@@ -987,6 +1006,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--subnet", required=True, help="Subnet CIDR da scansionare, es. 192.168.1.0/24")
     p.add_argument("--lan-iface", default=None, help="Interfaccia per lo scan ARP (default: routing automatico)")
     p.add_argument("--interval", type=float, default=60.0, help="Intervallo tra i cicli di scan LAN (s)")
+    p.add_argument("--arp-timeout", type=float, default=2.0, help="Attesa risposte per ogni giro di scan ARP (s)")
+    p.add_argument(
+        "--arp-retries", type=int, default=2,
+        help="Rimanda la richiesta ARP solo agli host che non hanno ancora risposto, fino a N volte in più "
+             "(compensa risposte perse per collisione su reti WiFi affollate — vedi nmap che trova host mancati "
+             "dallo scan; 0 per disabilitare)",
+    )
     p.add_argument(
         "--ports",
         default=",".join(str(port) for port in DEFAULT_PORTS),
@@ -1298,6 +1324,8 @@ def main() -> None:
         dhcp_lease_format=args.dhcp_lease_format,
         dhcp_lease_poll_interval=args.dhcp_lease_poll_interval,
         dhcp_leases_log=dhcp_leases_log,
+        arp_timeout=args.arp_timeout,
+        arp_retries=args.arp_retries,
     )
     threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
 
