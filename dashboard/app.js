@@ -2908,11 +2908,27 @@ function renderHouseRadar(container, data) {
  * Pages
  * ---------------------------------------------------------------------- */
 
-/** Riga dei KPI principali in cima alla home (host attivi). */
+/** Ultimo stato presente/assente per ogni MAC BLE "di casa" (--ble-home-macs) visto in
+ * ble_presence.jsonl, e quanti risultano attualmente presenti. La dashboard non conosce quali
+ * MAC sono stati configurati sul daemon: usa semplicemente l'insieme dei MAC già comparsi qui. */
+function computeBlePresenceSummary() {
+  const latestByMac = new Map();
+  for (const r of state.blePresenceRows) {
+    const ts = parseTs(r.timestamp) || 0;
+    const prev = latestByMac.get(r.mac);
+    if (!prev || ts > prev.ts) latestByMac.set(r.mac, { event: r.event, ts });
+  }
+  let home = 0;
+  for (const v of latestByMac.values()) if (v.event === "arrived") home += 1;
+  return { home, total: latestByMac.size };
+}
+
+/** Riga dei KPI principali in cima alla home (host attivi, presenza BLE). */
 function topKpiRowHtml() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
+  const presence = computeBlePresenceSummary();
 
   return `
     ${kpiTile({
@@ -2920,6 +2936,11 @@ function topKpiRowHtml() {
       value: online, valueSuffix: `/ ${total}`,
       sub: `${total ? Math.round((online / total) * 100) : 0}% active`,
       sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
+    })}
+    ${kpiTile({
+      label: "Presence", icon: "bluetooth", tone: presence.total ? (presence.home ? "good" : "blue") : "blue",
+      value: presence.total ? presence.home : "—", valueSuffix: presence.total ? `/ ${presence.total}` : "",
+      sub: presence.total ? "home BLE devices present" : "Configure --ble-home-macs to enable",
     })}
   `;
 }
