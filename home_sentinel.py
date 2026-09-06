@@ -371,6 +371,8 @@ class LanDiscoveryService:
         deep_port_scan_interval: float = 604800.0,
         deep_scan_log: JsonlLogger | None = None,
         os_fingerprint_monitor: "OsFingerprintMonitor | None" = None,
+        presence_tracker: "PresenceTracker | None" = None,
+        presence_log: JsonlLogger | None = None,
     ):
         self.subnet = subnet
         self.iface = iface
@@ -381,6 +383,8 @@ class LanDiscoveryService:
         self.deep_port_scan_interval = deep_port_scan_interval
         self.deep_scan_log = deep_scan_log
         self.os_fingerprint_monitor = os_fingerprint_monitor
+        self.presence_tracker = presence_tracker
+        self.presence_log = presence_log
         self.arp_timeout = arp_timeout
         self.arp_retries = arp_retries
         self.icmp_fallback = icmp_fallback
@@ -531,6 +535,15 @@ class LanDiscoveryService:
                 # filtrate (comune su molti smartphone/IoT) non produrrebbe mai un OS guess.
                 self.os_fingerprint_monitor.active_probe(ip, mac)
 
+            if self.presence_tracker is not None and self.presence_log is not None:
+                # Un device "di casa" già associato alla rete spesso non manda più probe request
+                # per quella rete (WifiProbeMonitor da solo non lo vedrebbe mai arrivare): l'ARP
+                # scan che lo trova online è di per sé un segnale di presenza altrettanto valido,
+                # anzi più affidabile per un device già connesso.
+                event = self.presence_tracker.observe(mac)
+                if event is not None:
+                    self._write_presence_event(event)
+
             hostname = state.hostname if state else ""
             vendor = state.vendor if state else ""
             if is_new or not hostname:
@@ -582,6 +595,10 @@ class LanDiscoveryService:
             if mac not in seen_macs and state.online:
                 state.online = False
                 self._write("offline", state.ip, mac, state.hostname, state.vendor, [])
+
+        if self.presence_tracker is not None and self.presence_log is not None:
+            for event in self.presence_tracker.sweep():
+                self._write_presence_event(event)
 
         if self.dhcp_lease_source and (now - self._last_lease_poll >= self.dhcp_lease_poll_interval):
             self._last_lease_poll = now
@@ -714,6 +731,12 @@ class LanDiscoveryService:
         if self.sqlite_store:
             self.sqlite_store.insert_lan_event(row)
         LOG.debug("LAN %s ip=%s mac=%s host=%s", status, ip, mac, hostname)
+
+    def _write_presence_event(self, event: dict) -> None:
+        self.presence_log.write(event)
+        if self.sqlite_store:
+            self.sqlite_store.insert_wifi_presence(event)
+        LOG.info("WiFi presence (via ARP): %s %s", event["mac"], event["event"])
 
 
 # --------------------------------------------------------------------------
@@ -1703,8 +1726,10 @@ def parse_args() -> argparse.Namespace:
         "--wifi-home-macs",
         default="",
         help="MAC WiFi 'di casa' (es. gli smartphone del nucleo familiare) per il tracking "
-        "presenza/assenza via probe request, separati da virgola — stesso principio di "
-        "--ble-home-macs ma sul lato WiFi",
+        "presenza/assenza, separati da virgola — stesso principio di --ble-home-macs ma sul lato "
+        "WiFi. Rilevata sia dall'ARP scan (--lan-iface, funziona anche senza --wifi-iface: un "
+        "device già connesso alla rete è già di per sé presente) sia, se --wifi-iface è attivo, "
+        "dai probe request (utile per un device non ancora connesso)",
     )
     p.add_argument(
         "--wifi-presence-log",
@@ -1849,6 +1874,23 @@ def main() -> None:
             active_probe_timeout=args.os_fingerprint_active_probe_timeout,
         )
 
+    # Costruito qui (non dentro il blocco "if args.wifi_iface" più in basso, dove finora viveva)
+    # perché il segnale di presenza più affidabile per un device "di casa" già connesso alla rete
+    # non è affatto il probe request (una volta associato, molti device — specie iOS — smettono di
+    # farne per quella rete) ma il fatto stesso che l'ARP scan lo trovi online: LanDiscoveryService
+    # deve quindi poterlo alimentare a prescindere da --wifi-iface. Se --wifi-iface è comunque
+    # attivo, WifiProbeMonitor alimenta la stessa istanza anche dai probe request (utile per un
+    # device non ancora connesso, es. appena rientrato in zona), i due segnali si sommano invece
+    # di competere.
+    wifi_home_macs = {m.strip().lower() for m in args.wifi_home_macs.split(",") if m.strip()}
+    wifi_presence_tracker = None
+    wifi_presence_log = None
+    if wifi_home_macs:
+        wifi_presence_tracker = PresenceTracker(
+            home_macs=wifi_home_macs, away_timeout_seconds=args.wifi_presence_away_timeout_s,
+        )
+        wifi_presence_log = make_logger(args.wifi_presence_log)
+
     lan_service = LanDiscoveryService(
         subnet=args.subnet,
         iface=args.lan_iface,
@@ -1876,6 +1918,8 @@ def main() -> None:
         deep_port_scan_interval=args.deep_port_scan_interval,
         deep_scan_log=deep_scan_log,
         os_fingerprint_monitor=os_fingerprint_service,
+        presence_tracker=wifi_presence_tracker,
+        presence_log=wifi_presence_log,
     )
     threads: list[threading.Thread] = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
     if os_fingerprint_service is not None:
@@ -1921,15 +1965,6 @@ def main() -> None:
                 )
             else:
                 LOG.warning("--capture-handshakes richiede --home-ssid: cattura handshake disabilitata")
-
-        wifi_home_macs = {m.strip().lower() for m in args.wifi_home_macs.split(",") if m.strip()}
-        wifi_presence_tracker = None
-        wifi_presence_log = None
-        if wifi_home_macs:
-            wifi_presence_tracker = PresenceTracker(
-                home_macs=wifi_home_macs, away_timeout_seconds=args.wifi_presence_away_timeout_s,
-            )
-            wifi_presence_log = make_logger(args.wifi_presence_log)
 
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
