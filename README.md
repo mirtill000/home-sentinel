@@ -414,6 +414,17 @@ a posteriori:
   sopra per il formato dei metadati, `--handshake-window-s` e
   `--handshake-min-frames` per la sensibilità della cattura di handshake
   parziali (meno di 4 messaggi, comunque spesso utilizzabili).
+  **Canale "incollato" alla rete di casa**: un 4-way handshake dura in
+  genere meno di un secondo, troppo poco perché il normale hopping
+  round-robin su tutti i canali (`--wifi-channels`, default 13 canali a
+  `--wifi-hop-interval` 0.5s l'uno, ~1/13 del tempo per canale) riesca a
+  catturarne uno in tempi ragionevoli. Con `--capture-handshakes` attivo,
+  una volta appreso il canale della rete di casa dal suo beacon, lo
+  sniffer vi resta sintonizzato per la maggior parte del tempo (con solo
+  un giro occasionale sugli altri canali, per non perdere del tutto le
+  altre funzionalità passive di scoperta reti/deauth), aumentando di
+  molto la probabilità di essere sul canale giusto quando un client si
+  (ri)associa.
 - **Log reti WiFi adiacenti** (attivo di default quando `--wifi-iface` è in
   uso, `--no-wifi-networks` per disabilitarlo): non è un vero e proprio
   detector di sicurezza, ma usa la stessa cattura beacon dell'evil twin
