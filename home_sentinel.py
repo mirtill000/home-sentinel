@@ -1751,6 +1751,16 @@ def parse_args() -> argparse.Namespace:
         "prevedibili dei suoi advertisement, specie con MAC randomization e probing ridotto "
         "per privacy: alzalo se noti falsi 'left')",
     )
+    p.add_argument(
+        "--presence-config-log",
+        default="/var/log/home-sentinel/presence_config.jsonl",
+        help="Percorso file JSON Lines su cui viene scritto, una volta ad ogni avvio, l'elenco dei "
+        "MAC 'di casa' configurati (--ble-home-macs/--wifi-home-macs): serve alla dashboard, che "
+        "altrimenti non ha visibilità sui parametri del daemon, per mostrare nel KPI Presence il "
+        "denominatore corretto (n. di MAC configurati) invece di n. di MAC che hanno già generato "
+        "almeno un evento nel log — i due numeri divergono per un MAC appena aggiunto alla config o "
+        "mai ancora osservato online",
+    )
 
     p.add_argument(
         "--no-deauth-detection",
@@ -1998,6 +2008,7 @@ def main() -> None:
             LOG.warning("--capture-handshakes richiede --wifi-iface: cattura handshake disabilitata")
 
     ble_log = None
+    ble_home_macs: set[str] = set()
     if args.ble:
         ble_log = make_logger(args.ble_log)
 
@@ -2038,6 +2049,18 @@ def main() -> None:
         threads.append(threading.Thread(target=ble_service.run, name="ble-scan", daemon=True))
     else:
         LOG.info("Nessun --ble indicato: modulo scan BLE disabilitato")
+
+    # Scritto una sola volta all'avvio: la dashboard legge da qui l'elenco dei MAC "di casa"
+    # effettivamente configurati, perché altrimenti (leggendo solo ble_presence.jsonl/
+    # wifi_presence.jsonl) non avrebbe modo di distinguere "MAC configurato ma mai ancora
+    # osservato online" da "MAC non configurato affatto" — le due situazioni non vanno confuse
+    # nel denominatore del KPI Presence.
+    presence_config_log = make_logger(args.presence_config_log)
+    presence_config_log.write({
+        "timestamp": now_iso(),
+        "ble_home_macs": sorted(ble_home_macs),
+        "wifi_home_macs": sorted(wifi_home_macs),
+    })
 
     dhcp_events_log = None
     if args.detect_rogue_dhcp or args.dhcp_discovery:
@@ -2084,6 +2107,7 @@ def main() -> None:
             dhcp_leases_log.close()
         if trend_rollup_log:
             trend_rollup_log.close()
+        presence_config_log.close()
         alerts_log.close()
         if sqlite_store:
             sqlite_store.close()

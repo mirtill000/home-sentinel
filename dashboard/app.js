@@ -54,6 +54,7 @@ const SETTINGS_KEYS = {
   trendDailyUrl: "hs.trendDailyUrl",
   bleIdentityLinksUrl: "hs.bleIdentityLinksUrl", blePresenceUrl: "hs.blePresenceUrl",
   deepScanUrl: "hs.deepScanUrl", handshakeUrl: "hs.handshakeUrl", wifiPresenceUrl: "hs.wifiPresenceUrl",
+  presenceConfigUrl: "hs.presenceConfigUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
@@ -65,6 +66,7 @@ const SETTINGS_DEFAULTS = {
   bleIdentityLinksUrl: "ble_identity_links.jsonl", blePresenceUrl: "ble_presence.jsonl",
   deepScanUrl: "deep_port_scan.jsonl", handshakeUrl: "handshake_captures.jsonl",
   wifiPresenceUrl: "wifi_presence.jsonl",
+  presenceConfigUrl: "presence_config.jsonl",
 };
 
 function getSetting(key) {
@@ -114,6 +116,7 @@ const state = {
   deepScanRows: [],
   handshakeRows: [],
   wifiPresenceRows: [],
+  presenceConfigRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -392,6 +395,14 @@ async function loadAllOnce() {
   } catch {
     state.wifiPresenceRows = state.wifiPresenceRows || [];
     state.sourceStatus.wifiPresence = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("presenceConfigUrl"));
+    state.presenceConfigRows = r.rows;
+    state.sourceStatus.presenceConfig = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.presenceConfigRows = state.presenceConfigRows || [];
+    state.sourceStatus.presenceConfig = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -3083,17 +3094,40 @@ function renderHouseRadar(container, data) {
  * Pages
  * ---------------------------------------------------------------------- */
 
-/** Ultimo stato presente/assente per ogni MAC "di casa" (--ble-home-macs e/o --wifi-home-macs)
- * visto in ble_presence.jsonl/wifi_presence.jsonl, e quanti risultano attualmente presenti — le
- * due sorgenti sono unite perché per l'utente "chi c'è in casa" è un unico concetto, a prescindere
- * da quale radio l'abbia rilevato. La dashboard non conosce quali MAC sono stati configurati sul
- * daemon: usa semplicemente l'insieme dei MAC già comparsi in uno dei due log. */
-function computePresenceSummary(rows) {
+/** Ultima riga di presence_config.jsonl (scritta una tantum ad ogni avvio del daemon): l'elenco dei
+ * MAC "di casa" davvero configurati via --ble-home-macs/--wifi-home-macs. null se il file non esiste
+ * ancora (daemon non aggiornato) — in quel caso computePresenceSummary ricade sul vecchio calcolo. */
+function latestPresenceConfig(rows) {
+  if (!rows.length) return null;
+  let latest = rows[0];
+  let latestTs = parseTs(latest.timestamp) || 0;
+  for (const r of rows) {
+    const ts = parseTs(r.timestamp) || 0;
+    if (ts >= latestTs) { latest = r; latestTs = ts; }
+  }
+  return latest;
+}
+
+/** Ultimo stato presente/assente per ogni MAC "di casa" visto in ble_presence.jsonl/wifi_presence.jsonl.
+ * Con homeMacs (l'elenco realmente configurato, da presence_config.jsonl) il totale è il numero di MAC
+ * configurati: un MAC appena aggiunto alla config o mai ancora osservato online conta comunque nel
+ * denominatore, semplicemente come assente — altrimenti (daemon non aggiornato, homeMacs assente) si
+ * ricade sul vecchio comportamento: l'insieme dei MAC che hanno già generato almeno un evento nel log,
+ * che può sottostimare il totale reale. */
+function computePresenceSummary(rows, homeMacs) {
   const latestByMac = new Map();
   for (const r of rows) {
     const ts = parseTs(r.timestamp) || 0;
     const prev = latestByMac.get(r.mac);
     if (!prev || ts > prev.ts) latestByMac.set(r.mac, { event: r.event, ts });
+  }
+  if (homeMacs) {
+    let home = 0;
+    for (const mac of homeMacs) {
+      const v = latestByMac.get(mac);
+      if (v && v.event === "arrived") home += 1;
+    }
+    return { home, total: homeMacs.length };
   }
   let home = 0;
   for (const v of latestByMac.values()) if (v.event === "arrived") home += 1;
@@ -3105,8 +3139,9 @@ function topKpiRowHtml() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
-  const blePresence = computePresenceSummary(state.blePresenceRows);
-  const wifiPresence = computePresenceSummary(state.wifiPresenceRows);
+  const presenceConfig = latestPresenceConfig(state.presenceConfigRows);
+  const blePresence = computePresenceSummary(state.blePresenceRows, presenceConfig ? presenceConfig.ble_home_macs : null);
+  const wifiPresence = computePresenceSummary(state.wifiPresenceRows, presenceConfig ? presenceConfig.wifi_home_macs : null);
   const presenceTotal = blePresence.total + wifiPresence.total;
   const presenceHome = blePresence.home + wifiPresence.home;
 
@@ -3682,6 +3717,7 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("Deep port scan (--deep-port-scan)", "deepScan")}
         ${moduleStatusRow("Handshake capture (--capture-handshakes)", "handshake")}
         ${moduleStatusRow("WiFi presence tracking (--wifi-home-macs)", "wifiPresence")}
+        ${moduleStatusRow("Presence config snapshot (--ble-home-macs/--wifi-home-macs)", "presenceConfig")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
       <p class="field-hint">Missing hosts that a tool like <code>nmap</code> does find? LAN discovery already retries hosts that don't answer the first ARP request (<code>--arp-retries</code>, default 2); two more fallbacks — <code>--icmp-fallback</code> and <code>--tcp-fallback</code> — can be enabled on the daemon for hosts still missing after that. These are daemon flags, not dashboard settings: see the README for details.</p>
@@ -3709,6 +3745,7 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-deep-scan-url">Deep port scan log (.jsonl)</label><input type="text" id="set-deep-scan-url" value="${escapeHtml(getSetting("deepScanUrl"))}"></div>
         <div class="field"><label for="set-handshake-url">Handshake capture log (.jsonl)</label><input type="text" id="set-handshake-url" value="${escapeHtml(getSetting("handshakeUrl"))}"></div>
         <div class="field"><label for="set-wifi-presence-url">WiFi presence log (.jsonl)</label><input type="text" id="set-wifi-presence-url" value="${escapeHtml(getSetting("wifiPresenceUrl"))}"></div>
+        <div class="field"><label for="set-presence-config-url">Presence config snapshot (.jsonl)</label><input type="text" id="set-presence-config-url" value="${escapeHtml(getSetting("presenceConfigUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -3778,6 +3815,7 @@ function renderImpostazioni(container) {
   document.getElementById("set-deep-scan-url").addEventListener("change", (e) => { setSetting("deepScanUrl", e.target.value.trim() || SETTINGS_DEFAULTS.deepScanUrl); loadAll(); });
   document.getElementById("set-handshake-url").addEventListener("change", (e) => { setSetting("handshakeUrl", e.target.value.trim() || SETTINGS_DEFAULTS.handshakeUrl); loadAll(); });
   document.getElementById("set-wifi-presence-url").addEventListener("change", (e) => { setSetting("wifiPresenceUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiPresenceUrl); loadAll(); });
+  document.getElementById("set-presence-config-url").addEventListener("change", (e) => { setSetting("presenceConfigUrl", e.target.value.trim() || SETTINGS_DEFAULTS.presenceConfigUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
