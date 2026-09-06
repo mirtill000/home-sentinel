@@ -206,6 +206,15 @@ o `"left"` (con `duration_s` la durata della presenza appena conclusa,
 assente su `"arrived"`). Un MAC è considerato assente dopo
 `--ble-presence-away-timeout-s` (default 300s) senza nuovi advertisement.
 
+**`wifi_presence.jsonl`** (`--wifi-home-macs`, opzionale): stesso formato e
+stesso principio di `ble_presence.jsonl` sopra, ma la presenza è dedotta
+dai probe request WiFi invece che dagli advertisement BLE — condividono
+la stessa implementazione (`PresenceTracker` in `sentinel_presence.py`).
+Un MAC è considerato assente dopo `--wifi-presence-away-timeout-s`
+(default 600s, più alto del default BLE: i probe request sono meno
+frequenti e prevedibili degli advertisement BLE, specie con MAC
+randomization e probing ridotto per privacy sui device più recenti).
+
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
 Una riga per ogni fingerprint eseguito su un device LAN (alla prima
@@ -462,6 +471,13 @@ operativo, un cross-check con una fonte esterna al Pi:
   `ble_presence.jsonl` sopra): utile per un segnale "casa occupata/vuota" a
   valle (automazioni, riduzione rumore alert quando la casa è occupata),
   non è un detector di sicurezza.
+- **Tracking presenza/assenza WiFi** (`--wifi-home-macs`, opzionale, vedi
+  `wifi_presence.jsonl` sopra): stesso principio del tracking BLE ma dedotto
+  dai probe request invece che dagli advertisement — condividono lo stesso
+  `PresenceTracker` (`sentinel_presence.py`), quindi anche lo stesso limite:
+  è solo presenza/assenza dei MAC esplicitamente elencati, non identità
+  cross-radio (un telefono con MAC BLE e MAC WiFi diversi conta come due
+  device "di casa" distinti se entrambi configurati).
 - **Deep port scan** (`--deep-port-scan`, opzionale, vedi `deep_port_scan.jsonl`
   sopra): un secondo port scan periodico su un elenco molto più ampio di
   `--ports` (default `--deep-ports 1-65535`, tutte le porte TCP) ma molto

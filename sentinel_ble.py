@@ -20,14 +20,14 @@ sentinel_detection.py) quando generano una segnalazione.
     identity" lato LAN/WiFi.
   - BleEvilTwinDetector: come EvilTwinDetector ma per BLE — segnala un nome
     "di casa" (es. una serratura smart) trasmesso da un MAC nuovo/inatteso.
-  - BlePresenceTracker: transizioni presente/assente per un insieme di MAC
-    "di casa" (es. gli smartphone del nucleo familiare), utile per un
-    segnale "casa occupata/vuota" a valle.
+
+Il tracking presenza/assenza (--ble-home-macs) usa il PresenceTracker generico di
+sentinel_presence.py, condiviso con l'equivalente lato WiFi (--wifi-home-macs) — non è più
+definito qui perché la logica non ha nulla di BLE-specifico.
 """
 
 from __future__ import annotations
 
-import threading
 import time
 from datetime import datetime, timezone
 
@@ -226,49 +226,3 @@ class BleEvilTwinDetector:
                 mac=mac, details={"name": name, "mac_nuovo": mac, "mac_noti": sorted(macs)},
             )
         macs.add(mac)
-
-
-class BlePresenceTracker:
-    """Transizioni presente/assente per un insieme di MAC "di casa" (es. gli
-    smartphone del nucleo familiare). Un timeout (non solo l'assenza
-    dall'ultimo advertisement) serve perché il BLE è passivo: senza un
-    "tick" periodico non sapremmo mai quando un device è sparito, solo
-    quando ricompare."""
-
-    def __init__(self, home_macs: set[str], away_timeout_seconds: float = 300.0):
-        self.home_macs = {m.lower() for m in home_macs}
-        self.away_timeout_seconds = away_timeout_seconds
-        self._state: dict[str, dict] = {}  # mac -> {"home": bool, "last_seen": float, "since": float}
-        self._lock = threading.Lock()
-
-    def observe(self, mac: str, now: float | None = None) -> dict | None:
-        mac = mac.lower()
-        if mac not in self.home_macs:
-            return None
-        now = now if now is not None else time.time()
-        with self._lock:
-            entry = self._state.get(mac)
-            event = None
-            if entry is None or not entry["home"]:
-                event = {"timestamp": _now_iso(), "mac": mac, "event": "arrived"}
-                self._state[mac] = {"home": True, "last_seen": now, "since": now}
-            else:
-                entry["last_seen"] = now
-            return event
-
-    def sweep(self, now: float | None = None) -> list[dict]:
-        """Da chiamare periodicamente (es. ogni secondo, dallo stesso loop
-        dell'event loop asyncio dello scanner): rileva le uscite di casa
-        (timeout senza nuovi advertisement)."""
-        now = now if now is not None else time.time()
-        events = []
-        with self._lock:
-            for mac, entry in self._state.items():
-                if entry["home"] and (now - entry["last_seen"]) > self.away_timeout_seconds:
-                    duration = entry["last_seen"] - entry["since"]
-                    events.append({
-                        "timestamp": _now_iso(), "mac": mac, "event": "left",
-                        "duration_s": round(duration, 1),
-                    })
-                    entry["home"] = False
-        return events
