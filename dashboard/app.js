@@ -3105,7 +3105,10 @@ function topKpiRowHtml() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
-  const presence = computePresenceSummary([...state.blePresenceRows, ...state.wifiPresenceRows]);
+  const blePresence = computePresenceSummary(state.blePresenceRows);
+  const wifiPresence = computePresenceSummary(state.wifiPresenceRows);
+  const presenceTotal = blePresence.total + wifiPresence.total;
+  const presenceHome = blePresence.home + wifiPresence.home;
 
   return `
     ${kpiTile({
@@ -3115,9 +3118,11 @@ function topKpiRowHtml() {
       sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
     })}
     ${kpiTile({
-      label: "Presence", icon: "home", tone: presence.total ? (presence.home ? "good" : "blue") : "blue",
-      value: presence.total ? presence.home : "—", valueSuffix: presence.total ? `/ ${presence.total}` : "",
-      sub: presence.total ? "home devices present (BLE + WiFi)" : "Configure --ble-home-macs/--wifi-home-macs to enable",
+      label: "Presence", icon: "home", tone: presenceTotal ? (presenceHome ? "good" : "blue") : "blue",
+      value: presenceTotal ? presenceHome : "—", valueSuffix: presenceTotal ? `/ ${presenceTotal}` : "",
+      sub: presenceTotal
+        ? `${blePresence.home}/${blePresence.total} BLE · ${wifiPresence.home}/${wifiPresence.total} WiFi`
+        : "Configure --ble-home-macs/--wifi-home-macs to enable",
     })}
   `;
 }
