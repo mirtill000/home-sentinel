@@ -263,12 +263,16 @@ Una riga per ogni DHCPDISCOVER/DHCPREQUEST osservato passivamente
 `lan_discovery.jsonl` (priorità sull'hostname, vedi sopra) e la rescan LAN
 immediata su un MAC nuovo.
 
-**`os_fingerprint.jsonl`** (`--os-fingerprint`, sniffing passivo su `--lan-iface`):
+**`os_fingerprint.jsonl`** (`--os-fingerprint`):
 `{timestamp, mac, ip, ttl, window, os_guess}`
 Una riga per MAC (non più di una ogni `--os-fingerprint-interval` secondi,
-default 300s), da pacchetti TCP con flag SYN (SYN o SYN-ACK) — inclusi i
-SYN-ACK di risposta al port scan attivo già in corso, nessuna sonda
-aggiuntiva. `os_guess` è un'**euristica grezza** sul solo TTL IP (vedi
+default 300s), da pacchetti TCP con flag SYN (SYN o SYN-ACK) — sia dallo
+sniffing passivo su `--lan-iface` (inclusi i SYN-ACK di risposta al port
+scan attivo già in corso), sia dalla sonda attiva immediata sui device
+appena scoperti (un singolo SYN TCP, vedi "Moduli di discovery avanzata"
+più sotto per i dettagli — `--no-os-fingerprint-active-probe` per
+disabilitarla).
+`os_guess` è un'**euristica grezza** sul solo TTL IP (vedi
 `guess_os_from_ttl` in `home_sentinel.py`): sulla stessa subnet L2 il TTL
 osservato coincide con quello di partenza del device (nessun router nel
 mezzo lo decrementa), ma più sistemi condividono lo stesso valore iniziale
@@ -446,12 +450,20 @@ operativo, un cross-check con una fonte esterna al Pi:
   lato router — e per una rescan LAN immediata quando compare un MAC mai
   visto, invece di aspettare il prossimo ciclo di `--interval`. Vedi
   `dhcp_events.jsonl` sopra.
-- **OS fingerprint passivo** (`--os-fingerprint`, opzionale): euristica
-  grezza sul sistema operativo dal TTL IP dei pacchetti TCP SYN/SYN-ACK già
-  visibili su `--lan-iface` (inclusi i SYN-ACK di risposta al port scan
-  attivo già in corso), nessuna sonda aggiuntiva. Onestamente etichettata
-  come euristica, non un'identificazione certa — vedi `os_fingerprint.jsonl`
-  sopra per i dettagli e i limiti.
+- **OS fingerprint** (`--os-fingerprint`, opzionale): euristica grezza sul
+  sistema operativo dal TTL IP dei pacchetti TCP SYN/SYN-ACK. Due fonti:
+  ascolto passivo di quelli già visibili su `--lan-iface` (inclusi i
+  SYN-ACK di risposta al port scan attivo già in corso), più — attiva di
+  default insieme al flag, `--no-os-fingerprint-active-probe` per
+  disabilitarla — una sonda attiva immediata alla prima scoperta di un
+  device: un singolo SYN TCP su `--os-fingerprint-active-probe-port`
+  (default 80), che produce un OS guess sia se la porta è aperta (risposta
+  SYN-ACK, poi chiusa con un RST di cortesia) sia se è chiusa (risposta
+  RST diretta, TTL comunque valido). Senza la sonda attiva, un device con
+  tutte le porte filtrate (comune su molti smartphone/IoT) potrebbe non
+  produrre mai un OS guess col solo ascolto passivo. Onestamente
+  etichettata come euristica, non un'identificazione certa — vedi
+  `os_fingerprint.jsonl` sopra per i dettagli e i limiti.
 - **Cross-check lease DHCP del router** (`--dhcp-lease-source`, opzionale):
   confronta periodicamente la tabella lease del router (dnsmasq.leases o un
   JSON generico, vedi `dhcp_leases.jsonl` sopra) con l'ultimo ciclo di ARP
