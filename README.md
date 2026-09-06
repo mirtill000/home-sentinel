@@ -206,15 +206,23 @@ o `"left"` (con `duration_s` la durata della presenza appena conclusa,
 assente su `"arrived"`). Un MAC è considerato assente dopo
 `--ble-presence-away-timeout-s` (default 300s) senza nuovi advertisement.
 
-**`wifi_presence.jsonl`** (`--wifi-home-macs`, opzionale): stesso formato e
-stesso principio di `ble_presence.jsonl` sopra, ma la presenza è dedotta
-dai probe request WiFi invece che dagli advertisement BLE — condividono
-la stessa implementazione (`PresenceTracker` in `sentinel_presence.py`).
+**`wifi_presence.jsonl`** (`--wifi-home-macs`, opzionale): stesso formato di
+`ble_presence.jsonl` sopra, condividono la stessa implementazione
+(`PresenceTracker` in `sentinel_presence.py`), ma qui la presenza viene
+dedotta da **due fonti indipendenti**, che si sommano invece di competere:
+
+- l'ARP scan di `LanDiscoveryService` (funziona anche senza `--wifi-iface`):
+  un MAC "di casa" trovato online sulla LAN è di per sé presente — anzi è
+  il segnale più affidabile per un device già connesso, perché una volta
+  associato a una rete molti device (in particolare iOS) smettono di
+  mandare probe request per quella rete, quindi il solo probe-based
+  tracking non li vedrebbe mai arrivare;
+- i probe request catturati da `WifiProbeMonitor`, se `--wifi-iface` è
+  attivo: utile per un device non ancora connesso (es. appena rientrato in
+  zona, ma non ancora associato).
+
 Un MAC è considerato assente dopo `--wifi-presence-away-timeout-s`
-(default 300s, come il BLE). I probe request sono in generale meno
-frequenti e prevedibili degli advertisement BLE (specie con MAC
-randomization e probing ridotto per privacy sui device più recenti):
-se noti "left" falsi, alza questo valore.
+(default 300s, come il BLE) senza segnali da **nessuna** delle due fonti.
 
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
@@ -485,10 +493,12 @@ operativo, un cross-check con una fonte esterna al Pi:
   valle (automazioni, riduzione rumore alert quando la casa è occupata),
   non è un detector di sicurezza.
 - **Tracking presenza/assenza WiFi** (`--wifi-home-macs`, opzionale, vedi
-  `wifi_presence.jsonl` sopra): stesso principio del tracking BLE ma dedotto
-  dai probe request invece che dagli advertisement — condividono lo stesso
-  `PresenceTracker` (`sentinel_presence.py`), quindi anche lo stesso limite:
-  è solo presenza/assenza dei MAC esplicitamente elencati, non identità
+  `wifi_presence.jsonl` sopra): stesso principio del tracking BLE, alimentato
+  sia dall'ARP scan (device già connesso alla LAN — funziona anche senza
+  `--wifi-iface`) sia, se attivo, dai probe request catturati da
+  `--wifi-iface` — condividono lo stesso `PresenceTracker`
+  (`sentinel_presence.py`), quindi anche lo stesso limite: è solo
+  presenza/assenza dei MAC esplicitamente elencati, non identità
   cross-radio (un telefono con MAC BLE e MAC WiFi diversi conta come due
   device "di casa" distinti se entrambi configurati).
 - **Deep port scan** (`--deep-port-scan`, opzionale, vedi `deep_port_scan.jsonl`
