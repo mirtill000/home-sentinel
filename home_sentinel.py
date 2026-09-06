@@ -55,7 +55,6 @@ except ImportError as exc:  # pragma: no cover
 from sentinel_ble import (
     BleEvilTwinDetector,
     BleIdentityLinker,
-    BlePresenceTracker,
     BleTrackerWatchdog,
     classify_ble_device,
     detect_tracker_kind,
@@ -70,6 +69,7 @@ from sentinel_detection import (
 from sentinel_dhcp_leases import fetch_dhcp_leases
 from sentinel_fingerprint import fingerprint_device, netbios_probe
 from sentinel_handshake import HandshakeCapture
+from sentinel_presence import PresenceTracker
 from sentinel_storage import SqliteStore
 
 LOG = logging.getLogger("home_sentinel")
@@ -729,6 +729,8 @@ class WifiProbeMonitor:
         networks_log: JsonlLogger | None = None,
         networks_log_interval: float = 30.0,
         handshake_capture: HandshakeCapture | None = None,
+        presence_tracker: PresenceTracker | None = None,
+        presence_log: JsonlLogger | None = None,
     ):
         self.iface = iface
         self.channels = channels
@@ -744,6 +746,8 @@ class WifiProbeMonitor:
         self.networks_log = networks_log
         self.networks_log_interval = networks_log_interval
         self.handshake_capture = handshake_capture
+        self.presence_tracker = presence_tracker
+        self.presence_log = presence_log
         self._current_channel = channels[0]
         self._traffic_lock = threading.Lock()
         self._traffic_counters: dict[str, dict[str, int]] = {}
@@ -819,6 +823,17 @@ class WifiProbeMonitor:
         if self.sqlite_store:
             self.sqlite_store.insert_probe_event(row)
         LOG.debug("WiFi probe mac=%s ssid=%r rssi=%s ch=%s", mac, ssid, rssi, self._current_channel)
+
+        if self.presence_tracker is not None and self.presence_log is not None:
+            event = self.presence_tracker.observe(mac)
+            if event is not None:
+                self._write_presence_event(event)
+
+    def _write_presence_event(self, event: dict) -> None:
+        self.presence_log.write(event)
+        if self.sqlite_store:
+            self.sqlite_store.insert_wifi_presence(event)
+        LOG.info("WiFi presence: %s %s", event["mac"], event["event"])
 
     def _handle_beacon(self, pkt) -> None:
         bssid = pkt.addr2
@@ -965,6 +980,9 @@ class WifiProbeMonitor:
                 sniff(iface=self.iface, prn=self._handle_packet, store=False, timeout=1)
                 if self.handshake_capture is not None:
                     self.handshake_capture.sweep()
+                if self.presence_tracker is not None and self.presence_log is not None:
+                    for event in self.presence_tracker.sweep():
+                        self._write_presence_event(event)
         except Exception:
             LOG.exception("WiFi probe monitor terminato con errore")
         finally:
@@ -998,7 +1016,7 @@ class BleScanMonitor:
         identity_linker: BleIdentityLinker | None = None,
         identity_log: JsonlLogger | None = None,
         evil_twin_detector: BleEvilTwinDetector | None = None,
-        presence_tracker: BlePresenceTracker | None = None,
+        presence_tracker: PresenceTracker | None = None,
         presence_log: JsonlLogger | None = None,
     ):
         self.log = log
@@ -1597,6 +1615,26 @@ def parse_args() -> argparse.Namespace:
         help="Numero minimo di frame EAPOL per considerare la cattura utile a un tentativo di "
         "audit offline (di norma servono almeno i messaggi 1 e 2 del 4-way handshake)",
     )
+    p.add_argument(
+        "--wifi-home-macs",
+        default="",
+        help="MAC WiFi 'di casa' (es. gli smartphone del nucleo familiare) per il tracking "
+        "presenza/assenza via probe request, separati da virgola — stesso principio di "
+        "--ble-home-macs ma sul lato WiFi",
+    )
+    p.add_argument(
+        "--wifi-presence-log",
+        default="/var/log/home-sentinel/wifi_presence.jsonl",
+        help="Percorso file JSON Lines degli eventi di presenza/assenza WiFi",
+    )
+    p.add_argument(
+        "--wifi-presence-away-timeout-s",
+        type=float,
+        default=600.0,
+        help="Secondi senza probe request da un MAC 'di casa' prima di considerarlo assente "
+        "(default più alto che per il BLE: i probe WiFi sono meno frequenti e prevedibili "
+        "dei suoi advertisement, specie con MAC randomization e probing ridotto per privacy)",
+    )
 
     p.add_argument(
         "--no-deauth-detection",
@@ -1775,6 +1813,16 @@ def main() -> None:
                 )
             else:
                 LOG.warning("--capture-handshakes richiede --home-ssid: cattura handshake disabilitata")
+
+        wifi_home_macs = {m.strip().lower() for m in args.wifi_home_macs.split(",") if m.strip()}
+        wifi_presence_tracker = None
+        wifi_presence_log = None
+        if wifi_home_macs:
+            wifi_presence_tracker = PresenceTracker(
+                home_macs=wifi_home_macs, away_timeout_seconds=args.wifi_presence_away_timeout_s,
+            )
+            wifi_presence_log = make_logger(args.wifi_presence_log)
+
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
@@ -1790,6 +1838,7 @@ def main() -> None:
             networks_log=wifi_networks_log,
             networks_log_interval=args.wifi_networks_interval,
             handshake_capture=handshake_capture,
+            presence_tracker=wifi_presence_tracker, presence_log=wifi_presence_log,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
     else:
@@ -1824,7 +1873,7 @@ def main() -> None:
         ble_presence_tracker = None
         ble_presence_log = None
         if ble_home_macs:
-            ble_presence_tracker = BlePresenceTracker(
+            ble_presence_tracker = PresenceTracker(
                 home_macs=ble_home_macs, away_timeout_seconds=args.ble_presence_away_timeout_s,
             )
             ble_presence_log = make_logger(args.ble_presence_log)

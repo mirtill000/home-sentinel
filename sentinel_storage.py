@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS ble_presence (
 CREATE INDEX IF NOT EXISTS idx_blepresence_mac ON ble_presence(mac);
 CREATE INDEX IF NOT EXISTS idx_blepresence_ts ON ble_presence(timestamp);
 
+CREATE TABLE IF NOT EXISTS wifi_presence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    event TEXT NOT NULL,
+    duration_s REAL
+);
+CREATE INDEX IF NOT EXISTS idx_wifipresence_mac ON wifi_presence(mac);
+CREATE INDEX IF NOT EXISTS idx_wifipresence_ts ON wifi_presence(timestamp);
+
 CREATE TABLE IF NOT EXISTS fingerprints (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -316,6 +326,14 @@ class SqliteStore:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO ble_presence (timestamp, mac, event, duration_s) VALUES (?, ?, ?, ?)",
+                (row["timestamp"], row["mac"], row["event"], row.get("duration_s")),
+            )
+            self._conn.commit()
+
+    def insert_wifi_presence(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO wifi_presence (timestamp, mac, event, duration_s) VALUES (?, ?, ?, ?)",
                 (row["timestamp"], row["mac"], row["event"], row.get("duration_s")),
             )
             self._conn.commit()

@@ -45,7 +45,9 @@ Type=simple
 # /percorso/o/URL \" per il cross-check con le lease DHCP del router,
 # "--deep-port-scan \" per un secondo port scan periodico su tutte le 65535
 # porte TCP (una volta a settimana per device, non ad ogni ciclo) invece
-# delle sole porte comuni scansionate normalmente.
+# delle sole porte comuni scansionate normalmente; "--wifi-home-macs
+# aa:bb:cc:...\" per il tracking presenza/assenza via probe request WiFi,
+# stesso principio di --ble-home-macs (richiede --wifi-iface).
 ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
     --subnet 192.168.1.0/24
 WorkingDirectory=/opt/home-sentinel

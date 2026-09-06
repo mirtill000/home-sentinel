@@ -53,7 +53,7 @@ const SETTINGS_KEYS = {
   dhcpEventsUrl: "hs.dhcpEventsUrl", osFingerprintUrl: "hs.osFingerprintUrl", dhcpLeasesUrl: "hs.dhcpLeasesUrl",
   trendDailyUrl: "hs.trendDailyUrl",
   bleIdentityLinksUrl: "hs.bleIdentityLinksUrl", blePresenceUrl: "hs.blePresenceUrl",
-  deepScanUrl: "hs.deepScanUrl", handshakeUrl: "hs.handshakeUrl",
+  deepScanUrl: "hs.deepScanUrl", handshakeUrl: "hs.handshakeUrl", wifiPresenceUrl: "hs.wifiPresenceUrl",
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
@@ -64,6 +64,7 @@ const SETTINGS_DEFAULTS = {
   trendDailyUrl: "trend_daily.jsonl",
   bleIdentityLinksUrl: "ble_identity_links.jsonl", blePresenceUrl: "ble_presence.jsonl",
   deepScanUrl: "deep_port_scan.jsonl", handshakeUrl: "handshake_captures.jsonl",
+  wifiPresenceUrl: "wifi_presence.jsonl",
 };
 
 function getSetting(key) {
@@ -112,6 +113,7 @@ const state = {
   blePresenceRows: [],
   deepScanRows: [],
   handshakeRows: [],
+  wifiPresenceRows: [],
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -382,6 +384,14 @@ async function loadAllOnce() {
   } catch {
     state.handshakeRows = state.handshakeRows || [];
     state.sourceStatus.handshake = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("wifiPresenceUrl"));
+    state.wifiPresenceRows = r.rows;
+    state.sourceStatus.wifiPresence = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.wifiPresenceRows = state.wifiPresenceRows || [];
+    state.sourceStatus.wifiPresence = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -2323,6 +2333,8 @@ function renderWifiPage(container) {
 
     ${showAll || focus === "devices" ? `<div class="page-section card" id="wifi-devices-mount"></div>` : ""}
 
+    ${showAll ? `<div class="page-section card" id="wifi-presence-mount"></div>` : ""}
+
     ${showAll ? `<div class="page-section card" id="wifi-handshakes-mount"></div>` : ""}
 
     ${showAll ? `<div class="page-section card" id="wifi-section-mount"></div>` : ""}
@@ -2332,6 +2344,7 @@ function renderWifiPage(container) {
   if (showAll) {
     renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
     renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Channel ${ch}`, n]), "var(--cat-3)");
+    renderPresenceCard(document.getElementById("wifi-presence-mount"), state.wifiPresenceRows, "--wifi-home-macs");
     renderHandshakeCapturesTable(document.getElementById("wifi-handshakes-mount"));
     renderWifiSection(document.getElementById("wifi-section-mount"));
   }
@@ -2429,27 +2442,27 @@ function renderBlePage(container) {
 
   renderBarChart(document.getElementById("chart-ble-activity"), hourlyCounts(state.bleRows));
   renderBleDevicesTable(document.getElementById("ble-devices-mount"));
-  renderBlePresenceCard(document.getElementById("ble-presence-mount"));
+  renderPresenceCard(document.getElementById("ble-presence-mount"), state.blePresenceRows, "--ble-home-macs");
   renderBleSection(document.getElementById("ble-section-mount"));
 }
 
 /**
- * Eventi di presenza/assenza per i MAC BLE "di casa" configurati sul daemon
- * (--ble-home-macs): mostra gli ultimi arrivi/uscite così com'è nel log,
- * la dashboard non conosce quali MAC sono stati configurati lato daemon.
+ * Eventi di presenza/assenza per i MAC "di casa" configurati sul daemon (--ble-home-macs o
+ * --wifi-home-macs, stesso principio su entrambe le radio): mostra gli ultimi arrivi/uscite così
+ * come sono nel log, la dashboard non conosce quali MAC sono stati configurati lato daemon.
  */
-function renderBlePresenceCard(container) {
-  const rows = state.blePresenceRows.slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
+function renderPresenceCard(container, rows, flagName) {
+  const sorted = rows.slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
   container.innerHTML = `
     <div class="card-head">
       <h2>Presence</h2>
-      <span class="card-sub">arrival/departure events for the home MAC addresses configured on the daemon (<code>--ble-home-macs</code>)</span>
+      <span class="card-sub">arrival/departure events for the home MAC addresses configured on the daemon (<code>${flagName}</code>)</span>
     </div>
-    ${rows.length ? `
+    ${sorted.length ? `
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Timestamp</th><th>Device</th><th>Event</th><th>Duration</th></tr></thead>
-          <tbody>${rows.slice(0, 30).map((r) => `<tr>
+          <tbody>${sorted.slice(0, 30).map((r) => `<tr>
             <td>${formatTs(r.timestamp)}</td>
             <td><button class="link-cell" data-mac-link="${escapeHtml(r.mac)}">${escapeHtml(displayName(r.mac, r.mac))}</button></td>
             <td>${r.event === "arrived" ? '<span class="badge status-online"><span class="dot"></span>Arrived</span>' : '<span class="badge status-offline"><span class="dot"></span>Left</span>'}</td>
@@ -2457,7 +2470,7 @@ function renderBlePresenceCard(container) {
           </tr>`).join("")}</tbody>
         </table>
       </div>
-    ` : '<p class="empty-state">No presence events — configure <code>--ble-home-macs</code> on the daemon to enable this.</p>'}
+    ` : `<p class="empty-state">No presence events — configure <code>${flagName}</code> on the daemon to enable this.</p>`}
   `;
   container.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
@@ -3070,12 +3083,14 @@ function renderHouseRadar(container, data) {
  * Pages
  * ---------------------------------------------------------------------- */
 
-/** Ultimo stato presente/assente per ogni MAC BLE "di casa" (--ble-home-macs) visto in
- * ble_presence.jsonl, e quanti risultano attualmente presenti. La dashboard non conosce quali
- * MAC sono stati configurati sul daemon: usa semplicemente l'insieme dei MAC già comparsi qui. */
-function computeBlePresenceSummary() {
+/** Ultimo stato presente/assente per ogni MAC "di casa" (--ble-home-macs e/o --wifi-home-macs)
+ * visto in ble_presence.jsonl/wifi_presence.jsonl, e quanti risultano attualmente presenti — le
+ * due sorgenti sono unite perché per l'utente "chi c'è in casa" è un unico concetto, a prescindere
+ * da quale radio l'abbia rilevato. La dashboard non conosce quali MAC sono stati configurati sul
+ * daemon: usa semplicemente l'insieme dei MAC già comparsi in uno dei due log. */
+function computePresenceSummary(rows) {
   const latestByMac = new Map();
-  for (const r of state.blePresenceRows) {
+  for (const r of rows) {
     const ts = parseTs(r.timestamp) || 0;
     const prev = latestByMac.get(r.mac);
     if (!prev || ts > prev.ts) latestByMac.set(r.mac, { event: r.event, ts });
@@ -3085,12 +3100,12 @@ function computeBlePresenceSummary() {
   return { home, total: latestByMac.size };
 }
 
-/** Riga dei KPI principali in cima alla home (host attivi, presenza BLE). */
+/** Riga dei KPI principali in cima alla home (host attivi, presenza BLE+WiFi combinata). */
 function topKpiRowHtml() {
   const lanCurrent = latestLanByMac(state.lanRows);
   const online = lanCurrent.filter((d) => d.status !== "offline").length;
   const total = lanCurrent.length;
-  const presence = computeBlePresenceSummary();
+  const presence = computePresenceSummary([...state.blePresenceRows, ...state.wifiPresenceRows]);
 
   return `
     ${kpiTile({
@@ -3100,9 +3115,9 @@ function topKpiRowHtml() {
       sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
     })}
     ${kpiTile({
-      label: "Presence", icon: "bluetooth", tone: presence.total ? (presence.home ? "good" : "blue") : "blue",
+      label: "Presence", icon: "home", tone: presence.total ? (presence.home ? "good" : "blue") : "blue",
       value: presence.total ? presence.home : "—", valueSuffix: presence.total ? `/ ${presence.total}` : "",
-      sub: presence.total ? "home BLE devices present" : "Configure --ble-home-macs to enable",
+      sub: presence.total ? "home devices present (BLE + WiFi)" : "Configure --ble-home-macs/--wifi-home-macs to enable",
     })}
   `;
 }
@@ -3661,6 +3676,7 @@ function renderImpostazioni(container) {
         ${moduleStatusRow("BLE presence tracking (--ble-home-macs)", "blePresence")}
         ${moduleStatusRow("Deep port scan (--deep-port-scan)", "deepScan")}
         ${moduleStatusRow("Handshake capture (--capture-handshakes)", "handshake")}
+        ${moduleStatusRow("WiFi presence tracking (--wifi-home-macs)", "wifiPresence")}
         ${moduleStatusRow("Detection alerts", "alerts")}
       </div>
       <p class="field-hint">Missing hosts that a tool like <code>nmap</code> does find? LAN discovery already retries hosts that don't answer the first ARP request (<code>--arp-retries</code>, default 2); two more fallbacks — <code>--icmp-fallback</code> and <code>--tcp-fallback</code> — can be enabled on the daemon for hosts still missing after that. These are daemon flags, not dashboard settings: see the README for details.</p>
@@ -3687,6 +3703,7 @@ function renderImpostazioni(container) {
         <div class="field"><label for="set-ble-presence-url">BLE presence log (.jsonl)</label><input type="text" id="set-ble-presence-url" value="${escapeHtml(getSetting("blePresenceUrl"))}"></div>
         <div class="field"><label for="set-deep-scan-url">Deep port scan log (.jsonl)</label><input type="text" id="set-deep-scan-url" value="${escapeHtml(getSetting("deepScanUrl"))}"></div>
         <div class="field"><label for="set-handshake-url">Handshake capture log (.jsonl)</label><input type="text" id="set-handshake-url" value="${escapeHtml(getSetting("handshakeUrl"))}"></div>
+        <div class="field"><label for="set-wifi-presence-url">WiFi presence log (.jsonl)</label><input type="text" id="set-wifi-presence-url" value="${escapeHtml(getSetting("wifiPresenceUrl"))}"></div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -3755,6 +3772,7 @@ function renderImpostazioni(container) {
   document.getElementById("set-ble-presence-url").addEventListener("change", (e) => { setSetting("blePresenceUrl", e.target.value.trim() || SETTINGS_DEFAULTS.blePresenceUrl); loadAll(); });
   document.getElementById("set-deep-scan-url").addEventListener("change", (e) => { setSetting("deepScanUrl", e.target.value.trim() || SETTINGS_DEFAULTS.deepScanUrl); loadAll(); });
   document.getElementById("set-handshake-url").addEventListener("change", (e) => { setSetting("handshakeUrl", e.target.value.trim() || SETTINGS_DEFAULTS.handshakeUrl); loadAll(); });
+  document.getElementById("set-wifi-presence-url").addEventListener("change", (e) => { setSetting("wifiPresenceUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiPresenceUrl); loadAll(); });
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -3897,7 +3915,7 @@ function renderAiuto(container) {
       <ul>
         <li><strong>Dashboard</strong> (home) — active hosts at the top, then a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Host summary (totals, active/offline, risk distribution) and panels with a quick preview for each category — a "View all" button on each jumps to the corresponding page (Host, WiFi or BLE) with the complete, searchable list and full details; for the three WiFi-related categories it shows only that one table, not the whole WiFi page ("Show all WiFi data" returns to the full page). "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
         <li><strong>Host</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts). A device's full profile also shows its last optional deep port scan (<code>--deep-port-scan</code>), if any, with how many ports it found beyond the regular scan.</li>
-        <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then three tables (each searchable and paginated, across all loaded history) — "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it), "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons, filterable by security type — Open/WEP/WPA/WPA2-WPA3 — and by band, 2.4 vs 5 GHz; security is classified from the beacon itself and requires <code>--wifi-iface</code>). A "Handshake captures" card lists the WPA/WPA2 handshakes captured for the home networks in <code>--home-ssid</code> when <code>--capture-handshakes</code> is active — metadata only, the actual <code>.pcap</code> file to run through aircrack-ng/hashcat stays on the Pi. At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
+        <li><strong>WiFi</strong> — 802.11 probe requests nearby: probe activity and channel distribution charts at the top, then three tables (each searchable and paginated, across all loaded history) — "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it), "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons, filterable by security type — Open/WEP/WPA/WPA2-WPA3 — and by band, 2.4 vs 5 GHz; security is classified from the beacon itself and requires <code>--wifi-iface</code>). A KPI row at the top counts Open and WPA2/WPA3 networks and total handshake captures. A "Presence" card lists arrival/departure events for the home MAC addresses configured with <code>--wifi-home-macs</code> — same principle as the BLE page's, deduced from probe requests instead of advertisements. A "Handshake captures" card lists the WPA/WPA2 handshakes captured for the home networks in <code>--home-ssid</code> when <code>--capture-handshakes</code> is active — metadata only, the actual <code>.pcap</code> file to run through aircrack-ng/hashcat stays on the Pi. At the bottom, the raw probe log for row-by-row analysis. Estimated WiFi traffic per device is not shown here: it's an optional column on the Host page, and it also remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — Bluetooth Low Energy activity nearby: KPIs (including a "Possible trackers" count) and 24h activity at the top, then the "BLE devices" table — a summary per MAC with a heuristic device type (wearable, audio, possible tracker...), manufacturer, signal and number of sightings, trackers highlighted — a "Presence" card with arrival/departure events for the home MACs configured with <code>--ble-home-macs</code>, and at the bottom the raw advertisement log for row-by-row analysis. From a device's full profile you can also see and act on suggested identity links across a rotated BLE address (same advertised name/services reappearing on a new MAC shortly after the old one went quiet) — a suggestion only, never applied automatically.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
@@ -3916,7 +3934,7 @@ function renderAiuto(container) {
         <li>BLE manufacturer names come from a partial, curated list of the most common Bluetooth SIG company IDs: an unrecognized ID is shown as "ID 0x...".</li>
         <li>BLE device type, tracker detection and evil-twin/spoofing detection are heuristics based on publicly documented advertisement formats (Apple Find My/Continuity type bytes, Tile/Samsung service UUIDs), not a certain identification: a device can be misclassified, and a device manufacturer could in principle mimic these patterns.</li>
         <li>BLE identity link suggestions (address rotation) are a best-effort match on the advertised name/manufacturer/service UUIDs: two different devices with no name and identical service UUIDs (e.g. two earbuds of the same model) could occasionally be suggested as the same device — always a suggestion to confirm, never applied automatically.</li>
-        <li>BLE presence tracking only reports arrival/departure for the MAC addresses explicitly configured with <code>--ble-home-macs</code> on the daemon: it has no notion of which devices belong to the household beyond that list, and a MAC that rotates (see above) will look like a departure followed by a new arrival unless it's also linked as the same identity.</li>
+        <li>BLE and WiFi presence tracking only report arrival/departure for the MAC addresses explicitly configured with <code>--ble-home-macs</code>/<code>--wifi-home-macs</code> on the daemon: they have no notion of which devices belong to the household beyond that list, and a MAC that rotates (see above) will look like a departure followed by a new arrival unless it's also linked as the same identity. The two are tracked independently — a phone's BLE and WiFi addresses are normally different random addresses, so the same physical device configured on both counts as two separate "home" entries. WiFi presence in particular depends on the device actually sending probe requests, which varies a lot by OS and power state — expect it to be less prompt/reliable than BLE's.</li>
         <li>The deep port scan (<code>--deep-port-scan</code>) runs at most once every <code>--deep-port-scan-interval</code> (default one week) per device, and a brand-new device's first deep scan is deferred by a full interval rather than run immediately: it's meant to catch a service on an unusual port eventually, not as fast as the regular port scan.</li>
         <li>Handshake capture (<code>--capture-handshakes</code>) is purely passive — it only records EAPOL frames from a handshake that happens on its own (a client (re)connecting), it never sends a deauth to force one — and, like the rest of the WiFi monitor, is subject to channel hopping: a handshake that completes in milliseconds on a channel the sniffer isn't on at that moment can be missed or captured only partially (the "Messages" column shows exactly which of the 4 were caught). It only captures for the networks listed in <code>--home-ssid</code>, never for networks it merely detects nearby.</li>
         <li>The risk score (the "Risk" column in Host) is a heuristic based on exposed ports and linked alerts, not a formal security assessment; marking a device as trusted attenuates it (reduced score, linked alerts one level less severe) but doesn't hide it or exclude it from checks.</li>
