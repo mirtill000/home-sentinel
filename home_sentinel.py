@@ -370,6 +370,7 @@ class LanDiscoveryService:
         deep_ports: list[int] | None = None,
         deep_port_scan_interval: float = 604800.0,
         deep_scan_log: JsonlLogger | None = None,
+        os_fingerprint_monitor: "OsFingerprintMonitor | None" = None,
     ):
         self.subnet = subnet
         self.iface = iface
@@ -379,6 +380,7 @@ class LanDiscoveryService:
         self.deep_ports = deep_ports
         self.deep_port_scan_interval = deep_port_scan_interval
         self.deep_scan_log = deep_scan_log
+        self.os_fingerprint_monitor = os_fingerprint_monitor
         self.arp_timeout = arp_timeout
         self.arp_retries = arp_retries
         self.icmp_fallback = icmp_fallback
@@ -522,6 +524,12 @@ class LanDiscoveryService:
 
             state = self.devices.get(mac)
             is_new = state is None
+
+            if is_new and self.os_fingerprint_monitor is not None:
+                # Sonda subito il device appena scoperto invece di aspettare che generi da solo
+                # traffico TCP osservabile passivamente: senza, un device con tutte le porte
+                # filtrate (comune su molti smartphone/IoT) non produrrebbe mai un OS guess.
+                self.os_fingerprint_monitor.active_probe(ip, mac)
 
             hostname = state.hostname if state else ""
             vendor = state.vendor if state else ""
@@ -1150,7 +1158,8 @@ def guess_os_from_ttl(ttl: int | None) -> str:
 
 
 class OsFingerprintMonitor:
-    """Sniffing passivo di pacchetti TCP con flag SYN (SYN o SYN-ACK) su `--lan-iface`.
+    """Sniffing passivo di pacchetti TCP con flag SYN (SYN o SYN-ACK) su `--lan-iface`, più una
+    sonda attiva opzionale (default: attiva) per i device appena scoperti.
 
     Non è un p0f completo (nessun database di firme dello stack TCP/IP):
     osserva solo il TTL IP e la window size TCP di pacchetti che il device
@@ -1160,6 +1169,17 @@ class OsFingerprintMonitor:
     riferimento ma non entra nell'euristica: dipende troppo da window
     scaling/configurazioni custom per essere un indizio affidabile senza un
     vero database di firme, che qui non c'è.
+
+    Il solo ascolto passivo lascia scoperti i device con tutte le porte
+    filtrate (comune su molti smartphone/IoT moderni): senza traffico TCP di
+    loro iniziativa da osservare, non producono mai un OS guess, anche se
+    restano online per settimane. `active_probe` (chiamata da
+    LanDiscoveryService alla prima scoperta di un MAC) chiude questo buco
+    inviando un singolo SYN TCP e leggendo il TTL dalla risposta — che sia
+    un SYN-ACK (porta aperta) o un RST (porta chiusa, ma la risposta arriva
+    comunque dallo stack IP del device, TTL incluso): un singolo pacchetto,
+    nessuna differenza pratica rispetto al traffico che un port scan normale
+    genera già verso lo stesso device.
     """
 
     def __init__(
@@ -1169,13 +1189,39 @@ class OsFingerprintMonitor:
         stop_event: threading.Event,
         sqlite_store: SqliteStore | None = None,
         interval: float = 300.0,
+        active_probe_enabled: bool = True,
+        active_probe_port: int = 80,
+        active_probe_timeout: float = 1.0,
     ):
         self.iface = iface
         self.log = log
         self.stop_event = stop_event
         self.sqlite_store = sqlite_store
         self.interval = interval
+        self.active_probe_enabled = active_probe_enabled
+        self.active_probe_port = active_probe_port
+        self.active_probe_timeout = active_probe_timeout
         self._last_logged: dict[str, float] = {}
+
+    def _log_result(self, mac: str, ip: str, ttl: int | None, window: int | None) -> None:
+        now = time.time()
+        if now - self._last_logged.get(mac, 0.0) < self.interval:
+            return
+        self._last_logged[mac] = now
+
+        row = {
+            "timestamp": now_iso(),
+            "mac": mac,
+            "ip": ip,
+            "ttl": ttl,
+            "window": window,
+            "os_guess": guess_os_from_ttl(ttl),
+        }
+        self.log.write(row)
+        if self.sqlite_store:
+            self.sqlite_store.insert_os_fingerprint(row)
+        LOG.debug("OS fingerprint mac=%s ip=%s ttl=%s window=%s guess=%s",
+                   mac, ip, ttl, window, row["os_guess"])
 
     def _handle_packet(self, pkt) -> None:
         try:
@@ -1187,26 +1233,42 @@ class OsFingerprintMonitor:
         mac = (pkt[Ether].src or "").lower()
         if not mac:
             return
+        self._log_result(mac, pkt[IP].src, pkt[IP].ttl, pkt[TCP].window)
 
-        now = time.time()
-        if now - self._last_logged.get(mac, 0.0) < self.interval:
+    def active_probe(self, ip: str, mac: str) -> None:
+        """Un singolo SYN TCP verso `ip` per un OS guess immediato, invece di aspettare che il
+        device generi da solo traffico TCP osservabile. Rispetta lo stesso `interval` del
+        passivo (niente sonda se già fingerprintato di recente, magari proprio dal passivo).
+        Fallisce silenziosamente se non arriva risposta (es. firewall che droppa i SYN non
+        richiesti): non è un errore, solo un device che stavolta non produce un OS guess.
+        """
+        if not self.active_probe_enabled:
             return
-        self._last_logged[mac] = now
+        mac = mac.lower()
+        if time.time() - self._last_logged.get(mac, 0.0) < self.interval:
+            return
+        try:
+            from scapy.all import IP, TCP, send, sr1
+            reply = sr1(
+                IP(dst=ip) / TCP(dport=self.active_probe_port, flags="S"),
+                timeout=self.active_probe_timeout, verbose=0, retry=0,
+            )
+        except Exception:
+            LOG.debug("OS fingerprint attivo fallito per %s", ip, exc_info=True)
+            return
+        if reply is None or not reply.haslayer(IP) or not reply.haslayer(TCP):
+            return
 
-        ttl = pkt[IP].ttl
-        row = {
-            "timestamp": now_iso(),
-            "mac": mac,
-            "ip": pkt[IP].src,
-            "ttl": ttl,
-            "window": pkt[TCP].window,
-            "os_guess": guess_os_from_ttl(ttl),
-        }
-        self.log.write(row)
-        if self.sqlite_store:
-            self.sqlite_store.insert_os_fingerprint(row)
-        LOG.debug("OS fingerprint mac=%s ip=%s ttl=%s window=%s guess=%s",
-                   mac, row["ip"], ttl, row["window"], row["os_guess"])
+        if reply[TCP].flags & 0x12 == 0x12:  # SYN+ACK: porta aperta, chiudiamo puliti con un RST
+            try:
+                send(
+                    IP(dst=ip) / TCP(dport=self.active_probe_port, flags="R", seq=reply[TCP].ack),
+                    verbose=0,
+                )
+            except Exception:
+                pass
+
+        self._log_result(mac, ip, reply[IP].ttl, reply[TCP].window)
 
     def run(self) -> None:
         try:
@@ -1518,8 +1580,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--os-fingerprint",
         action="store_true",
-        help="Abilita l'euristica passiva del sistema operativo (da TTL/window size dei pacchetti "
-        "TCP SYN/SYN-ACK già visibili su --lan-iface, nessuna sonda attiva aggiuntiva)",
+        help="Abilita l'euristica del sistema operativo (da TTL/window size dei pacchetti TCP "
+        "SYN/SYN-ACK): passiva sul traffico già visibile su --lan-iface, più una sonda attiva "
+        "immediata sui device appena scoperti (vedi --no-os-fingerprint-active-probe)",
     )
     p.add_argument(
         "--os-fingerprint-log",
@@ -1530,7 +1593,28 @@ def parse_args() -> argparse.Namespace:
         "--os-fingerprint-interval",
         type=float,
         default=300.0,
-        help="Intervallo minimo (s) tra due righe di log per lo stesso MAC",
+        help="Intervallo minimo (s) tra due righe di log per lo stesso MAC (vale sia per il "
+        "passivo sia per la sonda attiva)",
+    )
+    p.add_argument(
+        "--no-os-fingerprint-active-probe",
+        action="store_true",
+        help="Disabilita la sonda attiva sui device appena scoperti (un singolo SYN TCP): resta "
+        "solo l'ascolto passivo, che per device con tutte le porte filtrate potrebbe non produrre "
+        "mai un OS guess",
+    )
+    p.add_argument(
+        "--os-fingerprint-active-probe-port",
+        type=int,
+        default=80,
+        help="Porta usata dalla sonda attiva (funziona sia se aperta, risposta SYN-ACK, sia se "
+        "chiusa, risposta RST: il TTL nella risposta è valido in entrambi i casi)",
+    )
+    p.add_argument(
+        "--os-fingerprint-active-probe-timeout",
+        type=float,
+        default=1.0,
+        help="Attesa (s) della risposta alla sonda attiva prima di rinunciare per quel device",
     )
 
     p.add_argument(
@@ -1744,6 +1828,26 @@ def main() -> None:
     dhcp_leases_log = make_logger(args.dhcp_leases_log) if args.dhcp_lease_source else None
     deep_ports = parse_port_spec(args.deep_ports) if args.deep_port_scan else None
     deep_scan_log = make_logger(args.deep_scan_log) if args.deep_port_scan else None
+
+    # Costruito qui (prima di LanDiscoveryService, non nella sua posizione "naturale" più in basso
+    # insieme agli altri moduli opzionali) perché quest'ultimo ne ha bisogno subito: gli passa una
+    # sonda attiva sul MAC appena scoperto invece di aspettare che il device generi traffico TCP di
+    # sua iniziativa (vedi active_probe più sotto).
+    os_fingerprint_service = None
+    os_fingerprint_log = None
+    if args.os_fingerprint:
+        os_fingerprint_log = make_logger(args.os_fingerprint_log)
+        os_fingerprint_service = OsFingerprintMonitor(
+            iface=args.lan_iface,
+            log=os_fingerprint_log,
+            stop_event=stop_event,
+            sqlite_store=sqlite_store,
+            interval=args.os_fingerprint_interval,
+            active_probe_enabled=not args.no_os_fingerprint_active_probe,
+            active_probe_port=args.os_fingerprint_active_probe_port,
+            active_probe_timeout=args.os_fingerprint_active_probe_timeout,
+        )
+
     lan_service = LanDiscoveryService(
         subnet=args.subnet,
         iface=args.lan_iface,
@@ -1770,8 +1874,11 @@ def main() -> None:
         deep_ports=deep_ports,
         deep_port_scan_interval=args.deep_port_scan_interval,
         deep_scan_log=deep_scan_log,
+        os_fingerprint_monitor=os_fingerprint_service,
     )
-    threads = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
+    threads: list[threading.Thread] = [threading.Thread(target=lan_service.run, name="lan-discovery", daemon=True)]
+    if os_fingerprint_service is not None:
+        threads.append(threading.Thread(target=os_fingerprint_service.run, name="os-fingerprint", daemon=True))
 
     trend_rollup_log = None
     if sqlite_store is not None and not args.no_trend_rollup:
@@ -1905,18 +2012,6 @@ def main() -> None:
             on_client_event=lan_service.note_dhcp_client if args.dhcp_discovery else None,
         )
         threads.append(threading.Thread(target=dhcp_detector.run, name="rogue-dhcp-detector", daemon=True))
-
-    os_fingerprint_log = None
-    if args.os_fingerprint:
-        os_fingerprint_log = make_logger(args.os_fingerprint_log)
-        os_fingerprint_service = OsFingerprintMonitor(
-            iface=args.lan_iface,
-            log=os_fingerprint_log,
-            stop_event=stop_event,
-            sqlite_store=sqlite_store,
-            interval=args.os_fingerprint_interval,
-        )
-        threads.append(threading.Thread(target=os_fingerprint_service.run, name="os-fingerprint", daemon=True))
 
     for t in threads:
         t.start()
