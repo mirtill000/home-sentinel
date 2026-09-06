@@ -211,9 +211,10 @@ stesso principio di `ble_presence.jsonl` sopra, ma la presenza è dedotta
 dai probe request WiFi invece che dagli advertisement BLE — condividono
 la stessa implementazione (`PresenceTracker` in `sentinel_presence.py`).
 Un MAC è considerato assente dopo `--wifi-presence-away-timeout-s`
-(default 600s, più alto del default BLE: i probe request sono meno
-frequenti e prevedibili degli advertisement BLE, specie con MAC
-randomization e probing ridotto per privacy sui device più recenti).
+(default 300s, come il BLE). I probe request sono in generale meno
+frequenti e prevedibili degli advertisement BLE (specie con MAC
+randomization e probing ridotto per privacy sui device più recenti):
+se noti "left" falsi, alza questo valore.
 
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
