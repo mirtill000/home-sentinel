@@ -1714,10 +1714,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--wifi-presence-away-timeout-s",
         type=float,
-        default=600.0,
+        default=300.0,
         help="Secondi senza probe request da un MAC 'di casa' prima di considerarlo assente "
-        "(default più alto che per il BLE: i probe WiFi sono meno frequenti e prevedibili "
-        "dei suoi advertisement, specie con MAC randomization e probing ridotto per privacy)",
+        "(stesso default del BLE — i probe WiFi possono comunque essere meno frequenti e "
+        "prevedibili dei suoi advertisement, specie con MAC randomization e probing ridotto "
+        "per privacy: alzalo se noti falsi 'left')",
     )
 
     p.add_argument(
