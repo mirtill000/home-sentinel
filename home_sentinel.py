@@ -766,6 +766,7 @@ class WifiProbeMonitor:
         networks_log: JsonlLogger | None = None,
         networks_log_interval: float = 30.0,
         handshake_capture: HandshakeCapture | None = None,
+        home_ssids: set[str] | None = None,
         presence_tracker: PresenceTracker | None = None,
         presence_log: JsonlLogger | None = None,
     ):
@@ -783,9 +784,11 @@ class WifiProbeMonitor:
         self.networks_log = networks_log
         self.networks_log_interval = networks_log_interval
         self.handshake_capture = handshake_capture
+        self.home_ssids = home_ssids or set()
         self.presence_tracker = presence_tracker
         self.presence_log = presence_log
         self._current_channel = channels[0]
+        self._home_channel: int | None = None
         self._traffic_lock = threading.Lock()
         self._traffic_counters: dict[str, dict[str, int]] = {}
         self._networks_last_logged: dict[str, float] = {}
@@ -807,22 +810,47 @@ class WifiProbeMonitor:
         )
         self._current_channel = channel
 
+    # Con l'hopping uniforme su tutti i canali (default 13 canali x 0.5s = un giro completo ogni
+    # 6.5s), lo sniffer si trova sul canale "giusto" solo per una piccola frazione del tempo totale
+    # (~1/13): un 4-way handshake WPA dura tipicamente meno di un secondo, quindi la probabilità di
+    # essere sintonizzati sul canale dell'AP di casa proprio in quella finestra è troppo bassa per
+    # catturarne uno in tempi ragionevoli, anche con più device che si riconnettono più volte al
+    # giorno. Con --capture-handshakes attivo (richiede --home-ssid), una volta appreso il canale
+    # della rete di casa da un suo beacon (vedi _handle_beacon), lo sniffer vi resta "incollato" per
+    # la maggior parte del tempo, con solo un giro occasionale sugli altri canali per non perdere
+    # del tutto le altre funzionalità passive (adjacent networks, deauth detection, evil twin su
+    # altri BSSID) — non un compromesso "tutto o niente".
+    _HANDSHAKE_STICK_CYCLES = 8
+
     def _hop_loop(self) -> None:
         idx = 0
+        stuck_cycles = 0
         while not self.stop_event.is_set():
-            channel = self.channels[idx % len(self.channels)]
+            sticking_to_home = (
+                self.handshake_capture is not None
+                and self._home_channel is not None
+                and stuck_cycles < self._HANDSHAKE_STICK_CYCLES
+            )
+            if sticking_to_home:
+                channel = self._home_channel
+                stuck_cycles += 1
+            else:
+                channel = self.channels[idx % len(self.channels)]
+                idx += 1
+                stuck_cycles = 0
             try:
                 self._set_channel(channel)
             except subprocess.CalledProcessError:
                 LOG.warning("Impossibile impostare il canale %s su %s", channel, self.iface)
-            idx += 1
             self.stop_event.wait(self.hop_interval)
 
     def _handle_packet(self, pkt) -> None:
         if self.deauth_detector is not None and (pkt.haslayer(Dot11Deauth) or pkt.haslayer(Dot11Disas)):
             self._handle_deauth(pkt)
 
-        if (self.evil_twin_detector is not None or self.networks_log is not None) and pkt.haslayer(Dot11Beacon):
+        if (
+            self.evil_twin_detector is not None or self.networks_log is not None or self.handshake_capture is not None
+        ) and pkt.haslayer(Dot11Beacon):
             self._handle_beacon(pkt)
 
         if self.traffic_log is not None and pkt.haslayer(Dot11) and pkt.type == 2:
@@ -899,6 +927,8 @@ class WifiProbeMonitor:
             self.evil_twin_detector.observe_beacon(ssid, bssid or "")
         if self.handshake_capture is not None:
             self.handshake_capture.observe_beacon(ssid, bssid or "")
+            if ssid in self.home_ssids and channel is not None:
+                self._home_channel = channel
 
         if self.networks_log is not None and bssid:
             self._log_network(bssid.lower(), ssid, channel, pkt)
@@ -1997,6 +2027,7 @@ def main() -> None:
             networks_log=wifi_networks_log,
             networks_log_interval=args.wifi_networks_interval,
             handshake_capture=handshake_capture,
+            home_ssids=home_ssids,
             presence_tracker=wifi_presence_tracker, presence_log=wifi_presence_log,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
