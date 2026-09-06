@@ -224,6 +224,17 @@ dedotta da **due fonti indipendenti**, che si sommano invece di competere:
 Un MAC è considerato assente dopo `--wifi-presence-away-timeout-s`
 (default 300s, come il BLE) senza segnali da **nessuna** delle due fonti.
 
+**`presence_config.jsonl`**: `{timestamp, ble_home_macs, wifi_home_macs}`
+Una riga scritta una sola volta ad ogni avvio del daemon, con l'elenco
+completo dei MAC "di casa" effettivamente configurati via
+`--ble-home-macs`/`--wifi-home-macs`. Serve alla dashboard, che altrimenti
+non avrebbe modo di distinguere "MAC configurato ma non ancora osservato
+online" da "MAC non configurato affatto": senza questo file il KPI
+Presence userebbe come denominatore solo i MAC che hanno già generato
+almeno un evento in `ble_presence.jsonl`/`wifi_presence.jsonl`, sottostimando
+il totale per un MAC appena aggiunto alla config (o mai più visto online,
+es. dopo una rotazione dell'indirizzo privato WiFi/BLE).
+
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
 Una riga per ogni fingerprint eseguito su un device LAN (alla prima
