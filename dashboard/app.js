@@ -2279,6 +2279,34 @@ function renderWifiPage(container) {
       </div>
     ` : ""}
     ${showAll ? `
+      <div class="page-section kpi-row">
+        ${(() => {
+          const nets = computeWifiApOverview();
+          const openCount = nets.filter((e) => e.security === "open").length;
+          const wpa23Count = nets.filter((e) => e.security === "wpa2_wpa3").length;
+          const handshakeCount = state.handshakeRows.length;
+          return `
+            ${kpiTile({
+              label: "Open networks", icon: "shield", tone: openCount ? "critical" : "good",
+              value: openCount, sub: "No encryption at all", subTone: openCount ? "critical" : "good",
+            })}
+            ${kpiTile({
+              label: "WPA2/WPA3 networks", icon: "shield", tone: "good",
+              value: wpa23Count, sub: `${nets.length} networks detected total`,
+            })}
+            ${kpiTile({
+              label: "Handshake captures", icon: "wifi", tone: handshakeCount ? "good" : "blue",
+              value: handshakeCount,
+              sub: handshakeCount ? "for the home networks in --home-ssid" : "None captured yet (--capture-handshakes)",
+            })}
+          `;
+        })()}
+      </div>
+    ` : ""}
+
+    ${showAll || focus === "aps" ? `<div class="page-section card" id="wifi-aps-mount"></div>` : ""}
+
+    ${showAll ? `
       <div class="page-section grid-2">
         <div class="card">
           <div class="card-head"><h2>Probe activity <span class="card-sub">last 24h</span></h2></div>
@@ -2295,13 +2323,12 @@ function renderWifiPage(container) {
 
     ${showAll || focus === "devices" ? `<div class="page-section card" id="wifi-devices-mount"></div>` : ""}
 
-    ${showAll || focus === "aps" ? `<div class="page-section card" id="wifi-aps-mount"></div>` : ""}
-
     ${showAll ? `<div class="page-section card" id="wifi-handshakes-mount"></div>` : ""}
 
     ${showAll ? `<div class="page-section card" id="wifi-section-mount"></div>` : ""}
   `;
 
+  if (showAll || focus === "aps") renderWifiApsTable(document.getElementById("wifi-aps-mount"));
   if (showAll) {
     renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
     renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Channel ${ch}`, n]), "var(--cat-3)");
@@ -2310,7 +2337,6 @@ function renderWifiPage(container) {
   }
   if (showAll || focus === "ssid") renderWifiSsidTable(document.getElementById("wifi-ssid-mount"));
   if (showAll || focus === "devices") renderWifiDevicesTable(document.getElementById("wifi-devices-mount"));
-  if (showAll || focus === "aps") renderWifiApsTable(document.getElementById("wifi-aps-mount"));
 
   document.getElementById("wifi-focus-clear")?.addEventListener("click", () => {
     state.wifiFocusSection = null;
