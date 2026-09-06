@@ -518,6 +518,21 @@ class LanDiscoveryService:
         now = time.time()
         seen_macs = set()
 
+        if self.presence_tracker is not None and self.presence_log is not None:
+            # Fatto subito su tutti i MAC trovati, PRIMA del loop di discovery qui sotto (hostname,
+            # port scan, sonda OS fingerprint attiva...): quel loop è sequenziale device per device e
+            # su una rete con molti host può richiedere, in totale, più del timeout di assenza
+            # (--wifi-presence-away-timeout-s) per tornare a ri-osservare un dato MAC. Nel frattempo
+            # lo sweep (chiamato anche da WifiProbeMonitor ogni ~1s sulla stessa istanza condivisa)
+            # marcherebbe "left" un device osservato a inizio ciclo ma non ancora ri-processato,
+            # anche se non se n'è mai andato — un device "di casa" già associato alla rete spesso non
+            # manda più probe request per quella rete, quindi l'ARP scan resta l'unico segnale a
+            # tenerlo vivo.
+            for _, mac in found:
+                event = self.presence_tracker.observe(mac.lower())
+                if event is not None:
+                    self._write_presence_event(event)
+
         for ip, mac in found:
             mac = mac.lower()
             seen_macs.add(mac)
@@ -534,15 +549,6 @@ class LanDiscoveryService:
                 # traffico TCP osservabile passivamente: senza, un device con tutte le porte
                 # filtrate (comune su molti smartphone/IoT) non produrrebbe mai un OS guess.
                 self.os_fingerprint_monitor.active_probe(ip, mac)
-
-            if self.presence_tracker is not None and self.presence_log is not None:
-                # Un device "di casa" già associato alla rete spesso non manda più probe request
-                # per quella rete (WifiProbeMonitor da solo non lo vedrebbe mai arrivare): l'ARP
-                # scan che lo trova online è di per sé un segnale di presenza altrettanto valido,
-                # anzi più affidabile per un device già connesso.
-                event = self.presence_tracker.observe(mac)
-                if event is not None:
-                    self._write_presence_event(event)
 
             hostname = state.hostname if state else ""
             vendor = state.vendor if state else ""
