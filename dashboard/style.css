@@ -325,7 +325,11 @@ svg { display: block; }
 .theme-menu button.active svg { color: var(--brand); }
 .theme-menu button .check { margin-left: auto; color: var(--brand); font-weight: 700; }
 
-.page { padding: 22px 24px 48px; max-width: 1320px; }
+/* Nessun tetto stretto qui: una tabella larga (Host/Network Discovery, WiFi) deve poter usare
+   tutto lo spazio disponibile invece di scrollare orizzontalmente con margine vuoto a destra. Il
+   tetto per la leggibilità del testo lungo (Help) è invece sul contenuto stesso, vedi
+   .help-section p/li più sotto — non va bene qui, penalizzerebbe ogni pagina con tabelle. */
+.page { padding: 22px 24px 48px; max-width: 1900px; }
 .page-section { margin-bottom: 20px; }
 .page-section:last-child { margin-bottom: 0; }
 
@@ -913,7 +917,7 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   width: 100%; padding: 9px 12px; border-radius: var(--radius-sm);
   border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); font-size: 0.85rem;
 }
-.field-hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 5px; line-height: 1.5; }
+.field-hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 5px; line-height: 1.5; max-width: 880px; }
 .field-hint code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 .theme-choice { display: flex; gap: 8px; }
 .theme-choice button {
@@ -932,7 +936,7 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .help-section { margin-bottom: 22px; }
 .help-section:last-child { margin-bottom: 0; }
 .help-section h3 { font-size: 0.88rem; margin: 0 0 8px; }
-.help-section p, .help-section li { font-size: 0.84rem; color: var(--text-secondary); line-height: 1.6; }
+.help-section p, .help-section li { font-size: 0.84rem; color: var(--text-secondary); line-height: 1.6; max-width: 880px; }
 .help-section ul { margin: 0; padding-left: 20px; }
 .legend-strip { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; }
 
