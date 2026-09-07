@@ -224,16 +224,28 @@ dedotta da **due fonti indipendenti**, che si sommano invece di competere:
 Un MAC è considerato assente dopo `--wifi-presence-away-timeout-s`
 (default 300s, come il BLE) senza segnali da **nessuna** delle due fonti.
 
-**`presence_config.jsonl`**: `{timestamp, ble_home_macs, wifi_home_macs}`
-Una riga scritta una sola volta ad ogni avvio del daemon, con l'elenco
-completo dei MAC "di casa" effettivamente configurati via
-`--ble-home-macs`/`--wifi-home-macs`. Serve alla dashboard, che altrimenti
-non avrebbe modo di distinguere "MAC configurato ma non ancora osservato
-online" da "MAC non configurato affatto": senza questo file il KPI
-Presence userebbe come denominatore solo i MAC che hanno già generato
-almeno un evento in `ble_presence.jsonl`/`wifi_presence.jsonl`, sottostimando
-il totale per un MAC appena aggiunto alla config (o mai più visto online,
-es. dopo una rotazione dell'indirizzo privato WiFi/BLE).
+**`daemon_config.jsonl`**:
+`{timestamp, lan_iface, wifi_iface, ble_home_macs, wifi_home_macs, home_ssids, modules}`
+Una riga scritta una sola volta ad ogni avvio del daemon, snapshot della
+configurazione effettiva: le interfacce in uso, l'elenco completo dei MAC
+"di casa" configurati via `--ble-home-macs`/`--wifi-home-macs`, gli SSID
+di casa (`--home-ssid`) e un oggetto `modules` con un booleano per ciascun
+modulo opzionale (`fingerprint`, `os_fingerprint`, `dhcp_discovery`,
+`detect_rogue_dhcp`, `dhcp_lease_source`, `deep_port_scan`,
+`arp_detection`, `trend_rollup`, `ble`, `ble_tracker_detection`,
+`ble_identity_linking`, `ble_evil_twin`, `wifi_networks`, `wifi_traffic`,
+`evil_twin`, `deauth_detection`, `capture_handshakes`) che indica se è
+realmente attivo con la configurazione corrente. Non c'è un endpoint di
+stato dedicato: senza questo file la dashboard può solo dedurre lo stato
+di un modulo dai dati già caricati, il che è ambiguo — un log assente può
+voler dire sia "modulo spento sul daemon" sia "dashboard non ancora
+collegata al file giusto" (vedi `dashboard/link-logs.sh`). Il pannello
+"Salute del sistema" in Dashboard e il denominatore del KPI Presence
+(altrimenti sottostimato per un MAC appena aggiunto alla config o mai più
+visto online) usano entrambi questo file come fonte di verità. Lo stesso
+elenco di moduli, in forma leggibile, viene anche loggato una volta ad ogni
+avvio (`journalctl -u home-sentinel` con systemd) come riepilogo unico,
+invece di doverlo ricostruire dai singoli warning sparsi nel resto del log.
 
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
@@ -415,16 +427,22 @@ a posteriori:
   `--handshake-min-frames` per la sensibilità della cattura di handshake
   parziali (meno di 4 messaggi, comunque spesso utilizzabili).
   **Canale "incollato" alla rete di casa**: un 4-way handshake dura in
-  genere meno di un secondo, troppo poco perché il normale hopping
-  round-robin su tutti i canali (`--wifi-channels`, default 13 canali a
-  `--wifi-hop-interval` 0.5s l'uno, ~1/13 del tempo per canale) riesca a
-  catturarne uno in tempi ragionevoli. Con `--capture-handshakes` attivo,
-  una volta appreso il canale della rete di casa dal suo beacon, lo
-  sniffer vi resta sintonizzato per la maggior parte del tempo (con solo
-  un giro occasionale sugli altri canali, per non perdere del tutto le
-  altre funzionalità passive di scoperta reti/deauth), aumentando di
-  molto la probabilità di essere sul canale giusto quando un client si
-  (ri)associa.
+  genere meno di un secondo (e un flood di deauth può esaurirsi in pochi
+  frame), troppo poco perché il normale hopping round-robin su tutti i
+  canali (`--wifi-channels`, default 13 canali a `--wifi-hop-interval`
+  0.5s l'uno, ~1/13 del tempo per canale) riesca a catturarlo in tempi
+  ragionevoli. Con `--capture-handshakes` o il deauth detector attivi
+  (quest'ultimo di default) *e* `--home-ssid` configurato, una volta
+  appreso il canale della rete di casa dal suo beacon, lo sniffer vi resta
+  sintonizzato per la maggior parte del tempo (con solo un giro occasionale
+  sugli altri canali, per non perdere del tutto le altre funzionalità
+  passive di scoperta reti/evil twin su altri BSSID), aumentando di molto
+  la probabilità di essere sul canale giusto quando un client si
+  (ri)associa o quando la propria rete subisce un flood di deauth. È un
+  trade-off deliberato: riduce leggermente la copertura full-spectrum per
+  l'evil twin detection sulle altre reti — disattivabile con
+  `--no-home-channel-priority` per chi preferisce il vecchio hopping
+  uniforme.
 - **Log reti WiFi adiacenti** (attivo di default quando `--wifi-iface` è in
   uso, `--no-wifi-networks` per disabilitarlo): non è un vero e proprio
   detector di sicurezza, ma usa la stessa cattura beacon dell'evil twin
@@ -728,7 +746,11 @@ anche una stima relativa di traffico (vedi `wifi_traffic.jsonl` sopra) — non
 `send_report.py` è uno script standalone, separato dal daemon continuo:
 pensato per girare periodicamente (es. una volta a settimana) tramite un
 timer systemd o cron, invia un digest via email con nuovi dispositivi, alert
-per tipo/severità e top device per traffico WiFi stimato nel periodo. Legge
+per tipo/severità, top device per traffico WiFi stimato nel periodo e un
+riepilogo di presenza BLE/WiFi (arrivi e tempo totale a casa nel periodo,
+per ciascun MAC configurato con `--ble-home-macs`/`--wifi-home-macs` —
+sezione omessa se non ci sono MAC "di casa" configurati, o se il database
+è di una versione del daemon precedente a questa feature). Legge
 sempre dallo specchio **SQLite** del daemon (`--db`, stesso path passato a
 `home_sentinel.py`), non dai JSONL — che possono essere già stati ruotati o
 solo parzialmente scaricati dalla dashboard — quindi richiede che il daemon

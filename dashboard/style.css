@@ -329,6 +329,18 @@ svg { display: block; }
 .page-section { margin-bottom: 20px; }
 .page-section:last-child { margin-bottom: 0; }
 
+/* Sotto-navigazione persistente dentro una pagina (es. WiFi/BLE: Overview/Networks/Devices/
+   Security) — un solo tab attivo alla volta, a differenza dei chip multi-toggle del radar
+   (.radar-legend-item), così le due interazioni restano visivamente distinte. */
+.page-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.page-tab {
+  padding: 9px 14px; border: none; background: none; color: var(--text-secondary);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; transition: color .15s, border-color .15s;
+}
+.page-tab:hover { color: var(--text-primary); }
+.page-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+
 /* ------------------------------------------------------------------ *
  * KPI tiles
  * ------------------------------------------------------------------ */
@@ -855,6 +867,7 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
  * ------------------------------------------------------------------ */
 
 .module-status-list { display: flex; flex-direction: column; gap: 10px; }
+.module-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; }
 .module-status-row { display: flex; align-items: flex-start; gap: 10px; }
 .module-status-row strong { display: block; font-size: 0.84rem; }
 .module-status-row span { color: var(--text-muted); font-size: 0.76rem; }
@@ -951,18 +964,6 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 }
 .info-banner svg { width: 16px; height: 16px; color: var(--brand); flex-shrink: 0; margin-top: 1px; }
 .info-banner code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
-
-.focus-banner {
-  display: flex; align-items: center; gap: 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  border-radius: var(--radius-sm);
-  padding: 10px 14px;
-  font-size: 0.82rem;
-}
-.focus-banner svg { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
-.focus-banner .dintorni-panel-more { margin-left: auto; }
 
 .tooltip {
   position: fixed;
