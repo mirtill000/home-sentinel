@@ -767,6 +767,7 @@ class WifiProbeMonitor:
         networks_log_interval: float = 30.0,
         handshake_capture: HandshakeCapture | None = None,
         home_ssids: set[str] | None = None,
+        home_channel_priority: bool = True,
         presence_tracker: PresenceTracker | None = None,
         presence_log: JsonlLogger | None = None,
     ):
@@ -785,6 +786,7 @@ class WifiProbeMonitor:
         self.networks_log_interval = networks_log_interval
         self.handshake_capture = handshake_capture
         self.home_ssids = home_ssids or set()
+        self.home_channel_priority = home_channel_priority
         self.presence_tracker = presence_tracker
         self.presence_log = presence_log
         self._current_channel = channels[0]
@@ -812,24 +814,30 @@ class WifiProbeMonitor:
 
     # Con l'hopping uniforme su tutti i canali (default 13 canali x 0.5s = un giro completo ogni
     # 6.5s), lo sniffer si trova sul canale "giusto" solo per una piccola frazione del tempo totale
-    # (~1/13): un 4-way handshake WPA dura tipicamente meno di un secondo, quindi la probabilità di
-    # essere sintonizzati sul canale dell'AP di casa proprio in quella finestra è troppo bassa per
-    # catturarne uno in tempi ragionevoli, anche con più device che si riconnettono più volte al
-    # giorno. Con --capture-handshakes attivo (richiede --home-ssid), una volta appreso il canale
-    # della rete di casa da un suo beacon (vedi _handle_beacon), lo sniffer vi resta "incollato" per
-    # la maggior parte del tempo, con solo un giro occasionale sugli altri canali per non perdere
-    # del tutto le altre funzionalità passive (adjacent networks, deauth detection, evil twin su
-    # altri BSSID) — non un compromesso "tutto o niente".
-    _HANDSHAKE_STICK_CYCLES = 8
+    # (~1/13): un 4-way handshake WPA dura tipicamente meno di un secondo, e un flood di deauth può
+    # esaurirsi in pochi frame — la probabilità di essere sintonizzati sul canale dell'AP di casa
+    # proprio in quella finestra è troppo bassa per essere utile in tempi ragionevoli. Con
+    # --capture-handshakes o il deauth detector attivi (quest'ultimo di default) *e* --home-ssid
+    # configurato, una volta appreso il canale della rete di casa da un suo beacon (vedi
+    # _handle_beacon), lo sniffer vi resta "incollato" per la maggior parte del tempo, con solo un
+    # giro occasionale sugli altri canali per non perdere del tutto le altre funzionalità passive
+    # (adjacent networks, evil twin su altri BSSID) — non un compromesso "tutto o niente".
+    #
+    # Nota: questo NON avvantaggia l'evil twin detection sulla rete di casa (anzi, ne riduce
+    # leggermente la copertura sugli altri canali, dove un AP spoofato potrebbe annidarsi) — è un
+    # trade-off deliberato a favore di handshake/deauth sulla propria rete, per questo disattivabile
+    # con --no-home-channel-priority per chi preferisce la copertura full-spectrum di prima.
+    _HOME_CHANNEL_STICK_CYCLES = 8
 
     def _hop_loop(self) -> None:
         idx = 0
         stuck_cycles = 0
         while not self.stop_event.is_set():
             sticking_to_home = (
-                self.handshake_capture is not None
+                self.home_channel_priority
+                and (self.handshake_capture is not None or self.deauth_detector is not None)
                 and self._home_channel is not None
-                and stuck_cycles < self._HANDSHAKE_STICK_CYCLES
+                and stuck_cycles < self._HOME_CHANNEL_STICK_CYCLES
             )
             if sticking_to_home:
                 channel = self._home_channel
@@ -1397,6 +1405,28 @@ class TrendRollupService:
 # Entry point
 # --------------------------------------------------------------------------
 
+# Etichette leggibili per il riepilogo di avvio e per "modules" in daemon_config.jsonl (le chiavi
+# devono restare allineate a quelle costruite in main(), vedi la variabile "modules" lì).
+MODULE_LABELS = {
+    "fingerprint": "Device fingerprint (--fingerprint)",
+    "os_fingerprint": "OS fingerprint (--os-fingerprint)",
+    "dhcp_discovery": "DHCP client discovery (--dhcp-discovery)",
+    "detect_rogue_dhcp": "Rogue DHCP detection (--detect-rogue-dhcp)",
+    "dhcp_lease_source": "DHCP lease cross-check (--dhcp-lease-source)",
+    "deep_port_scan": "Deep port scan (--deep-port-scan)",
+    "arp_detection": "ARP spoofing detection",
+    "trend_rollup": "Daily trend rollup",
+    "ble": "BLE scan (--ble)",
+    "ble_tracker_detection": "BLE tracker detection",
+    "ble_identity_linking": "BLE identity link suggestions",
+    "ble_evil_twin": "BLE evil twin/spoofing (--ble-watch-names)",
+    "wifi_networks": "Adjacent WiFi networks",
+    "wifi_traffic": "Estimated WiFi traffic",
+    "evil_twin": "WiFi evil twin detection (--home-ssid)",
+    "deauth_detection": "Deauth/disassoc flood detection",
+    "capture_handshakes": "WPA handshake capture (--capture-handshakes)",
+}
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Home Sentinel - discovery LAN + monitor probe WiFi")
     p.add_argument("--subnet", required=True, help="Subnet CIDR da scansionare, es. 192.168.1.0/24")
@@ -1782,14 +1812,16 @@ def parse_args() -> argparse.Namespace:
         "per privacy: alzalo se noti falsi 'left')",
     )
     p.add_argument(
-        "--presence-config-log",
-        default="/var/log/home-sentinel/presence_config.jsonl",
-        help="Percorso file JSON Lines su cui viene scritto, una volta ad ogni avvio, l'elenco dei "
-        "MAC 'di casa' configurati (--ble-home-macs/--wifi-home-macs): serve alla dashboard, che "
-        "altrimenti non ha visibilità sui parametri del daemon, per mostrare nel KPI Presence il "
-        "denominatore corretto (n. di MAC configurati) invece di n. di MAC che hanno già generato "
-        "almeno un evento nel log — i due numeri divergono per un MAC appena aggiunto alla config o "
-        "mai ancora osservato online",
+        "--daemon-config-log",
+        default="/var/log/home-sentinel/daemon_config.jsonl",
+        help="Percorso file JSON Lines su cui viene scritto, una volta ad ogni avvio, uno snapshot "
+        "della configurazione effettiva del daemon (interfacce, MAC 'di casa' configurati, quali "
+        "moduli opzionali sono realmente attivi): serve alla dashboard, che altrimenti non ha "
+        "visibilità sui parametri del daemon, sia per il denominatore corretto del KPI Presence "
+        "(n. di MAC configurati, non solo quelli che hanno già generato un evento) sia per il "
+        "pannello 'Salute del sistema' in Dashboard, che senza questo file può solo dedurre lo "
+        "stato di un modulo dai dati già caricati (ambiguo: file mancante può voler dire sia "
+        "'modulo spento' sia 'dashboard non ancora collegata ai log giusti')",
     )
 
     p.add_argument(
@@ -1808,6 +1840,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=10,
         help="Numero minimo di frame deauth/disassoc nella finestra per generare un alert",
+    )
+    p.add_argument(
+        "--no-home-channel-priority",
+        action="store_true",
+        help="Disabilita la priorità di canale per la rete di casa: con --capture-handshakes o il "
+        "deauth detector attivi (quest'ultimo di default) *e* --home-ssid configurato, una volta "
+        "appreso il canale della rete di casa dal suo beacon lo sniffer vi resta incollato per la "
+        "maggior parte del tempo invece di continuare l'hopping uniforme su tutti i canali — "
+        "aumenta molto la probabilità di catturare un handshake WPA o un flood di deauth sulla "
+        "propria rete, a scapito di una copertura leggermente ridotta su altri canali per l'evil "
+        "twin detection. Passa questo flag per tornare all'hopping uniforme (utile se il tuo "
+        "interesse principale è monitorare le reti dei vicini, non la propria)",
     )
 
     p.add_argument(
@@ -2028,6 +2072,7 @@ def main() -> None:
             networks_log_interval=args.wifi_networks_interval,
             handshake_capture=handshake_capture,
             home_ssids=home_ssids,
+            home_channel_priority=not args.no_home_channel_priority,
             presence_tracker=wifi_presence_tracker, presence_log=wifi_presence_log,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
@@ -2040,6 +2085,7 @@ def main() -> None:
 
     ble_log = None
     ble_home_macs: set[str] = set()
+    ble_watch_names: set[str] = set()
     if args.ble:
         ble_log = make_logger(args.ble_log)
 
@@ -2081,17 +2127,55 @@ def main() -> None:
     else:
         LOG.info("Nessun --ble indicato: modulo scan BLE disabilitato")
 
-    # Scritto una sola volta all'avvio: la dashboard legge da qui l'elenco dei MAC "di casa"
-    # effettivamente configurati, perché altrimenti (leggendo solo ble_presence.jsonl/
-    # wifi_presence.jsonl) non avrebbe modo di distinguere "MAC configurato ma mai ancora
-    # osservato online" da "MAC non configurato affatto" — le due situazioni non vanno confuse
-    # nel denominatore del KPI Presence.
-    presence_config_log = make_logger(args.presence_config_log)
-    presence_config_log.write({
+    # Scritto una sola volta all'avvio: la dashboard non ha altrimenti alcuna visibilità sui
+    # parametri del daemon (niente endpoint di stato dedicato, solo file JSONL). Da qui legge sia
+    # l'elenco dei MAC "di casa" configurati (serve al denominatore corretto del KPI Presence: un
+    # MAC configurato ma mai ancora osservato online va distinto da uno non configurato affatto)
+    # sia quali moduli opzionali sono realmente attivi (pannello "Salute del sistema" in
+    # Dashboard) — calcolato come funzione pura della configurazione, non dallo stato degli
+    # oggetti effettivamente costruiti, perché detector come evil_twin_detector/deauth_detector
+    # esistono solo dentro lo scope del blocco "if args.wifi_iface" più sopra.
+    modules = {
+        "fingerprint": bool(args.fingerprint),
+        "os_fingerprint": bool(args.os_fingerprint),
+        "dhcp_discovery": bool(args.dhcp_discovery),
+        "detect_rogue_dhcp": bool(args.detect_rogue_dhcp),
+        "dhcp_lease_source": bool(args.dhcp_lease_source),
+        "deep_port_scan": bool(args.deep_port_scan),
+        "arp_detection": not args.no_arp_detection,
+        "trend_rollup": bool(sqlite_store is not None and not args.no_trend_rollup),
+        "ble": bool(args.ble),
+        "ble_tracker_detection": bool(args.ble and not args.no_ble_tracker_detection),
+        "ble_identity_linking": bool(args.ble and not args.no_ble_identity_linking),
+        "ble_evil_twin": bool(args.ble and ble_watch_names),
+        "wifi_networks": bool(args.wifi_iface and not args.no_wifi_networks),
+        "wifi_traffic": bool(args.wifi_iface and not args.no_wifi_traffic),
+        "evil_twin": bool(args.wifi_iface and home_ssids),
+        "deauth_detection": bool(args.wifi_iface and not args.no_deauth_detection),
+        "capture_handshakes": bool(args.wifi_iface and args.capture_handshakes and home_ssids),
+    }
+
+    daemon_config_log = make_logger(args.daemon_config_log)
+    daemon_config_log.write({
         "timestamp": now_iso(),
+        "lan_iface": args.lan_iface,
+        "wifi_iface": args.wifi_iface or None,
         "ble_home_macs": sorted(ble_home_macs),
         "wifi_home_macs": sorted(wifi_home_macs),
+        "home_ssids": sorted(home_ssids),
+        "modules": modules,
     })
+
+    # Riepilogo leggibile in un unico punto del journal, invece di doverlo ricostruire mentalmente
+    # dai singoli warning sparsi nel resto di questa funzione (che restano al loro posto, per il
+    # contesto immediato di *perché* un modulo è disattivo — questo è solo la vista d'insieme).
+    LOG.info(
+        "Home Sentinel avviato — moduli opzionali:\n%s",
+        "\n".join(
+            f"  [{'ON ' if modules[key] else 'off'}] {label}"
+            for key, label in MODULE_LABELS.items()
+        ),
+    )
 
     dhcp_events_log = None
     if args.detect_rogue_dhcp or args.dhcp_discovery:
@@ -2138,7 +2222,7 @@ def main() -> None:
             dhcp_leases_log.close()
         if trend_rollup_log:
             trend_rollup_log.close()
-        presence_config_log.close()
+        daemon_config_log.close()
         alerts_log.close()
         if sqlite_store:
             sqlite_store.close()
