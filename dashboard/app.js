@@ -2873,24 +2873,38 @@ function renderWifiPage(container) {
  * filesystem del Pi (percorso mostrato) — va prelevato via scp/sftp per un audit offline con
  * strumenti come aircrack-ng/hashcat, la dashboard non lo apre né lo scarica.
  */
+/** Vero solo se i messaggi catturati bastano davvero a un tentativo di cracking offline: serve
+ * l'ANonce (da M1, o M3 che lo ripete) insieme a SNonce+MIC (solo in M2) — la stessa condizione
+ * che il daemon usa per decidere se salvare la cattura (vedi _has_crackable_pair in
+ * sentinel_handshake.py). Una riga più vecchia di quel fix può comunque avere solo un messaggio
+ * isolato (es. "1/4 (2)"): utile distinguerla a colpo d'occhio da una davvero pronta per
+ * aircrack-ng/hashcat, invece di scoprirlo solo al momento dell'audit. */
+function handshakeHasCrackablePair(messages) {
+  if (!Array.isArray(messages)) return false;
+  return messages.includes(2) && (messages.includes(1) || messages.includes(3));
+}
+
 function renderHandshakeCapturesTable(container) {
   const rows = state.handshakeRows.slice().sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
   container.innerHTML = `
     <div class="card-head">
       <h2>Handshake captures</h2>
-      <span class="card-sub">passive WPA/WPA2 4-way handshake capture for the home networks in <code>--home-ssid</code>, for offline password-strength auditing (aircrack-ng/hashcat) — no password is ever stored in clear text, and no frame is ever sent to trigger this</span>
+      <span class="card-sub">passive WPA/WPA2 4-way handshake capture for the home networks in <code>--home-ssid</code>, for offline password-strength auditing (aircrack-ng/hashcat) — no password is ever stored in clear text, and no frame is ever sent to trigger this. Rows highlighted in green have a usable message pair (2 with 1 and/or 3); the rest are logged but likely won't crack with aircrack-ng/hashcat.</span>
     </div>
     <div class="table-scroll">
       <table class="data-table">
         <thead><tr><th>Timestamp</th><th>SSID</th><th>BSSID</th><th>Station</th><th>Messages</th><th>Pcap file</th></tr></thead>
-        <tbody>${rows.map((r) => `<tr>
+        <tbody>${rows.map((r) => {
+          const usable = handshakeHasCrackablePair(r.messages);
+          return `<tr${usable ? ` class="row-usable" title="Has a usable message pair (2 with 1 and/or 3) — ready for aircrack-ng/hashcat"` : ""}>
           <td>${formatTs(r.timestamp)}</td>
           <td>${escapeHtml(r.ssid) || '<span class="muted">—</span>'}</td>
           <td class="mono">${escapeHtml(r.bssid)}</td>
           <td class="mono">${escapeHtml(r.sta_mac)}</td>
           <td>${Array.isArray(r.messages) && r.messages.length ? `${r.messages.length}/4 (${r.messages.join(",")})` : `${r.frame_count || 0} frame`}</td>
           <td class="mono" title="${escapeHtml(r.pcap_path)}">${escapeHtml((r.pcap_path || "").split("/").pop())}</td>
-        </tr>`).join("") || '<tr><td colspan="6"><p class="empty-state">No handshake captured yet — enable <code>--capture-handshakes</code> (requires <code>--home-ssid</code>) on the daemon, or check the data source in Settings.</p></td></tr>'}</tbody>
+        </tr>`;
+        }).join("") || '<tr><td colspan="6"><p class="empty-state">No handshake captured yet — enable <code>--capture-handshakes</code> (requires <code>--home-ssid</code>) on the daemon, or check the data source in Settings.</p></td></tr>'}</tbody>
       </table>
     </div>`;
 }

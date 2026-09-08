@@ -557,6 +557,8 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .data-table tbody tr:hover { background: var(--surface-2); }
 .data-table tbody tr.row-flagged { background: var(--status-critical-wash); }
 .data-table tbody tr.row-flagged:hover { background: var(--status-critical-wash); filter: brightness(0.95); }
+.data-table tbody tr.row-usable { background: var(--status-good-wash); }
+.data-table tbody tr.row-usable:hover { background: var(--status-good-wash); filter: brightness(0.95); }
 .mono { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 
 .source-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--text-secondary); font-weight: 600; }
