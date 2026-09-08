@@ -3521,7 +3521,7 @@ const CLI_FLAG_GROUPS = [
   {
     title: "WiFi presence",
     flags: [
-      ["--wifi-home-macs", "\"Home\" WiFi MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated — same principle as --ble-home-macs on the WiFi side. Detected both by the ARP scan (--lan-iface, works even without --wifi-iface: a device already connected is already present) and, if --wifi-iface is active, by probe requests (useful for a device not yet connected)."],
+      ["--wifi-home-macs", "\"Home\" WiFi MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated — same principle as --ble-home-macs on the WiFi side. Adds up with (doesn't replace) any wifi_mac set on a device in --config's \"devices\" section. Detected both by the ARP scan (--lan-iface, works even without --wifi-iface: a device already connected is already present) and, if --wifi-iface is active, by probe requests (useful for a device not yet connected)."],
       ["--wifi-presence-log", "Path of the JSON Lines file for WiFi arrival/departure events (default: /var/log/home-sentinel/wifi_presence.jsonl)."],
       ["--wifi-presence-away-timeout-s", "Seconds without a probe request from a \"home\" MAC before considering it away — same default as BLE, but WiFi probes can be less frequent/predictable due to MAC randomization and reduced probing for privacy; raise it if you notice false \"left\" events (default: 300)."],
     ],
@@ -3540,7 +3540,7 @@ const CLI_FLAG_GROUPS = [
       ["--ble-identity-log", "Path of the JSON Lines file for BLE identity link suggestions (default: /var/log/home-sentinel/ble_identity_links.jsonl)."],
       ["--ble-identity-rotation-window-s", "Maximum window, in seconds, between a MAC disappearing and a new one appearing with the same advertised signature, for them to be suggested as the same device (default: 1200)."],
       ["--ble-watch-names", "\"Home\" BLE names to monitor for possible spoofing/cloning (e.g. a smart lock), comma-separated."],
-      ["--ble-home-macs", "\"Home\" BLE MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated."],
+      ["--ble-home-macs", "\"Home\" BLE MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated. Adds up with (doesn't replace) any ble_mac set on a device in --config's \"devices\" section."],
       ["--ble-presence-log", "Path of the JSON Lines file for BLE arrival/departure events (default: /var/log/home-sentinel/ble_presence.jsonl)."],
       ["--ble-presence-away-timeout-s", "Seconds without an advertisement from a \"home\" MAC before considering it away (default: 300)."],
     ],
