@@ -995,6 +995,26 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .help-section ul { margin: 0; padding-left: 20px; }
 .legend-strip { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; }
 
+/* Riferimento flag CLI in Help: un <details> per gruppo (solo il primo aperto di default, 97 voci
+   tutte aperte sarebbero ingestibili), dl flag/descrizione dentro ciascuno. */
+.flag-group { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.flag-group:first-of-type { margin-top: 14px; }
+.flag-group summary {
+  cursor: pointer; font-size: 0.82rem; font-weight: 650; color: var(--text-primary);
+  display: flex; align-items: center; gap: 8px;
+}
+.flag-group-count {
+  font-size: 0.68rem; font-weight: 600; color: var(--text-muted); background: var(--surface-2);
+  padding: 1px 7px; border-radius: 999px;
+}
+.flag-list { margin: 10px 0 0; display: grid; grid-template-columns: minmax(180px, 240px) 1fr; gap: 6px 14px; }
+.flag-list dt { font-family: var(--font-mono, monospace); font-size: 0.76rem; color: var(--brand); align-self: baseline; }
+.flag-list dd { margin: 0; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.55; }
+@media (max-width: 700px) {
+  .flag-list { grid-template-columns: 1fr; }
+  .flag-list dd { margin-bottom: 6px; }
+}
+
 /* ------------------------------------------------------------------ *
  * Misc
  * ------------------------------------------------------------------ */
