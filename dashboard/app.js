@@ -3382,7 +3382,15 @@ function pickBalanced(categories, total) {
 
 /** Un modulo opzionale per riga nel pannello "System health": chiave = campo dentro
  * daemon_config.jsonl's "modules", label leggibile, flag da passare per attivarlo (mostrato solo
- * quando il modulo risulta spento, per dire subito cosa serve senza dover cercare nel README). */
+ * quando il modulo risulta spento, per dire subito cosa serve senza dover cercare nel README).
+ * `defaultOn: true` per i moduli attivi di default (il flag qui è quello che li *disattiva*,
+ * non quello che li accende — la frase mostrata cambia di conseguenza, vedi renderSystemHealthCard).
+ *
+ * Le chiavi e il loro ordine devono restare allineati a MODULE_LABELS in home_sentinel.py — è la
+ * fonte di verità (chi scrive "modules" in daemon_config.jsonl), non il contrario. Un modulo
+ * aggiunto lì e non qui sparirebbe in silenzio da questo pannello pur essendo realmente attivo:
+ * è esattamente il tipo di disallineamento successo con presence/IPv6/exposure/wifi-recurrence,
+ * introdotti lato daemon senza aggiornare questa lista. */
 const MODULE_META = {
   fingerprint: { label: "Device fingerprint", flag: "--fingerprint" },
   os_fingerprint: { label: "OS fingerprint", flag: "--os-fingerprint" },
@@ -3390,16 +3398,22 @@ const MODULE_META = {
   detect_rogue_dhcp: { label: "Rogue DHCP detection", flag: "--detect-rogue-dhcp" },
   dhcp_lease_source: { label: "DHCP lease cross-check", flag: "--dhcp-lease-source" },
   deep_port_scan: { label: "Deep port scan", flag: "--deep-port-scan" },
-  arp_detection: { label: "ARP spoofing detection", flag: "--no-arp-detection was passed" },
-  trend_rollup: { label: "Daily trend rollup", flag: "--no-trend-rollup was passed, or --no-db" },
+  ipv6_discovery: { label: "IPv6 neighbor discovery", flag: "--ipv6-discovery" },
+  exposure_audit: { label: "Internet exposure audit (UPnP)", flag: "--exposure-audit" },
+  arp_detection: { label: "ARP spoofing detection", flag: "--no-arp-detection", defaultOn: true },
+  trend_rollup: { label: "Daily trend rollup", flag: "--no-trend-rollup (or --no-db)", defaultOn: true },
   ble: { label: "BLE scan", flag: "--ble" },
   ble_tracker_detection: { label: "BLE tracker detection", flag: "--ble (and --no-ble-tracker-detection not passed)" },
   ble_identity_linking: { label: "BLE identity link suggestions", flag: "--ble (and --no-ble-identity-linking not passed)" },
   ble_evil_twin: { label: "BLE evil twin/spoofing", flag: "--ble --ble-watch-names ..." },
+  ble_presence: { label: "BLE presence tracking", flag: "--ble --ble-home-macs ... (or devices with ble_mac in --config)" },
+  wifi_presence: { label: "WiFi presence tracking", flag: "--wifi-home-macs ... (or devices with wifi_mac in --config)" },
+  presence_aware_alerts: { label: "Presence-aware alerting", flag: "--presence-aware-alerts (needs WiFi/BLE home MACs configured)" },
   wifi_networks: { label: "Adjacent WiFi networks", flag: "--wifi-iface (and --no-wifi-networks not passed)" },
   wifi_traffic: { label: "Estimated WiFi traffic", flag: "--wifi-iface (and --no-wifi-traffic not passed)" },
   evil_twin: { label: "WiFi evil twin detection", flag: "--wifi-iface --home-ssid ..." },
   deauth_detection: { label: "Deauth/disassoc flood detection", flag: "--wifi-iface (and --no-deauth-detection not passed)" },
+  wifi_recurring_devices: { label: "Recurring unknown WiFi devices", flag: "--wifi-iface --wifi-recurrence-detection" },
   capture_handshakes: { label: "WPA handshake capture", flag: "--wifi-iface --capture-handshakes --home-ssid ..." },
 };
 
@@ -3432,9 +3446,12 @@ function renderSystemHealthCard(container) {
     <div class="module-status-grid">
       ${Object.entries(MODULE_META).map(([key, meta]) => {
         const active = !!modules[key];
+        const offText = meta.defaultOn
+          ? `Off — disabled with ${escapeHtml(meta.flag)}`
+          : `Off — enable with ${escapeHtml(meta.flag)}`;
         return `<div class="module-status-row">
           <span class="module-status-dot tone-${active ? "good" : "muted"}"></span>
-          <div><strong>${escapeHtml(meta.label)}</strong><span>${active ? "Active" : `Off — enable with ${escapeHtml(meta.flag)}`}</span></div>
+          <div><strong>${escapeHtml(meta.label)}</strong><span>${active ? "Active" : offText}</span></div>
         </div>`;
       }).join("")}
     </div>
