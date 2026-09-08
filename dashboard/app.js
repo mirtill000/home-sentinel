@@ -3804,6 +3804,58 @@ function renderHomePresenceCard(container) {
   renderBarChart(document.getElementById("home-presence-chart"), occupancy);
 }
 
+/** Riga di alert per la card "Alerts" della Dashboard: stessa semantica visiva di alertItemHtml
+ * (icona colorata per severità, device collegato) ma senza le azioni snooze/dismiss — è solo
+ * un'anteprima, le stesse azioni restano disponibili sulla pagina Alerts completa dietro "View
+ * all" (stesso pattern dei pannelli "dintorni": anteprima qui, dettaglio interattivo altrove). */
+function alertPreviewItemHtml(a) {
+  const identifier = a.mac
+    ? `<button class="link-cell" data-mac-link="${escapeHtml(a.mac)}">${escapeHtml(displayName(a.mac, a.mac))}</button>`
+    : a.ip ? `IP ${escapeHtml(a.ip)}` : null;
+  return `<div class="alert-item">
+    <span class="alert-icon sev-${a.severity}">${ICON(a.icon || "alert-triangle")}</span>
+    <div class="alert-body">
+      <div class="alert-title">${escapeHtml(a.title)}</div>
+      <div class="alert-desc">${escapeHtml(a.desc)}</div>
+      <div class="alert-meta"><span title="${escapeHtml(formatTs(a.ts ? new Date(a.ts).toISOString() : ""))}">${formatRelativeTime(a.ts)}</span>${identifier ? `<span>${identifier}</span>` : ""}</div>
+    </div>
+  </div>`;
+}
+
+/** Card "Alerts" della Dashboard: senza, gli alert generati dai moduli di detection (ARP spoofing,
+ * evil twin, tracker BLE, porte a rischio, ecc.) non comparivano da nessuna parte in homepage — solo
+ * sulla pagina Alerts dedicata, e come badge di rischio sepolto nel pannello "Network Discovery
+ * summary" qui accanto. I 5 più urgenti (severità, poi più recenti), il resto dietro "View all". */
+function renderRecentAlertsCard(container) {
+  const active = computeAlerts().filter((a) => !isDismissed(a.id) && !isSnoozed(a.id));
+  const criticalCount = active.filter((a) => a.severity === "critical").length;
+  const severityRank = { critical: 0, serious: 1, warning: 2, info: 3 };
+  const top = active.slice()
+    .sort((a, b) => (severityRank[a.severity] ?? 4) - (severityRank[b.severity] ?? 4) || (b.ts || 0) - (a.ts || 0))
+    .slice(0, 5);
+
+  container.innerHTML = `
+    <div class="card-head">
+      <h2>Alerts</h2>
+      <span class="card-sub">${active.length
+        ? `${active.length} active${criticalCount ? `, ${criticalCount} critical` : ""} — most urgent first`
+        : "No active alerts — network looks clean"}</span>
+    </div>
+    ${top.length
+      ? `<div class="alert-list">${top.map(alertPreviewItemHtml).join("")}</div>`
+      : `<p class="empty-state">Nothing to review right now.</p>`}
+    ${active.length > top.length || top.length
+      ? `<button type="button" class="dintorni-panel-more" id="dash-alerts-view-all">View all alerts</button>`
+      : ""}
+  `;
+  container.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
+  document.getElementById("dash-alerts-view-all")?.addEventListener("click", () => {
+    navigateWithScroll("#/alerts", null);
+  });
+}
+
 /** Banner unico di "primo avvio" quando anche la sorgente obbligatoria (LAN) non è raggiungibile —
  * molto più probabile un problema di setup (daemon mai avviato, dashboard non puntata alla
  * cartella giusta) che un guasto di rete. Senza questo, l'utente vedrebbe la stessa domanda
@@ -3830,6 +3882,8 @@ function renderHouseRadarPage(container) {
       ${topKpiRowHtml()}
     </div>
 
+    <div class="page-section card" id="dashboard-alerts-mount"></div>
+
     <div class="page-section card">
       <div class="card-head">
         <h2>Nearby</h2>
@@ -3847,7 +3901,11 @@ function renderHouseRadarPage(container) {
   wireKpiNav(container, {
     "dash-hosts": () => { window.location.hash = "#/host"; },
     "dash-presence": () => navigateWithScroll("#/dashboard", "home-presence-mount"),
+    "dash-alerts": () => { window.location.hash = "#/alerts"; },
+    "dash-risk": () => { window.location.hash = "#/host"; },
+    "dash-netsec": () => navigateToWifiSection("aps"),
   });
+  renderRecentAlertsCard(document.getElementById("dashboard-alerts-mount"));
   renderHomePresenceCard(document.getElementById("home-presence-mount"));
   renderHouseRadarLegend(document.getElementById("radar-legend"));
   renderNearbyAll();
@@ -4141,6 +4199,17 @@ function topKpiRowHtml() {
   const presenceTotal = blePresence.total + wifiPresence.total;
   const presenceHome = blePresence.home + wifiPresence.home;
 
+  const activeAlerts = computeAlerts().filter((a) => !isDismissed(a.id) && !isSnoozed(a.id));
+  const criticalAlerts = activeAlerts.filter((a) => a.severity === "critical").length;
+
+  const hostSummary = computeHostSummary();
+  const riskCritical = hostSummary.risk.Critical || 0;
+  const riskHigh = hostSummary.risk.High || 0;
+  const atRisk = riskCritical + riskHigh;
+
+  const nets = computeWifiApOverview();
+  const insecureNets = nets.filter((n) => n.security === "open" || n.security === "wep").length;
+
   return `
     ${kpiTile({
       label: "Active devices", icon: "monitor", tone: "good",
@@ -4156,6 +4225,26 @@ function topKpiRowHtml() {
         ? `${blePresence.home}/${blePresence.total} BLE · ${wifiPresence.home}/${wifiPresence.total} WiFi`
         : "Configure --ble-home-macs/--wifi-home-macs to enable",
       navKey: "dash-presence",
+    })}
+    ${kpiTile({
+      label: "Active alerts", icon: "bell", tone: activeAlerts.length ? "critical" : "good",
+      value: activeAlerts.length,
+      sub: criticalAlerts ? `${criticalAlerts} critical` : activeAlerts.length ? "None critical" : "All clear",
+      navKey: "dash-alerts",
+    })}
+    ${kpiTile({
+      label: "At risk", icon: "alert-triangle", tone: atRisk ? "critical" : "good",
+      value: atRisk, valueSuffix: total ? `/ ${total}` : "",
+      sub: atRisk ? `${riskCritical} critical, ${riskHigh} high` : "No devices at elevated risk",
+      navKey: "dash-risk",
+    })}
+    ${kpiTile({
+      label: "Network security", icon: "wifi", tone: nets.length ? (insecureNets ? "critical" : "good") : "blue",
+      value: nets.length ? insecureNets : "—", valueSuffix: nets.length ? `/ ${nets.length} insecure` : "",
+      sub: nets.length
+        ? (insecureNets ? "Open or WEP nearby" : "All encrypted (WPA2/WPA3)")
+        : "Configure --wifi-iface to enable",
+      navKey: "dash-netsec",
     })}
   `;
 }
