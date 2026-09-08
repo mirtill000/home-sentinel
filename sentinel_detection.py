@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 LOG = logging.getLogger("home_sentinel")
 
@@ -39,13 +39,51 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Scala di severità, dalla meno alla più grave. "critical" esiste solo come esito
+# dell'escalation a casa vuota (--presence-aware-alerts): i rilevatori emettono al massimo "high".
+SEVERITY_ORDER = ("low", "medium", "high", "critical")
+
+
+def escalate_severity(severity: str) -> str:
+    """Un gradino più su nella scala, saturando in cima (e lasciando invariata una severità
+    sconosciuta, invece di inventarne una)."""
+    if severity not in SEVERITY_ORDER:
+        return severity
+    return SEVERITY_ORDER[min(SEVERITY_ORDER.index(severity) + 1, len(SEVERITY_ORDER) - 1)]
+
+
 class AlertManager:
+    """Imbuto unico di ogni alert del daemon (JSON Lines + specchio SQLite + log WARNING).
+
+    Essendo l'unico punto di passaggio, è anche il posto giusto per il contesto trasversale a
+    tutti i rilevatori: ogni alert porta con sé `home_occupied` (qualcuno era in casa quando è
+    successo?) e, con --presence-aware-alerts, viene alzato di un gradino di severità se la casa
+    era vuota — lo stesso evento vale di più quando non c'è nessuno a spiegarlo.
+    """
+
     def __init__(self, log, store=None):
         self.log = log
         self.store = store
+        self.occupancy = None
+        self.escalate_when_empty = False
+
+    def set_occupancy(self, occupancy, escalate_when_empty: bool = False) -> None:
+        """Collega la vista di occupazione (sentinel_presence.HomeOccupancy). Separato dal
+        costruttore perché i PresenceTracker nascono dopo l'AlertManager in main()."""
+        self.occupancy = occupancy
+        self.escalate_when_empty = escalate_when_empty
 
     def emit(self, severity: str, type_: str, message: str, mac: str | None = None,
               ip: str | None = None, details: dict | None = None) -> None:
+        details = dict(details or {})
+        home_occupied = self.occupancy.occupied() if self.occupancy is not None else None
+        if self.escalate_when_empty and home_occupied is False:
+            escalated = escalate_severity(severity)
+            if escalated != severity:
+                details["escalated_from"] = severity
+            details["escalated_reason"] = "home_empty"
+            severity = escalated
+
         alert = {
             "timestamp": _now_iso(),
             "severity": severity,
@@ -53,7 +91,8 @@ class AlertManager:
             "mac": mac,
             "ip": ip,
             "message": message,
-            "details": details or {},
+            "home_occupied": home_occupied,
+            "details": details,
         }
         self.log.write(alert)
         if self.store:
@@ -267,4 +306,68 @@ class DeauthFloodDetector:
             "possibile attacco deauth/disassoc",
             mac=source_mac or None,
             details={"count": count, "window_s": self.window_seconds, "kind": kind, "reason_code": reason_code},
+        )
+
+
+class WifiRecurrenceDetector:
+    """Device WiFi sconosciuti che ricompaiono nei dintorni in giorni distinti.
+
+    È l'equivalente WiFi del rilevamento tracker BLE, ma il criterio deve essere diverso: un
+    tracker BLE si riconosce perché *resta* vicino a lungo, mentre sul WiFi la randomizzazione
+    dei MAC (iOS 14+/Android 10+) fa sì che un device che passa ogni giorno si presenti quasi
+    sempre con un indirizzo nuovo. Cercare una presenza continuativa qui non troverebbe nulla;
+    cercare un *ritorno* su più giorni distinti invece sì, perché i MAC che sopravvivono nel
+    tempo sono proprio quelli non randomizzati — e un MAC stabile che ricompare giorno dopo
+    giorno vicino a casa, senza mai connettersi alla rete, è il segnale che interessa.
+
+    Falsi positivi attesi e accettati: il vicino di casa, o un device di casa non ancora
+    dichiarato in --wifi-home-macs. Per questo l'alert è informativo e i MAC noti (di casa o già
+    visti sulla LAN) sono esclusi tramite `known_macs_provider`.
+    """
+
+    def __init__(self, alert_manager: AlertManager, min_days: int = 3,
+                 known_macs_provider=None, history_days: int = 14):
+        self.alert_manager = alert_manager
+        self.min_days = max(2, min_days)
+        self.known_macs_provider = known_macs_provider
+        self.history_days = history_days
+        self._days_by_mac: dict[str, set[str]] = {}
+        self._alerted: set[str] = set()
+
+    def _is_known(self, mac: str) -> bool:
+        if self.known_macs_provider is None:
+            return False
+        try:
+            return mac in self.known_macs_provider()
+        except Exception:  # un provider rotto non deve zittire il rilevatore
+            LOG.debug("known_macs_provider fallito", exc_info=True)
+            return False
+
+    def observe(self, mac: str, rssi: int | None = None, now: float | None = None) -> None:
+        mac = (mac or "").lower()
+        if not mac or mac in self._alerted or self._is_known(mac):
+            return
+
+        moment = datetime.fromtimestamp(now, timezone.utc) if now is not None else datetime.now(timezone.utc)
+        day = moment.date().isoformat()
+        days = self._days_by_mac.setdefault(mac, set())
+        if day in days:
+            return
+        days.add(day)
+
+        # Finestra scorrevole: solo i giorni recenti contano, altrimenti un MAC visto una volta
+        # ogni sei mesi finirebbe comunque per accumulare abbastanza giorni da far scattare l'alert.
+        cutoff = (moment.date() - timedelta(days=self.history_days)).isoformat()
+        days = {d for d in days if d >= cutoff}
+        self._days_by_mac[mac] = days
+
+        if len(days) < self.min_days:
+            return
+        self._alerted.add(mac)
+        self.alert_manager.emit(
+            "medium", "wifi_ricorrente",
+            f"Device WiFi sconosciuto {mac} rilevato nei dintorni in {len(days)} giorni distinti "
+            f"(ultimi {self.history_days} giorni) senza mai connettersi alla rete",
+            mac=mac,
+            details={"days": sorted(days), "distinct_days": len(days), "last_rssi": rssi},
         )

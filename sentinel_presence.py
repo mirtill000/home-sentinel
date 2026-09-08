@@ -45,6 +45,18 @@ class PresenceTracker:
                 entry["last_seen"] = now
             return event
 
+    def macs_home(self, now: float | None = None) -> set[str]:
+        """MAC attualmente presenti, senza generare né consumare eventi (a differenza di
+        observe/sweep, questa è una semplice lettura). Il timeout è applicato anche qui: un MAC
+        silenzioso da più di away_timeout_seconds non risulta a casa nemmeno se lo sweep
+        periodico non è ancora passato a registrarne l'uscita."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            return {
+                mac for mac, entry in self._state.items()
+                if entry["home"] and (now - entry["last_seen"]) <= self.away_timeout_seconds
+            }
+
     def sweep(self, now: float | None = None) -> list[dict]:
         """Da chiamare periodicamente (es. ogni secondo, dallo stesso loop di scan/sniff): rileva
         le uscite di casa (timeout senza nuovi eventi)."""
@@ -60,3 +72,36 @@ class PresenceTracker:
                     })
                     entry["home"] = False
         return events
+
+
+class HomeOccupancy:
+    """Vista aggregata su più PresenceTracker (WiFi + BLE): "c'è qualcuno in casa?".
+
+    Serve ai consumatori che devono decidere qualcosa in base all'occupazione — oggi la severità
+    degli alert (--presence-aware-alerts) — senza doversi occupare di quale radio abbia visto
+    chi: un device configurato su entrambe le radio conta una volta sola, e basta un solo MAC
+    presente su una qualsiasi delle due perché la casa risulti occupata.
+    """
+
+    def __init__(self, trackers: list[PresenceTracker | None]):
+        self.trackers = [t for t in trackers if t is not None]
+
+    @property
+    def configured(self) -> bool:
+        """True solo se almeno un MAC "di casa" è stato configurato: senza, l'occupazione non è
+        sconosciuta *per ora*, è proprio un'informazione che il daemon non può avere."""
+        return any(t.home_macs for t in self.trackers)
+
+    def macs_home(self, now: float | None = None) -> set[str]:
+        macs: set[str] = set()
+        for tracker in self.trackers:
+            macs |= tracker.macs_home(now)
+        return macs
+
+    def occupied(self, now: float | None = None) -> bool | None:
+        """True (qualcuno in casa), False (casa vuota) o None se il tracking presenza non è
+        configurato — tre stati distinti, perché "non lo so" non va confuso con "non c'è nessuno":
+        è esattamente la distinzione su cui si regge l'escalation degli alert a casa vuota."""
+        if not self.configured:
+            return None
+        return bool(self.macs_home(now))
