@@ -73,9 +73,25 @@ def _extract_bssid_sta(pkt) -> tuple[str, str]:
     return pkt.addr3 or "", pkt.addr2 or ""  # ad-hoc/WDS: raro in questo contesto, fallback
 
 
+def _has_crackable_pair(messages: set[int]) -> bool:
+    """Vero solo se i messaggi già raccolti bastano davvero a un tentativo di cracking offline:
+    serve l'ANonce (portato da M1, e ripetuto da M3) insieme a SNonce+MIC (presenti solo in M2)
+    — è la coppia minima che aircrack-ng/hashcat usano per verificare una password candidata.
+    Un M3+M4 da soli, o più copie ritrasmesse dello stesso messaggio (frequenti su un client che
+    fatica a rispondere), non bastano: senza questo controllo il modulo poteva salvare un .pcap
+    che aircrack-ng avrebbe comunque rifiutato con "0 handshake"."""
+    return 2 in messages and (1 in messages or 3 in messages)
+
+
 class HandshakeCapture:
     """Accumula i frame EAPOL per coppia (bssid, mac stazione) e salva un .pcap quando ne ha
     raccolti abbastanza da essere utili per un tentativo di audit offline."""
+
+    # Tetto ai frame accumulati per una singola coppia (bssid, stazione) prima di forzare una
+    # decisione (salvare se comunque utile, altrimenti scartare): senza, un client che continua a
+    # ritentare senza mai completare l'handshake (es. password sbagliata su un dispositivo ospite,
+    # o frame persi ripetutamente) terrebbe la sessione in memoria all'infinito.
+    _MAX_SESSION_FRAMES = 20
 
     def __init__(
         self,
@@ -93,11 +109,20 @@ class HandshakeCapture:
         self.window_seconds = window_seconds
         self.min_frames = min_frames
         self._known_bssids: dict[str, str] = {}  # bssid -> ssid, dai beacon delle reti "di casa"
+        self._beacons: dict[str, object] = {}  # bssid -> ultimo pacchetto beacon visto
         self._sessions: dict[tuple[str, str], dict] = {}
 
-    def observe_beacon(self, ssid: str, bssid: str) -> None:
+    def observe_beacon(self, ssid: str, bssid: str, pkt=None) -> None:
         if ssid in self.watched_ssids and bssid:
-            self._known_bssids[bssid.lower()] = ssid
+            bssid = bssid.lower()
+            self._known_bssids[bssid] = ssid
+            # Il beacon vero e proprio (non solo ssid/bssid come stringhe) serve a _flush per
+            # scrivere l'ESSID nel .pcap: senza un frame che lo dichiari, aircrack-ng non riesce
+            # ad associarlo al BSSID e ad ogni tentativo di audit richiede di ripeterlo a mano
+            # con -e. Parametro opzionale per restare compatibile con chi chiama solo con le
+            # stringhe (es. i test).
+            if pkt is not None:
+                self._beacons[bssid] = pkt
 
     def observe_eapol(self, pkt) -> None:
         bssid, sta = _extract_bssid_sta(pkt)
@@ -120,26 +145,37 @@ class HandshakeCapture:
         if msg_no:
             session["messages"].add(msg_no)
 
-        # Handshake completo (tutti e 4 i messaggi visti, o 4 frame comunque raccolti anche
-        # se qualcuno non è stato classificato): non serve aspettare oltre.
-        if len(session["frames"]) >= 4:
+        # Handshake completo e inequivocabile (tutti e quattro i messaggi classificati, non solo
+        # 4 frame qualunque): flushare su un semplice conteggio bastava a produrre un .pcap con
+        # 4 ritrasmissioni dello stesso messaggio, che aircrack-ng legge ma scarta come "0
+        # handshake" — vedi _has_crackable_pair.
+        if {1, 2, 3, 4} <= session["messages"]:
             self._flush(ssid, bssid, sta, session)
+            del self._sessions[key]
+        elif len(session["frames"]) >= self._MAX_SESSION_FRAMES:
+            # Troppi frame per essere solo le normali ritrasmissioni di un handshake ancora in
+            # corso (es. un client che continua a riprovare senza completarlo mai): salva se
+            # quello raccolto finora basta comunque a un tentativo di cracking, altrimenti scarta
+            # invece di continuare ad accumulare senza limite.
+            if _has_crackable_pair(session["messages"]):
+                self._flush(ssid, bssid, sta, session)
             del self._sessions[key]
 
     def sweep(self) -> None:
-        """Da chiamare periodicamente (ogni ciclo di sniff, ~1s): salva le sessioni rimaste
-        ferme per --handshake-window-s con abbastanza frame da valere la pena — senza questo,
-        una cattura di soli 2-3 messaggi (comunque utile per un tentativo di audit offline)
-        resterebbe in memoria per sempre se il quarto messaggio non arriva mai."""
+        """Da chiamare periodicamente (ogni ciclo di sniff, ~1s): decide delle sessioni rimaste
+        ferme per --handshake-window-s — salvate se contengono una coppia di messaggi
+        effettivamente utilizzabile per un tentativo di cracking (vedi _has_crackable_pair),
+        scartate altrimenti. Sempre rimosse dalla memoria dopo il timeout, riuscita o no: senza,
+        un handshake mai completato (password sbagliata su un dispositivo ospite, frame persi)
+        vi resterebbe per sempre."""
         now = time.time()
         for key, session in list(self._sessions.items()):
-            if len(session["frames"]) < self.min_frames:
-                continue
             if (now - session["last_ts"]) < self.window_seconds:
                 continue
             bssid, sta = key
-            ssid = self._known_bssids.get(bssid, "")
-            self._flush(ssid, bssid, sta, session)
+            if len(session["frames"]) >= self.min_frames and _has_crackable_pair(session["messages"]):
+                ssid = self._known_bssids.get(bssid, "")
+                self._flush(ssid, bssid, sta, session)
             del self._sessions[key]
 
     def _flush(self, ssid: str, bssid: str, sta: str, session: dict) -> None:
@@ -149,8 +185,14 @@ class HandshakeCapture:
         ts_label = _now_iso().replace(":", "-").replace("+00-00", "Z")
         filename = f"{_sanitize_filename_part(ssid)}_{bssid.replace(':', '')}_{ts_label}.pcap"
         path = self.pcap_dir / filename
+        # Il beacon per primo nel file: è l'unico frame che dichiara l'ESSID, senza il quale
+        # aircrack-ng mostra la colonna ESSID vuota e richiede -e ad ogni tentativo di audit
+        # invece di riconoscere subito la rete dal .pcap. Assente solo se non ne è mai stato
+        # visto uno per questo BSSID (raro: bastano pochi secondi di sniff sul canale giusto).
+        beacon = self._beacons.get(bssid)
+        frames = ([beacon] if beacon is not None else []) + session["frames"]
         try:
-            wrpcap(str(path), session["frames"])
+            wrpcap(str(path), frames)
         except OSError:
             LOG.exception("Impossibile scrivere il pcap dell'handshake in %s", path)
             return
