@@ -33,6 +33,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -190,6 +191,63 @@ def scan_ports(ip: str, ports: list[int], timeout: float = 0.5) -> list[int]:
             if result:
                 open_ports.append(result)
     return sorted(open_ports)
+
+
+def _default_route_iface() -> str | None:
+    """Interfaccia della rotta di default (`ip route show default`), usata da detect_subnet
+    quando --lan-iface non è specificato: sulla stragrande maggioranza dei Raspberry Pi domestici
+    è l'unica interfaccia con una rotta verso Internet, quindi anche quella giusta per lo scan
+    ARP della LAN."""
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "route", "show", "default"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.search(r"\bdev\s+(\S+)", out)
+    return match.group(1) if match else None
+
+
+def _iface_ipv4_cidr(iface: str) -> str | None:
+    """Indirizzo IPv4/prefisso assegnato a `iface` (`ip addr show`), che sia stato ottenuto via
+    DHCP o configurato staticamente: per lo scan ARP non fa differenza, serve solo a dedurre la
+    subnet da scansionare senza chiederla esplicitamente da riga di comando."""
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", iface],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+/\d+)", out)
+    return match.group(1) if match else None
+
+
+def detect_subnet(iface: str | None) -> str:
+    """Deduce la subnet CIDR da scansionare dalla configurazione IPv4 della scheda di rete
+    (--lan-iface, o quella della rotta di default se non specificata) invece di richiederla
+    esplicitamente da riga di comando: l'indirizzo IP del Pi stesso sulla LAN — assegnato via
+    DHCP o staticamente, per lo scan non fa differenza — insieme alla sua netmask individua già
+    la subnet giusta. Casi limite (VLAN/subnet multiple sulla stessa interfaccia, indirizzo
+    ancora non assegnato all'avvio) restano gestibili impostando "subnet" nel file di
+    configurazione (--config), che va sempre a sovrascrivere il rilevamento automatico."""
+    target_iface = iface or _default_route_iface()
+    if not target_iface:
+        raise SystemExit(
+            "Impossibile determinare automaticamente la subnet: nessuna rotta di default "
+            "trovata. Specifica l'interfaccia con --lan-iface, oppure imposta \"subnet\" nel "
+            "file di configurazione (--config) per bypassare il rilevamento automatico."
+        )
+    cidr = _iface_ipv4_cidr(target_iface)
+    if not cidr:
+        raise SystemExit(
+            f"Impossibile determinare la subnet: l'interfaccia '{target_iface}' non ha un "
+            "indirizzo IPv4 assegnato (verifica che sia up e configurata, via DHCP o "
+            "staticamente). In alternativa imposta \"subnet\" nel file di configurazione "
+            "(--config)."
+        )
+    return str(ipaddress.ip_network(cidr, strict=False))
 
 
 def arp_scan(subnet: str, iface: str | None, timeout: float = 2.0, retries: int = 2, inter: float = 0.002) -> list[tuple[str, str]]:
@@ -1402,6 +1460,56 @@ class TrendRollupService:
 
 
 # --------------------------------------------------------------------------
+# File di configurazione opzionale (--config)
+# --------------------------------------------------------------------------
+
+def load_config_file(path: str) -> dict:
+    """Carica il file di configurazione opzionale (--config, JSON — vedi config.example.json).
+    Un file non passato affatto (path vuoto) non arriva neppure qui; uno passato esplicitamente
+    ma assente o non valido è invece un errore fatale — proseguire silenziosamente con una
+    configurazione parziale (es. alias dei device persi) è peggio che fermarsi subito con un
+    messaggio chiaro."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        raise SystemExit(f"File di configurazione non trovato: {config_path}")
+    try:
+        data = json.loads(config_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"File di configurazione '{config_path}' non è JSON valido: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"File di configurazione '{config_path}': l'elemento radice deve essere un oggetto JSON")
+    return data
+
+
+def devices_from_config(config: dict) -> tuple[set[str], set[str], dict[str, str]]:
+    """Estrae dalla sezione 'devices' del file di configurazione i MAC WiFi/BLE 'di casa' (si
+    sommano a quelli eventualmente passati con --wifi-home-macs/--ble-home-macs, non li
+    sostituiscono) e la mappa mac -> alias per la dashboard (daemon_config.jsonl, campo
+    'device_aliases')."""
+    devices = config.get("devices", [])
+    if not isinstance(devices, list):
+        raise SystemExit("File di configurazione: 'devices' deve essere una lista")
+    wifi_macs: set[str] = set()
+    ble_macs: set[str] = set()
+    aliases: dict[str, str] = {}
+    for entry in devices:
+        if not isinstance(entry, dict):
+            raise SystemExit(f"File di configurazione: voce 'devices' non valida (deve essere un oggetto): {entry!r}")
+        name = str(entry.get("name") or "").strip()
+        wifi_mac = str(entry.get("wifi_mac") or "").strip().lower()
+        ble_mac = str(entry.get("ble_mac") or "").strip().lower()
+        if wifi_mac:
+            wifi_macs.add(wifi_mac)
+            if name:
+                aliases[wifi_mac] = name
+        if ble_mac:
+            ble_macs.add(ble_mac)
+            if name:
+                aliases[ble_mac] = name
+    return wifi_macs, ble_macs, aliases
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
@@ -1429,8 +1537,20 @@ MODULE_LABELS = {
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Home Sentinel - discovery LAN + monitor probe WiFi")
-    p.add_argument("--subnet", required=True, help="Subnet CIDR da scansionare, es. 192.168.1.0/24")
-    p.add_argument("--lan-iface", default=None, help="Interfaccia per lo scan ARP (default: routing automatico)")
+    p.add_argument(
+        "--config",
+        default="",
+        help="Percorso di un file di configurazione JSON opzionale (vedi config.example.json) "
+        "da cui leggere impostazioni comuni — per ora l'elenco dei device 'di casa' (WiFi/BLE) "
+        "con il relativo alias, e un eventuale override manuale della subnet rilevata "
+        "automaticamente. I parametri passati da riga di comando hanno sempre la precedenza "
+        "sui valori corrispondenti del file",
+    )
+    p.add_argument(
+        "--lan-iface", default=None,
+        help="Interfaccia per lo scan ARP e per il rilevamento automatico della subnet "
+        "(default: quella della rotta di default)",
+    )
     p.add_argument("--interval", type=float, default=60.0, help="Intervallo tra i cicli di scan LAN (s)")
     p.add_argument("--arp-timeout", type=float, default=2.0, help="Attesa risposte per ogni giro di scan ARP (s)")
     p.add_argument(
@@ -1913,6 +2033,16 @@ def main() -> None:
     if os.geteuid() != 0:
         LOG.warning("Processo non in esecuzione come root: ARP scan e sniffing WiFi potrebbero fallire")
 
+    config = load_config_file(args.config) if args.config else {}
+    config_wifi_macs, config_ble_macs, device_aliases = devices_from_config(config)
+
+    subnet = str(config["subnet"]).strip() if config.get("subnet") else detect_subnet(args.lan_iface)
+    LOG.info(
+        "Subnet: %s (%s)", subnet,
+        "da config.subnet" if config.get("subnet") else
+        f"rilevata da {args.lan_iface}" if args.lan_iface else "rilevata dalla rotta di default",
+    )
+
     stop_event = threading.Event()
 
     def handle_signal(signum, _frame):
@@ -1972,7 +2102,7 @@ def main() -> None:
     # attivo, WifiProbeMonitor alimenta la stessa istanza anche dai probe request (utile per un
     # device non ancora connesso, es. appena rientrato in zona), i due segnali si sommano invece
     # di competere.
-    wifi_home_macs = {m.strip().lower() for m in args.wifi_home_macs.split(",") if m.strip()}
+    wifi_home_macs = {m.strip().lower() for m in args.wifi_home_macs.split(",") if m.strip()} | config_wifi_macs
     wifi_presence_tracker = None
     wifi_presence_log = None
     if wifi_home_macs:
@@ -1982,7 +2112,7 @@ def main() -> None:
         wifi_presence_log = make_logger(args.wifi_presence_log)
 
     lan_service = LanDiscoveryService(
-        subnet=args.subnet,
+        subnet=subnet,
         iface=args.lan_iface,
         interval=args.interval,
         ports=ports,
@@ -2106,7 +2236,7 @@ def main() -> None:
         ble_watch_names = {s.strip() for s in args.ble_watch_names.split(",") if s.strip()}
         ble_evil_twin_detector = BleEvilTwinDetector(ble_watch_names, alert_manager) if ble_watch_names else None
 
-        ble_home_macs = {m.strip().lower() for m in args.ble_home_macs.split(",") if m.strip()}
+        ble_home_macs = {m.strip().lower() for m in args.ble_home_macs.split(",") if m.strip()} | config_ble_macs
         ble_presence_tracker = None
         ble_presence_log = None
         if ble_home_macs:
@@ -2134,7 +2264,9 @@ def main() -> None:
     # sia quali moduli opzionali sono realmente attivi (pannello "Salute del sistema" in
     # Dashboard) — calcolato come funzione pura della configurazione, non dallo stato degli
     # oggetti effettivamente costruiti, perché detector come evil_twin_detector/deauth_detector
-    # esistono solo dentro lo scope del blocco "if args.wifi_iface" più sopra.
+    # esistono solo dentro lo scope del blocco "if args.wifi_iface" più sopra. Include anche gli
+    # alias dei device (da --config, sezione "devices"), così la dashboard può mostrare i nomi
+    # anche a chi apre l'app per la prima volta, senza doverli reimpostare a mano per ogni MAC.
     modules = {
         "fingerprint": bool(args.fingerprint),
         "os_fingerprint": bool(args.os_fingerprint),
@@ -2158,11 +2290,13 @@ def main() -> None:
     daemon_config_log = make_logger(args.daemon_config_log)
     daemon_config_log.write({
         "timestamp": now_iso(),
+        "subnet": subnet,
         "lan_iface": args.lan_iface,
         "wifi_iface": args.wifi_iface or None,
         "ble_home_macs": sorted(ble_home_macs),
         "wifi_home_macs": sorted(wifi_home_macs),
         "home_ssids": sorted(home_ssids),
+        "device_aliases": device_aliases,
         "modules": modules,
     })
 

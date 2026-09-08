@@ -1,0 +1,18 @@
+{
+  "_comment": "Copia questo file (es. in /etc/home-sentinel/config.json) e personalizzalo, poi passa --config /etc/home-sentinel/config.json a home_sentinel.py. Il JSON non supporta commenti: questo campo '_comment' è ignorato dal daemon, usalo solo come promemoria.",
+
+  "devices": [
+    {
+      "name": "Marco",
+      "wifi_mac": "aa:bb:cc:dd:ee:01",
+      "ble_mac": "11:22:33:44:55:01"
+    },
+    {
+      "name": "Sonia",
+      "wifi_mac": "aa:bb:cc:dd:ee:02"
+    }
+  ],
+
+  "_subnet_comment": "Opzionale: sovrascrive il rilevamento automatico della subnet (dedotta di default dall'IP/netmask di --lan-iface, o dell'interfaccia della rotta di default). Utile solo in casi limite (VLAN/subnet multiple sulla stessa interfaccia). Lascia il campo assente per il rilevamento automatico.",
+  "subnet": "192.168.1.0/24"
+}
