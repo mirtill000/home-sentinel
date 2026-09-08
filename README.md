@@ -704,7 +704,7 @@ operativo, un cross-check con una fonte esterna al Pi:
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
+utilizzabile offline) con 11 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
 e alert di detection. **Dashboard è la home** (sottotitolo "Local network
 overview"): è la prima voce del menu laterale e la pagina che si apre di

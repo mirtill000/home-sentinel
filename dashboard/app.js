@@ -317,6 +317,94 @@ async function loadAllOnce() {
       state.sourceStatus[source.key] = { ok: false, count: 0, truncated: false };
     }
   }
+  try {
+    const r = await fetchJsonl(getSetting("wifiNetworksUrl"));
+    state.wifiNetworksRows = r.rows;
+    state.sourceStatus.wifiNetworks = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.wifiNetworksRows = state.wifiNetworksRows || [];
+    state.sourceStatus.wifiNetworks = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("dhcpEventsUrl"));
+    state.dhcpEventsRows = r.rows;
+    state.sourceStatus.dhcpEvents = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.dhcpEventsRows = state.dhcpEventsRows || [];
+    state.sourceStatus.dhcpEvents = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("osFingerprintUrl"));
+    state.osFingerprintRows = r.rows;
+    state.sourceStatus.osFingerprint = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.osFingerprintRows = state.osFingerprintRows || [];
+    state.sourceStatus.osFingerprint = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("dhcpLeasesUrl"));
+    state.dhcpLeasesRows = r.rows;
+    state.sourceStatus.dhcpLeases = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.dhcpLeasesRows = state.dhcpLeasesRows || [];
+    state.sourceStatus.dhcpLeases = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("trendDailyUrl"));
+    state.trendDailyRows = r.rows;
+    state.sourceStatus.trendDaily = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.trendDailyRows = state.trendDailyRows || [];
+    state.sourceStatus.trendDaily = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("bleIdentityLinksUrl"));
+    state.bleIdentityLinksRows = r.rows;
+    state.sourceStatus.bleIdentityLinks = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.bleIdentityLinksRows = state.bleIdentityLinksRows || [];
+    state.sourceStatus.bleIdentityLinks = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("blePresenceUrl"));
+    state.blePresenceRows = r.rows;
+    state.sourceStatus.blePresence = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.blePresenceRows = state.blePresenceRows || [];
+    state.sourceStatus.blePresence = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("deepScanUrl"));
+    state.deepScanRows = r.rows;
+    state.sourceStatus.deepScan = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.deepScanRows = state.deepScanRows || [];
+    state.sourceStatus.deepScan = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("handshakeUrl"));
+    state.handshakeRows = r.rows;
+    state.sourceStatus.handshake = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.handshakeRows = state.handshakeRows || [];
+    state.sourceStatus.handshake = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("wifiPresenceUrl"));
+    state.wifiPresenceRows = r.rows;
+    state.sourceStatus.wifiPresence = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.wifiPresenceRows = state.wifiPresenceRows || [];
+    state.sourceStatus.wifiPresence = { ok: false, count: 0, truncated: false };
+  }
+  try {
+    const r = await fetchJsonl(getSetting("daemonConfigUrl"));
+    state.daemonConfigRows = r.rows;
+    state.sourceStatus.daemonConfig = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  } catch {
+    state.daemonConfigRows = state.daemonConfigRows || [];
+    state.sourceStatus.daemonConfig = { ok: false, count: 0, truncated: false };
+  }
 
   state.lastFetchOk = errors.length === 0;
   if (errors.length) showError(errors.join(" — "));
