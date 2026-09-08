@@ -1006,7 +1006,7 @@ class WifiProbeMonitor:
         if self.evil_twin_detector is not None:
             self.evil_twin_detector.observe_beacon(ssid, bssid or "")
         if self.handshake_capture is not None:
-            self.handshake_capture.observe_beacon(ssid, bssid or "")
+            self.handshake_capture.observe_beacon(ssid, bssid or "", pkt)
             if ssid in self.home_ssids and channel is not None:
                 self._home_channel = channel
 

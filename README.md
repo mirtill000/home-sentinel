@@ -357,12 +357,18 @@ proprio (percorso in `pcap_path`) va in `--handshake-pcap-dir` e non
 contiene mai la password in chiaro, solo il materiale crittografico
 dell'handshake per un tentativo di audit offline con aircrack-ng/hashcat.
 `messages` è l'elenco dei messaggi 1-4 del 4-way handshake classificati
-dai flag del frame EAPOL-Key (può essere parziale, es. `[1, 2]`, se il
-terzo/quarto messaggio non sono stati catturati — comunque spesso
-sufficiente per un tentativo di cracking con dizionario), `frame_count`
-il totale dei frame EAPOL raccolti per quella sessione (bssid + MAC
-stazione), anche quelli non classificabili. Vedi "Moduli di detection"
-sotto per come e quando scatta la cattura.
+dai flag del frame EAPOL-Key: una cattura viene salvata solo se contiene
+una coppia realmente utilizzabile per un tentativo di cracking — messaggio
+2 (SNonce + MIC) insieme al messaggio 1 o 3 (ANonce), es. `[1, 2]` — non
+sul semplice numero di frame raccolti, che da solo non garantisce una
+coppia valida (tipicamente capita con un client che ritrasmette più volte
+lo stesso messaggio senza completare l'handshake). `frame_count` resta il
+totale dei frame EAPOL raccolti per quella sessione (bssid + MAC
+stazione), anche quelli non classificabili o duplicati. Il `.pcap` include
+sempre, come primo frame, l'ultimo beacon visto per quel BSSID: senza,
+strumenti come aircrack-ng non hanno modo di risalire all'ESSID dal solo
+traffico EAPOL e lo richiedono a mano ad ogni tentativo (opzione `-e`).
+Vedi "Moduli di detection" sotto per come e quando scatta la cattura.
 
 **`deep_port_scan.jsonl`** (`--deep-port-scan`, opzionale):
 `{timestamp, mac, ip, open_ports, new_ports}`
@@ -549,7 +555,13 @@ quando è successo?), `null` se il daemon non può saperlo — vedi
   che l'operatore è autorizzato a testare. Vedi `handshake_captures.jsonl`
   sopra per il formato dei metadati, `--handshake-window-s` e
   `--handshake-min-frames` per la sensibilità della cattura di handshake
-  parziali (meno di 4 messaggi, comunque spesso utilizzabili).
+  parziali (meno di 4 messaggi, comunque spesso utilizzabili — ma solo se
+  contengono una coppia realmente sfruttabile, vedi sopra). Il `.pcap`
+  include già il beacon della rete, quindi basta puntarci aircrack-ng
+  senza specificare l'ESSID a mano:
+  ```bash
+  aircrack-ng -w dizionario.txt /var/log/home-sentinel/handshakes/home_....pcap
+  ```
   **Canale "incollato" alla rete di casa**: un 4-way handshake dura in
   genere meno di un secondo (e un flood di deauth può esaurirsi in pochi
   frame), troppo poco perché il normale hopping round-robin su tutti i
