@@ -6,7 +6,8 @@
 # wifi_traffic.jsonl, wifi_networks.jsonl, dhcp_leases.jsonl,
 # trend_daily.jsonl, os_fingerprint.jsonl, dhcp_events.jsonl,
 # ble_identity_links.jsonl, ble_presence.jsonl, deep_port_scan.jsonl,
-# handshake_captures.jsonl, wifi_presence.jsonl, daemon_config.jsonl)
+# handshake_captures.jsonl, wifi_presence.jsonl, daemon_config.jsonl,
+# ipv6_neighbors.jsonl, exposure_audit.jsonl, heartbeat.jsonl)
 # funzionano subito quando la si serve da qui (es. python3 -m http.server),
 # senza toccare Impostazioni né passare parametri via URL.
 #
@@ -25,8 +26,12 @@
 # snapshot di configurazione scritto una tantum ad ogni avvio (interfacce,
 # MAC "di casa", quali moduli sono davvero attivi — serve al denominatore
 # corretto del KPI Presence e al pannello "Salute del sistema" in
-# Dashboard). Finché il modulo relativo non è attivo sul daemon, il file
-# resta semplicemente assente.
+# Dashboard); ipv6_neighbors dalla discovery IPv6 (--ipv6-discovery);
+# exposure_audit dall'audit dei port forwarding del router via UPnP
+# (--exposure-audit); heartbeat dalla prova di vita del daemon, riscritta
+# (non appesa) ogni --heartbeat-interval secondi — serve alla dashboard per
+# distinguere "rete tranquilla" da "daemon fermo". Finché il modulo relativo
+# non è attivo sul daemon, il file resta semplicemente assente.
 #
 # Uso:
 #   ./link-logs.sh [directory log sorgente]
@@ -40,7 +45,7 @@ set -euo pipefail
 SRC_DIR="${1:-/var/log/home-sentinel}"
 DEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-FILES=(lan_discovery.jsonl wifi_probes.jsonl ble_discovery.jsonl fingerprint_discovery.jsonl alerts_detection.jsonl wifi_traffic.jsonl wifi_networks.jsonl dhcp_leases.jsonl trend_daily.jsonl os_fingerprint.jsonl dhcp_events.jsonl ble_identity_links.jsonl ble_presence.jsonl deep_port_scan.jsonl handshake_captures.jsonl wifi_presence.jsonl daemon_config.jsonl)
+FILES=(lan_discovery.jsonl wifi_probes.jsonl ble_discovery.jsonl fingerprint_discovery.jsonl alerts_detection.jsonl wifi_traffic.jsonl wifi_networks.jsonl dhcp_leases.jsonl trend_daily.jsonl os_fingerprint.jsonl dhcp_events.jsonl ble_identity_links.jsonl ble_presence.jsonl deep_port_scan.jsonl handshake_captures.jsonl wifi_presence.jsonl daemon_config.jsonl ipv6_neighbors.jsonl exposure_audit.jsonl heartbeat.jsonl)
 
 for f in "${FILES[@]}"; do
   src="$SRC_DIR/$f"
