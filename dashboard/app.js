@@ -1181,8 +1181,14 @@ function sparklineSvg(values, colorVar) {
   return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${points}" fill="none" style="stroke:${colorVar}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
-function kpiTile({ label, icon, tone, value, valueSuffix, sub, subTone, sparkValues, sparkColor }) {
-  return `<div class="kpi-tile">
+/** `navKey`, se passato, rende il tile come un `<button>` cliccabile (`data-kpi-nav="navKey"`)
+ * invece di un `<div>` inerte — vedi wireKpiNav per collegarne il click a una destinazione. */
+function kpiTile({ label, icon, tone, value, valueSuffix, sub, subTone, sparkValues, sparkColor, navKey }) {
+  const tag = navKey ? "button" : "div";
+  const openTag = navKey
+    ? `<button type="button" class="kpi-tile kpi-tile-clickable" data-kpi-nav="${escapeHtml(navKey)}">`
+    : `<div class="kpi-tile">`;
+  return `${openTag}
     <div class="kpi-top">
       <span class="kpi-label">${escapeHtml(label)}</span>
       <span class="kpi-icon tone-${tone}">${ICON(icon)}</span>
@@ -1190,7 +1196,16 @@ function kpiTile({ label, icon, tone, value, valueSuffix, sub, subTone, sparkVal
     <div class="kpi-value">${value}${valueSuffix ? ` <small>${escapeHtml(valueSuffix)}</small>` : ""}</div>
     ${sub ? `<div class="kpi-sub ${subTone ? "tone-" + subTone : ""}">${escapeHtml(sub)}</div>` : ""}
     ${sparkValues && sparkValues.length ? `<div class="kpi-spark">${sparklineSvg(sparkValues, sparkColor)}</div>` : ""}
-  </div>`;
+  </${tag}>`;
+}
+
+/** Collega il click dei kpiTile() renderizzati con `navKey` dentro `container`: `handlers` mappa
+ * navKey -> callback. Stesso pattern di wirePageTabs/wireSortableHeaders (render, poi wire). */
+function wireKpiNav(container, handlers) {
+  container.querySelectorAll("[data-kpi-nav]").forEach((el) => {
+    const handler = handlers[el.dataset.kpiNav];
+    if (handler) el.addEventListener("click", handler);
+  });
 }
 
 function renderBarChart(container, buckets) {
@@ -1229,13 +1244,19 @@ function renderBarChart(container, buckets) {
   container.append(plot, ticks);
 }
 
-/** Grafico a barre orizzontali per una classifica label -> valore (già ordinata/limitata dal chiamante). */
+/** Grafico a barre orizzontali per una classifica label -> valore (già ordinata/limitata dal
+ * chiamante). `color` è una stringa CSS uniforme per tutte le barre, oppure una funzione
+ * `(label, value, index) => stringa CSS` per colorare ogni barra in base al suo significato (es.
+ * per severità, vedi computeWifiSecurityBreakdown). */
 function renderHBarChart(container, entries, color) {
   container.innerHTML = "";
   if (!entries.length) return; // CSS :empty mostra il placeholder
 
+  const resolveColor = typeof color === "function" ? color
+    : Array.isArray(color) ? (_label, _value, index) => color[index]
+    : () => color;
   const max = Math.max(...entries.map(([, value]) => value), 1);
-  for (const [label, value] of entries) {
+  entries.forEach(([label, value], index) => {
     const row = document.createElement("div");
     row.className = "hbar-row";
 
@@ -1249,7 +1270,7 @@ function renderHBarChart(container, entries, color) {
     const fill = document.createElement("div");
     fill.className = "hbar-fill";
     fill.style.width = `${Math.max((value / max) * 100, 4)}%`;
-    fill.style.background = color;
+    fill.style.background = resolveColor(label, value, index);
     attachTooltip(fill, `${label}: ${value}`);
     track.appendChild(fill);
 
@@ -1259,7 +1280,7 @@ function renderHBarChart(container, entries, color) {
 
     row.append(name, track, val);
     container.appendChild(row);
-  }
+  });
 }
 
 /* ---------------------------------------------------------------------- *
@@ -1381,6 +1402,27 @@ const WIFI_SECURITY_META = {
 function wifiSecurityBadgeHtml(security) {
   const meta = WIFI_SECURITY_META[security] || WIFI_SECURITY_META.unknown;
   return `<span class="badge risk-badge tone-${meta.tone}">${meta.label}</span>`;
+}
+
+/** Colore per tono, riusato dove un badge non basta (es. le barre di un grafico) — stessa
+ * semantica delle classi .tone-* usate ovunque nei badge. */
+const TONE_CHART_COLOR = {
+  critical: "var(--status-critical)",
+  warning: "var(--status-warning)",
+  good: "var(--status-good)",
+  muted: "var(--status-muted)",
+};
+
+/** Conteggio reti adiacenti per tipo di sicurezza, per il grafico della tab Overview — stesso
+ * ordine di WIFI_SECURITY_META, categorie senza reti omesse dal grafico. Ritorna sia le entry
+ * `[label, count]` sia i colori allineati per indice (severità: Open/WEP in rosso/ambra, WPA2/3
+ * in verde), da passare entrambi a renderHBarChart. */
+function computeWifiSecurityBreakdown() {
+  const nets = computeWifiApOverview();
+  const buckets = Object.entries(WIFI_SECURITY_META)
+    .map(([key, meta]) => ({ label: meta.label, count: nets.filter((e) => e.security === key).length, tone: meta.tone }))
+    .filter((b) => b.count > 0);
+  return { entries: buckets.map((b) => [b.label, b.count]), colors: buckets.map((b) => TONE_CHART_COLOR[b.tone]) };
 }
 
 /** 2.4GHz: canali 1-14. 5GHz: canali 36 e oltre (36-165 nella pratica). null se canale ignoto. */
@@ -2388,6 +2430,12 @@ function renderWifiPage(container) {
     ` : ""}
 
     ${tab === "overview" ? `
+      <div class="page-section">
+        <div class="card-head">
+          <h2>Adjacent networks</h2>
+          <span class="card-sub">Real WiFi networks detected around you from their own beacon frames — click a tile to jump to the matching list</span>
+        </div>
+      </div>
       <div class="page-section kpi-row">
         ${(() => {
           const nets = computeWifiApOverview();
@@ -2396,22 +2444,31 @@ function renderWifiPage(container) {
           const handshakeCount = state.handshakeRows.length;
           return `
             ${kpiTile({
+              label: "Networks detected", icon: "wifi", tone: "violet",
+              value: nets.length, sub: "adjacent networks, all time", navKey: "nets-all",
+            })}
+            ${kpiTile({
               label: "Open networks", icon: "shield", tone: openCount ? "critical" : "good",
-              value: openCount, sub: "No encryption at all", subTone: openCount ? "critical" : "good",
+              value: openCount, sub: "No encryption at all", subTone: openCount ? "critical" : "good", navKey: "nets-open",
             })}
             ${kpiTile({
               label: "WPA2/WPA3 networks", icon: "shield", tone: "good",
-              value: wpa23Count, sub: `${nets.length} networks detected total`,
+              value: wpa23Count, sub: `of ${nets.length} networks detected total`, navKey: "nets-wpa23",
             })}
             ${kpiTile({
               label: "Handshake captures", icon: "wifi", tone: handshakeCount ? "good" : "blue",
               value: handshakeCount,
               sub: handshakeCount ? "for the home networks in --home-ssid" : "None captured yet (--capture-handshakes)",
+              navKey: "handshakes",
             })}
           `;
         })()}
       </div>
-      <div class="page-section grid-2">
+      <div class="page-section grid-3">
+        <div class="card">
+          <div class="card-head"><h2>Networks by security</h2><span class="card-sub">adjacent networks, all time</span></div>
+          <div class="hbar-chart" id="chart-wifi-security" data-empty="No data"></div>
+        </div>
         <div class="card">
           <div class="card-head"><h2>Probe activity <span class="card-sub">last 24h</span></h2></div>
           <div class="bar-chart" id="chart-wifi-activity" data-empty="No data"></div>
@@ -2424,8 +2481,8 @@ function renderWifiPage(container) {
     ` : ""}
 
     ${tab === "networks" ? `
-      <div class="page-section card" id="wifi-ssid-mount"></div>
       <div class="page-section card" id="wifi-aps-mount"></div>
+      <div class="page-section card" id="wifi-ssid-mount"></div>
     ` : ""}
 
     ${tab === "devices" ? `
@@ -2444,10 +2501,28 @@ function renderWifiPage(container) {
   if (tab === "overview") {
     renderBarChart(document.getElementById("chart-wifi-activity"), hourlyCounts(state.wifiRows));
     renderHBarChart(document.getElementById("chart-wifi-channel"), wifiChannelSegments(wifiLast24h).map(([ch, n]) => [`Channel ${ch}`, n]), "var(--cat-3)");
+    const wifiSecurityBreakdown = computeWifiSecurityBreakdown();
+    renderHBarChart(document.getElementById("chart-wifi-security"), wifiSecurityBreakdown.entries, wifiSecurityBreakdown.colors);
+    const goToNetworks = (security) => {
+      state.wifiApFilters.security = security;
+      state.wifiTab = "networks";
+      savePersistedUiState({ wifiTab: "networks" });
+      renderWifiPage(container);
+    };
+    wireKpiNav(container, {
+      "nets-all": () => goToNetworks("all"),
+      "nets-open": () => goToNetworks("open"),
+      "nets-wpa23": () => goToNetworks("wpa2_wpa3"),
+      "handshakes": () => {
+        state.wifiTab = "security";
+        savePersistedUiState({ wifiTab: "security" });
+        renderWifiPage(container);
+      },
+    });
   }
   if (tab === "networks") {
-    renderWifiSsidTable(document.getElementById("wifi-ssid-mount"));
     renderWifiApsTable(document.getElementById("wifi-aps-mount"));
+    renderWifiSsidTable(document.getElementById("wifi-ssid-mount"));
   }
   if (tab === "devices") {
     renderWifiDevicesTable(document.getElementById("wifi-devices-mount"));
@@ -3182,8 +3257,6 @@ function renderHouseRadarPage(container) {
       ${topKpiRowHtml()}
     </div>
 
-    <div class="page-section card" id="home-presence-mount"></div>
-
     <div class="page-section card">
       <div class="card-head">
         <h2>Nearby</h2>
@@ -3193,6 +3266,8 @@ function renderHouseRadarPage(container) {
       <div class="dintorni-map-wrap" id="radar-mount"></div>
       <div class="dintorni-panels-grid" id="dintorni-panels"></div>
     </div>
+
+    <div class="page-section card" id="home-presence-mount"></div>
 
     <div class="page-section card" id="system-health-mount"></div>
   `;
@@ -4350,9 +4425,9 @@ function renderAiuto(container) {
     <div class="card help-section">
       <h3>Pages</h3>
       <ul>
-        <li><strong>Dashboard</strong> (home) — active hosts and unified BLE+WiFi presence at the top, then "Who's home" (one row per configured home MAC, or per linked identity if a BLE and a WiFi MAC have been explicitly linked as the same physical device via "Group by identity"), "System health" (which optional daemon modules are actually active, read from <code>daemon_config.jsonl</code>, with the flag to enable any that's off), and a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Network Discovery summary (totals, active/offline, risk distribution) and panels with a quick preview for each category — a "View all" button on each jumps to the corresponding page (Network Discovery, WiFi or BLE) with the complete, searchable list and full details, opening the right tab directly. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details.</li>
+        <li><strong>Dashboard</strong> (home) — active hosts and unified BLE+WiFi presence at the top, then "Nearby": a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Network Discovery summary (totals, active/offline, risk distribution) and panels with a quick preview for each category — a "View all" button on each jumps to the corresponding page (Network Discovery, WiFi or BLE) with the complete, searchable list and full details, opening the right tab directly. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details. Then "Who's home" (one row per configured home MAC, or per linked identity if a BLE and a WiFi MAC have been explicitly linked as the same physical device via "Group by identity") and, last, "System health" (which optional daemon modules are actually active, read from <code>daemon_config.jsonl</code>, with the flag to enable any that's off).</li>
         <li><strong>Network Discovery</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row — the same link Dashboard's "Who's home" and the WiFi/BLE presence cards use to unify a device's BLE and WiFi MAC. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts). A device's full profile also shows its last optional deep port scan (<code>--deep-port-scan</code>), if any, with how many ports it found beyond the regular scan.</li>
-        <li><strong>WiFi</strong> — four tabs. <strong>Overview</strong>: a KPI row (open/WPA2-WPA3 networks, handshake captures) and probe activity/channel distribution charts for the last 24h. <strong>Networks</strong>: "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it) and "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons, filterable by security type — Open/WEP/WPA/WPA2-WPA3 — and by band, 2.4 vs 5 GHz; security is classified from the beacon itself and requires <code>--wifi-iface</code>). <strong>Devices</strong>: "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and the raw probe log for row-by-row analysis. <strong>Security</strong>: a "Presence" card with arrival/departure events for the home MAC addresses configured with <code>--wifi-home-macs</code> — fed by both the regular LAN/ARP scan (works even without <code>--wifi-iface</code>) and, if active, probe requests — and a "Handshake captures" card for the WPA/WPA2 handshakes captured for the home networks in <code>--home-ssid</code> when <code>--capture-handshakes</code> is active (metadata only, the actual <code>.pcap</code> file to run through aircrack-ng/hashcat stays on the Pi). Estimated WiFi traffic per device is not shown here: it's an optional column on the Network Discovery page, and it also remains in the CSV export and the periodic email report.</li>
+        <li><strong>WiFi</strong> — four tabs. <strong>Overview</strong>: a KPI row for adjacent networks (total detected, open, WPA2/WPA3, plus handshake captures) — click any tile to jump straight to the matching filtered list — a "Networks by security" breakdown chart, and probe activity/channel distribution charts for the last 24h. <strong>Networks</strong>: "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons, filterable by security type — Open/WEP/WPA/WPA2-WPA3 — and by band, 2.4 vs 5 GHz; security is classified from the beacon itself and requires <code>--wifi-iface</code>) and "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it). <strong>Devices</strong>: "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and the raw probe log for row-by-row analysis. <strong>Security</strong>: a "Presence" card with arrival/departure events for the home MAC addresses configured with <code>--wifi-home-macs</code> — fed by both the regular LAN/ARP scan (works even without <code>--wifi-iface</code>) and, if active, probe requests — and a "Handshake captures" card for the WPA/WPA2 handshakes captured for the home networks in <code>--home-ssid</code> when <code>--capture-handshakes</code> is active (metadata only, the actual <code>.pcap</code> file to run through aircrack-ng/hashcat stays on the Pi). Estimated WiFi traffic per device is not shown here: it's an optional column on the Network Discovery page, and it also remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — three tabs. <strong>Overview</strong>: KPIs (including a "Possible trackers" count) and 24h activity. <strong>Devices</strong>: the "BLE devices" table — a summary per MAC with a heuristic device type (wearable, audio, possible tracker...), manufacturer, signal and number of sightings, trackers highlighted — and the raw advertisement log for row-by-row analysis. <strong>Security</strong>: a "Presence" card with arrival/departure events for the home MACs configured with <code>--ble-home-macs</code>. From a device's full profile you can also see and act on suggested identity links across a rotated BLE address (same advertised name/services reappearing on a new MAC shortly after the old one went quiet) — a suggestion only, never applied automatically.</li>
         <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>

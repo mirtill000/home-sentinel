@@ -361,6 +361,17 @@ svg { display: block; }
   gap: 10px;
   overflow: hidden;
 }
+.kpi-tile-clickable {
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.kpi-tile-clickable:hover { border-color: var(--brand); }
+.kpi-tile-clickable:active { transform: translateY(1px); }
+.kpi-tile-clickable:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .kpi-top { display: flex; align-items: flex-start; justify-content: space-between; }
 .kpi-label {
   font-size: 0.68rem;
