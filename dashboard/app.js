@@ -806,10 +806,21 @@ function setDeviceLabel(mac, patch) {
   saveDeviceLabels(labels);
 }
 
-/** Nome da mostrare per un device: personalizzato se impostato (proprio o ereditato dall'identità collegata), altrimenti il fallback (hostname/MAC). */
+/** Alias assegnato via file di configurazione del daemon (--config, sezione "devices"), scritto
+ * in daemon_config.jsonl: un secondo livello di nome, sotto l'etichetta locale (che vince sempre
+ * se impostata) ma sopra al fallback hostname/MAC — utile perché arriva già pronto su qualunque
+ * browser/dispositivo apra la dashboard, senza dover rifare a mano l'assegnazione per ognuno. */
+function daemonDeviceAlias(mac) {
+  const daemonConfig = latestDaemonConfig(state.daemonConfigRows);
+  const aliases = daemonConfig && daemonConfig.device_aliases;
+  return (aliases && aliases[String(mac).toLowerCase()]) || "";
+}
+
+/** Nome da mostrare per un device: etichetta locale se impostata (propria o ereditata
+ * dall'identità collegata), poi l'alias da --config, altrimenti il fallback (hostname/MAC). */
 function displayName(mac, fallback) {
   const label = getDeviceLabel(mac);
-  return label.name || fallback;
+  return label.name || daemonDeviceAlias(mac) || fallback;
 }
 
 /** Rinomina rapida di un device (es. "Marco", "Sonia") senza dover passare dal profilo completo —

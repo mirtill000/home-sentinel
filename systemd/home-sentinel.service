@@ -5,13 +5,24 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adatta subnet e percorso del repo al proprio ambiente. I moduli di
-# discovery scrivono di default in /var/log/home-sentinel/
+# Adatta il percorso del repo al proprio ambiente. La subnet da scansionare
+# viene rilevata automaticamente dall'indirizzo IPv4 dell'interfaccia di
+# rete (--lan-iface, o quella della rotta di default se omesso) — non va
+# più indicata esplicitamente; nei rari casi in cui il rilevamento
+# automatico non basta (VLAN/subnet multiple sulla stessa interfaccia),
+# forzala con "subnet" nel file di configurazione (--config, vedi sotto).
+#
+# I moduli di discovery scrivono di default in /var/log/home-sentinel/
 # (lan_discovery.jsonl, wifi_probes.jsonl, ble_discovery.jsonl) —
 # sovrascrivibile con --lan-log/--probe-log/--ble-log se serve un percorso
 # diverso. Lo specchio SQLite (home-sentinel.db) e gli alert di detection
 # (alerts_detection.jsonl) sono attivi di default, vedi --no-db/--db e
 # --alerts-log nel README per personalizzarli.
+#
+# Aggiungi "--config /etc/home-sentinel/config.json \" per leggere da un
+# file JSON opzionale l'elenco dei device "di casa" (WiFi/BLE) con il
+# relativo alias/nome persona — vedi config.example.json nel repository e
+# la sezione README "File di configurazione (--config)".
 #
 # Aggiungi "--wifi-iface wlan1 \" solo quando è disponibile un adattatore
 # WiFi esterno dedicato in monitor mode: il WiFi onboard del Raspberry Pi 3
@@ -51,8 +62,7 @@ Type=simple
 # aa:bb:cc:...\" per il tracking presenza/assenza, stesso principio di
 # --ble-home-macs — funziona già dall'ARP scan (non richiede --wifi-iface),
 # che lo alimenta anche coi probe request se attivo.
-ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py \
-    --subnet 192.168.1.0/24
+ExecStart=/usr/bin/python3 /opt/home-sentinel/home_sentinel.py
 WorkingDirectory=/opt/home-sentinel
 Restart=on-failure
 RestartSec=5
