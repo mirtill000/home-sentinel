@@ -9,10 +9,10 @@ del Pi 3, nessun adattatore esterno necessario).
 
 Oltre alla discovery, include moduli opzionali di detection: fingerprinting
 del *tipo* di device (mDNS/SSDP/NetBIOS/banner, non solo vendor da MAC OUI),
-una baseline comportamentale per device con rilevamento anomalie (orari
-insoliti, nuove porte aperte), rilevamento di possibili attacchi di rete
-(ARP spoofing, rogue DHCP, evil twin WiFi, deauth/disassoc flood WiFi) e una
-stima del traffico WiFi per device. Vedi "Moduli di detection" sotto.
+una baseline comportamentale per device con rilevamento anomalie (nuove
+porte aperte su un device già noto), rilevamento di possibili attacchi di
+rete (ARP spoofing, rogue DHCP, evil twin WiFi, deauth/disassoc flood WiFi)
+e una stima del traffico WiFi per device. Vedi "Moduli di detection" sotto.
 
 Ogni evento viene appeso in tempo reale a file **JSON Lines** separati
 (un oggetto JSON per riga, uno per modulo). Non serve un database per far
