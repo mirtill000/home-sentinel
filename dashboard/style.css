@@ -557,6 +557,8 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .data-table tbody tr:hover { background: var(--surface-2); }
 .data-table tbody tr.row-flagged { background: var(--status-critical-wash); }
 .data-table tbody tr.row-flagged:hover { background: var(--status-critical-wash); filter: brightness(0.95); }
+.data-table tbody tr.row-usable { background: var(--status-good-wash); }
+.data-table tbody tr.row-usable:hover { background: var(--status-good-wash); filter: brightness(0.95); }
 .mono { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 
 .source-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--text-secondary); font-weight: 600; }
@@ -770,6 +772,16 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .alert-body { flex: 1; min-width: 0; }
 .alert-title { font-weight: 650; font-size: 0.86rem; margin-bottom: 2px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .alert-title .source-tag { font-weight: 500; font-size: 0.68rem; padding: 1px 7px; border-radius: 999px; background: var(--brand-wash); color: var(--brand); }
+.alert-title .source-tag.tone-critical { background: var(--status-critical-wash); color: var(--status-critical); }
+.alert-title .source-tag.tone-critical svg { color: var(--status-critical); }
+
+/* Export "di questa vista": bottoni piccoli nell'intestazione di una tabella, per scaricare
+ * esattamente le righe filtrate che si stanno guardando senza passare dalla pagina Esporta. */
+.chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.inline-export { display: inline-flex; gap: 6px; margin-left: auto; }
+.inline-export .btn { font-size: 0.72rem; padding: 5px 9px; gap: 4px; }
+.inline-export .btn svg { width: 13px; height: 13px; }
 .alert-title .source-tag svg { color: var(--brand); }
 .alert-desc { font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 4px; }
 .alert-meta { font-size: 0.7rem; color: var(--text-muted); display: flex; gap: 10px; flex-wrap: wrap; }
@@ -907,6 +919,11 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .module-status-dot.tone-good { background: var(--status-good); }
 .module-status-dot.tone-warning { background: var(--status-warning); }
 .module-status-dot.tone-muted { background: var(--status-muted); }
+.module-status-row code { font-size: 0.72rem; color: var(--text-muted); }
+
+.source-overrides { margin-top: 14px; }
+.source-overrides summary { cursor: pointer; font-size: 0.8rem; color: var(--brand); font-weight: 600; }
+.source-overrides .settings-grid { margin-top: 12px; }
 
 /* ------------------------------------------------------------------ *
  * Command palette (Ctrl+K)
@@ -1090,3 +1107,33 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   .kpi-row { grid-template-columns: 1fr; }
   .page { padding: 16px; }
 }
+
+/* Azioni di riga (rinomina / fidato) nelle tabelle device WiFi e BLE: stesse azioni già
+ * disponibili sui device LAN, ora coerenti su tutte e tre le radio. */
+.row-actions { white-space: nowrap; text-align: right; }
+.row-actions .btn { padding: 4px 6px; }
+.row-actions .btn svg { width: 14px; height: 14px; }
+.row-actions .btn.is-trusted { color: var(--status-good); border-color: var(--status-good); }
+
+/* "What changed": righe di differenza fra due periodi. */
+.diff-list { display: flex; flex-direction: column; gap: 2px; }
+.diff-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: var(--radius-sm); border-left: 3px solid var(--status-muted);
+  background: var(--surface-2); font-size: 0.82rem;
+}
+.diff-row.tone-critical { border-left-color: var(--status-critical); }
+.diff-row.tone-good { border-left-color: var(--status-good); }
+.diff-row.tone-blue { border-left-color: var(--series-blue); }
+.diff-row.tone-muted { border-left-color: var(--status-muted); }
+.diff-verb { color: var(--text-secondary); font-size: 0.76rem; margin-left: auto; }
+.diff-verb.tone-critical { color: var(--status-critical); }
+.diff-verb.tone-good { color: var(--status-good); }
+
+/* Scheda d'inventario del device (proprietario, stanza, tipo, tag, note). */
+.inventory-editor { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.inventory-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 0.86rem; }
+.inventory-head .source-tag { font-size: 0.68rem; padding: 1px 7px; border-radius: 999px; background: var(--brand-wash); color: var(--brand); }
+
+/* Le badge non devono spezzarsi su due righe dentro una riga di diff o una cella. */
+.badge.risk-badge { white-space: nowrap; }

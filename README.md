@@ -9,10 +9,10 @@ del Pi 3, nessun adattatore esterno necessario).
 
 Oltre alla discovery, include moduli opzionali di detection: fingerprinting
 del *tipo* di device (mDNS/SSDP/NetBIOS/banner, non solo vendor da MAC OUI),
-una baseline comportamentale per device con rilevamento anomalie (orari
-insoliti, nuove porte aperte), rilevamento di possibili attacchi di rete
-(ARP spoofing, rogue DHCP, evil twin WiFi, deauth/disassoc flood WiFi) e una
-stima del traffico WiFi per device. Vedi "Moduli di detection" sotto.
+una baseline comportamentale per device con rilevamento anomalie (nuove
+porte aperte su un device già noto), rilevamento di possibili attacchi di
+rete (ARP spoofing, rogue DHCP, evil twin WiFi, deauth/disassoc flood WiFi)
+e una stima del traffico WiFi per device. Vedi "Moduli di detection" sotto.
 
 Ogni evento viene appeso in tempo reale a file **JSON Lines** separati
 (un oggetto JSON per riga, uno per modulo). Non serve un database per far
@@ -80,7 +80,16 @@ di partenza):
 ```json
 {
   "devices": [
-    { "name": "Marco", "wifi_mac": "aa:bb:cc:dd:ee:01", "ble_mac": "11:22:33:44:55:01" },
+    {
+      "name": "Marco",
+      "wifi_mac": "aa:bb:cc:dd:ee:01",
+      "ble_mac": "11:22:33:44:55:01",
+      "owner": "Marco Rossi",
+      "room": "Studio",
+      "type": "Smartphone",
+      "tags": ["personale", "mobile"],
+      "notes": "iPhone 14"
+    },
     { "name": "Sonia", "wifi_mac": "aa:bb:cc:dd:ee:02" }
   ]
 }
@@ -97,6 +106,15 @@ per ognuno (un'etichetta impostata localmente dalla dashboard stessa
 continua comunque a valere, e ha sempre la precedenza su quella del file).
 Un parametro passato esplicitamente da riga di comando ha sempre la
 precedenza sul valore corrispondente nel file di configurazione.
+
+I campi `owner`, `room`, `type`, `tags` e `notes` sono **puramente
+descrittivi**: non cambiano nulla nel comportamento del daemon, viaggiano
+fino alla dashboard (campo `device_inventory` di `daemon_config.jsonl`) e lì
+diventano la **scheda del device**, visibile nel suo profilo. A differenza
+delle etichette impostate dalla dashboard — che restano nel `localStorage`
+di quel singolo browser — questi valgono ovunque si apra l'app; un campo
+compilato a mano nella dashboard ha comunque la precedenza su quello del
+file, per lo stesso device.
 
 ## Output
 
@@ -293,6 +311,32 @@ elenco di moduli, in forma leggibile, viene anche loggato una volta ad ogni
 avvio (`journalctl -u home-sentinel` con systemd) come riepilogo unico,
 invece di doverlo ricostruire dai singoli warning sparsi nel resto del log.
 
+**`heartbeat.jsonl`**: `{timestamp, started_at, uptime_s, interval_s, pid, threads, subnet, lan_iface, wifi_iface}`
+Prova di vita del daemon, **riscritta** (scrittura atomica su file
+temporaneo + rename, non appesa) ogni `--heartbeat-interval` secondi
+(default 30, `0` per disabilitarla): interessa solo l'ultimo battito, quindi
+il file resta di una riga e non ha bisogno di rotazione. Serve alla
+dashboard per distinguere **"rete tranquilla" da "daemon fermo"**: leggendo
+file statici via HTTP, un daemon spento continuerebbe a servire gli stessi
+JSONL e tutto sembrerebbe a posto finché non si nota che il timestamp più
+recente non avanza più. Il pallino di stato in alto a destra passa a
+"Daemon stale" quando l'ultimo battito è più vecchio di tre intervalli.
+
+**`ipv6_neighbors.jsonl`** (con `--ipv6-discovery`): `{timestamp, mac, ipv6, scope, state}`
+Indirizzi IPv6 osservati per MAC, letti dalla neighbor table del kernel
+(`ip -6 neighbor`, il corrispettivo NDP dell'ARP). Non si sonda nulla: la
+tabella è popolata dal traffico IPv6 che il Pi vede comunque passare. Le
+voci senza `lladdr` o in stato `FAILED`/`INCOMPLETE` sono scartate (sono
+risoluzioni non riuscite, non device). `scope` distingue `link-local`
+(`fe80::/10`, presente su ogni interfaccia IPv6 e poco significativo) da
+`global` — quest'ultimo indica un device davvero raggiungibile fuori dalla
+sua sottorete. La chiave resta il MAC: non nascono device separati, gli
+indirizzi si affiancano a quelli IPv4 già noti nel profilo del device.
+
+**`exposure_audit.jsonl`** (con `--exposure-audit`): `{timestamp, external_port, internal_port, internal_ip, protocol, description, enabled, router}`
+Port forwarding attivi sul router, letti via UPnP/IGD. Vedi "Moduli di
+detection" sotto.
+
 **`fingerprint_discovery.jsonl`** (con `--fingerprint`):
 `{timestamp, mac, ip, device_type, services, ssdp, netbios_name, mdns_name, banners}`
 Una riga per ogni fingerprint eseguito su un device LAN (alla prima
@@ -313,12 +357,18 @@ proprio (percorso in `pcap_path`) va in `--handshake-pcap-dir` e non
 contiene mai la password in chiaro, solo il materiale crittografico
 dell'handshake per un tentativo di audit offline con aircrack-ng/hashcat.
 `messages` è l'elenco dei messaggi 1-4 del 4-way handshake classificati
-dai flag del frame EAPOL-Key (può essere parziale, es. `[1, 2]`, se il
-terzo/quarto messaggio non sono stati catturati — comunque spesso
-sufficiente per un tentativo di cracking con dizionario), `frame_count`
-il totale dei frame EAPOL raccolti per quella sessione (bssid + MAC
-stazione), anche quelli non classificabili. Vedi "Moduli di detection"
-sotto per come e quando scatta la cattura.
+dai flag del frame EAPOL-Key: una cattura viene salvata solo se contiene
+una coppia realmente utilizzabile per un tentativo di cracking — messaggio
+2 (SNonce + MIC) insieme al messaggio 1 o 3 (ANonce), es. `[1, 2]` — non
+sul semplice numero di frame raccolti, che da solo non garantisce una
+coppia valida (tipicamente capita con un client che ritrasmette più volte
+lo stesso messaggio senza completare l'handshake). `frame_count` resta il
+totale dei frame EAPOL raccolti per quella sessione (bssid + MAC
+stazione), anche quelli non classificabili o duplicati. Il `.pcap` include
+sempre, come primo frame, l'ultimo beacon visto per quel BSSID: senza,
+strumenti come aircrack-ng non hanno modo di risalire all'ESSID dal solo
+traffico EAPOL e lo richiedono a mano ad ogni tentativo (opzione `-e`).
+Vedi "Moduli di detection" sotto per come e quando scatta la cattura.
 
 **`deep_port_scan.jsonl`** (`--deep-port-scan`, opzionale):
 `{timestamp, mac, ip, open_ports, new_ports}`
@@ -434,7 +484,10 @@ Open/cifrata della dashboard) — usata dal filtro "Security" della tabella
 
 Tutti scrivono su `alerts_detection.jsonl` (e, se attivo, sullo specchio
 SQLite) invece che sulla console soltanto, così restano consultabili anche
-a posteriori:
+a posteriori. Ogni alert porta con sé anche il campo **`home_occupied`**:
+`true`/`false` se il tracking presenza è configurato (c'era qualcuno in casa
+quando è successo?), `null` se il daemon non può saperlo — vedi
+`--presence-aware-alerts` sotto.
 
 - **Anomaly detection** (attivo di default, `--no-anomaly-detection` per
   disabilitarlo): costruisce per ogni MAC una baseline delle porte
@@ -446,6 +499,37 @@ a posteriori:
   di scan — indicatore tipico di ARP spoofing/poisoning. Una normale
   riassegnazione DHCP (il vecchio device va offline prima che l'IP venga
   riassegnato) non genera alert.
+- **Esposizione verso Internet** (`--exposure-audit`, opzionale):
+  interroga periodicamente il router via UPnP/IGD (SSDP in multicast +
+  SOAP, tutto in sola lettura sulla LAN: non chiama mai
+  `AddPortMapping`/`DeletePortMapping`) ed elenca i **port forwarding
+  attivi** su `exposure_audit.jsonl`. Un forwarding verso una porta a
+  rischio (Telnet, RDP, SMB, VNC, FTP) genera un alert: il port scan
+  interno dice cosa è aperto *dentro* la LAN, questo è l'unico modulo che
+  guarda cosa è raggiungibile *da fuori* — spesso forwarding creati
+  automaticamente da console, NAS o client torrent senza che nessuno lo
+  sappia. Se l'UPnP è disabilitato sul router non trova nulla e non è un
+  errore: è anzi la notizia migliore. `--exposure-audit-interval` regola
+  la frequenza (default 1h).
+- **Device WiFi ricorrenti sconosciuti** (`--wifi-recurrence-detection`,
+  opzionale, richiede `--wifi-iface`): l'equivalente WiFi del rilevamento
+  tracker BLE. Il criterio però deve essere diverso: un tracker BLE si
+  riconosce perché *resta* vicino a lungo, mentre sul WiFi la
+  randomizzazione dei MAC fa sì che chi passa ogni giorno si presenti quasi
+  sempre con un indirizzo nuovo — cercare una presenza continuativa non
+  troverebbe nulla. Si cerca invece il **ritorno** su più giorni distinti
+  (`--wifi-recurrence-days`, default 3): i MAC che sopravvivono nel tempo
+  sono proprio quelli non randomizzati, e uno stabile che ricompare giorno
+  dopo giorno vicino a casa senza mai connettersi alla rete è il segnale che
+  interessa. I MAC di casa e quelli già visti sulla LAN sono esclusi.
+- **Severità consapevole della presenza** (`--presence-aware-alerts`,
+  opzionale, richiede almeno un MAC "di casa"): lo stesso evento non vale
+  uguale a tutte le ore. Con questo flag ogni alert generato mentre in casa
+  non c'è nessuno sale di un gradino di severità (`low` → `medium` → `high`
+  → `critical`) e riporta `details.escalated_reason = "home_empty"`. È il
+  primo uso combinato di due moduli che prima convivevano senza parlarsi:
+  la dashboard mostra questi alert con un tag "Home empty" e permette di
+  filtrarli.
 - **Rogue DHCP** (`--detect-rogue-dhcp`, opzionale): sniffing passivo di
   DHCPOFFER/DHCPACK sull'interfaccia LAN; se non si specifica
   `--dhcp-trusted-servers` impara il primo server osservato come fidato e
@@ -471,7 +555,13 @@ a posteriori:
   che l'operatore è autorizzato a testare. Vedi `handshake_captures.jsonl`
   sopra per il formato dei metadati, `--handshake-window-s` e
   `--handshake-min-frames` per la sensibilità della cattura di handshake
-  parziali (meno di 4 messaggi, comunque spesso utilizzabili).
+  parziali (meno di 4 messaggi, comunque spesso utilizzabili — ma solo se
+  contengono una coppia realmente sfruttabile, vedi sopra). Il `.pcap`
+  include già il beacon della rete, quindi basta puntarci aircrack-ng
+  senza specificare l'ESSID a mano:
+  ```bash
+  aircrack-ng -w dizionario.txt /var/log/home-sentinel/handshakes/home_....pcap
+  ```
   **Canale "incollato" alla rete di casa**: un 4-way handshake dura in
   genere meno di un secondo (e un flood di deauth può esaurirsi in pochi
   frame), troppo poco perché il normale hopping round-robin su tutti i
@@ -531,6 +621,13 @@ a posteriori:
   quel nome.
 
 ## Moduli di discovery avanzata
+
+- **Discovery IPv6** (`--ipv6-discovery`, opzionale): affianca allo scan ARP
+  IPv4 la lettura passiva della neighbor table IPv6 del kernel. Molte reti
+  domestiche sono ormai dual-stack e un device può essere pienamente attivo
+  in IPv6 mentre risponde poco o nulla in IPv4; gli indirizzi trovati sono
+  associati al MAC già noto, non creano device separati (vedi
+  `ipv6_neighbors.jsonl` sopra).
 
 A differenza dei moduli sopra, questi non generano alert (non sono
 detector di sicurezza): arricchiscono la sola discovery — hostname più
@@ -607,21 +704,50 @@ operativo, un cross-check con una fonte esterna al Pi:
 ## Dashboard
 
 `dashboard/` è una web app statica (HTML/CSS/JS, senza dipendenze esterne,
-utilizzabile offline) con 11 sezioni, tutte basate sui dati reali dei log
+utilizzabile offline) con 12 sezioni, tutte basate sui dati reali dei log
 LAN, WiFi, BLE e, se i moduli opzionali sono attivi sul daemon, fingerprint
 e alert di detection. **Dashboard è la home** (sottotitolo "Local network
 overview"): è la prima voce del menu laterale e la pagina che si apre di
-default (`dashboard/` senza `#/...` nell'URL). In cima, prima della
-casetta isometrica, il KPI "host attivi"; più
-giù, tra i pannelli sotto la mappa, un riepilogo compatto della pagina
-Host (host totali/attivi/offline, distribuzione del rischio) con un
-pulsante per aprire l'elenco completo. In qualsiasi punto della dashboard, **Ctrl+K**
-(⌘K su Mac) apre una ricerca globale su pagine, dispositivi e avvisi; ogni
-tabella ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno
+default (`dashboard/` senza `#/...` nell'URL). L'ordine delle voci è
+Dashboard, Network Discovery, WiFi, BLE, Timeline, Scans, Alerts, Trend,
+What changed, Settings, Export, Help.
+
+Alcune cose valgono in **tutta** l'app, ed è quello che la tiene insieme:
+
+- **Una sola finestra temporale.** Il selettore in alto (24 ore / 7 giorni /
+  30 giorni / tutto lo storico) vale per KPI, grafici, vista Nearby e
+  confronto fra periodi: un numero visto su una pagina copre sempre lo
+  stesso periodo di un numero visto su un'altra. Viene ricordato tra un
+  refresh e l'altro.
+- **Ogni entità ha un profilo.** Device LAN, WiFi e BLE (`#/device/<mac>`) e
+  reti WiFi adiacenti (`#/network/<bssid>`): ovunque compaia un MAC o un
+  BSSID è un link al suo profilo, e il pulsante "indietro" riporta da dove
+  si è arrivati, non sempre a Network Discovery.
+- **Ogni device ha un nome e una scheda.** Nome, "fidato", proprietario,
+  stanza, tipo, tag e note; nome e scheda arrivano anche dal file di
+  configurazione del daemon (`--config`) e valgono così su ogni browser,
+  mentre un valore impostato localmente ha la precedenza. Marcare come
+  fidato funziona su tutte e tre le radio, non solo sulla LAN.
+- **Ogni numero porta alla sua lista.** I KPI sono cliccabili: aprono la
+  vista filtrata che li compone.
+- **Ricerca globale** con **Ctrl+K** (⌘K su Mac) su pagine, device (LAN,
+  WiFi e BLE, cercabili anche per nome assegnato), reti WiFi, SSID
+  richiesti e avvisi.
+- **Esportabile da dove si guarda**: le tabelle grandi hanno i pulsanti
+  CSV/JSON nell'intestazione ed esportano esattamente le righe filtrate;
+  la pagina Export copre comunque ogni sorgente caricata.
+- **Stato onesto in alto a destra**: dice sia se i log sono raggiungibili
+  dal browser, sia se il daemon che li scrive è ancora vivo (heartbeat).
+- **Installabile** come app (manifest + service worker): si apre in una
+  finestra propria e parte anche col Pi irraggiungibile, spiegando cosa non
+  va invece di mostrare l'errore del browser. I dati non vengono mai serviti
+  dalla cache — solo l'app — quindi non c'è modo di guardare dati vecchi
+  credendoli freschi.
+
+Ogni tabella ha un selettore "righe per pagina" (50/100/200/500/tutte) e uno
 scorrimento pagine. Il menu laterale è collassabile (pulsante in fondo,
 stato ricordato tra le sessioni) per lasciare più spazio alle pagine con
-tabelle larghe, come Host; l'ordine delle voci è Dashboard, Host, WiFi,
-BLE, Timeline, Scans, poi Avvisi/Trend/Impostazioni/Esporta/Aiuto.
+tabelle larghe.
 
 Per i file JSONL oltre 4MB (tipicamente `wifi_probes.jsonl`, il più
 "rumoroso"), la dashboard scarica solo la coda più recente via **HTTP
@@ -631,7 +757,7 @@ che il server statico supporti le richieste Range (**nginx**: sì di
 default; il semplice `python3 -m http.server` no — in quel caso si
 ripiega in automatico sul download completo, senza errori, solo senza il
 vantaggio di velocità). Quando succede, un avviso compare nella pagina
-interessata e nel pannello "Stato moduli" in Impostazioni.
+interessata e nell'elenco delle sorgenti in Impostazioni.
 
 - **Host** — riga KPI (host totali, nuovi dispositivi, a rischio
   alto/critico), poi l'elenco completo dei dispositivi LAN, con tipo
@@ -786,6 +912,42 @@ I percorsi sono configurabili anche via query string, es.
 Il daemon misura presenza e porte aperte per tutti i device, e per il WiFi
 anche una stima relativa di traffico (vedi `wifi_traffic.jsonl` sopra) — non
 è comunque una misura di banda reale, dato che il Pi non è il gateway.
+
+## API di query locale (`--api`)
+
+La dashboard è una pagina statica che legge i JSONL via HTTP e, per non
+bloccare il browser su file da decine di MB, ne scarica solo la coda più
+recente. Funziona, ma taglia lo storico proprio dove servirebbe intero
+(Trend su 30 giorni, ricerche su tutta la cronologia, confronto fra
+periodi). `--api` risolve il problema alla radice: lo specchio SQLite ha già
+tutta la storia indicizzata, questa API la rende interrogabile.
+
+```bash
+sudo python3 home_sentinel.py --api --api-host 0.0.0.0
+```
+
+Endpoint (tutti `GET`, tutti in sola lettura):
+
+| Endpoint | Cosa restituisce |
+| --- | --- |
+| `/api/health` | stato del servizio e ultimo heartbeat del daemon |
+| `/api/tables` | tabelle disponibili, numero di righe e intervallo temporale coperto |
+| `/api/query?table=…` | righe filtrate: `since`/`until`, uguaglianza su una colonna dell'allowlist, `limit`/`offset`/`order` |
+| `/api/daily?table=…` | conteggi per giorno, opzionalmente raggruppati per una colonna (`group_by`) |
+
+Progettata per essere noiosa e sicura: connessione aperta in `mode=ro`
+(nessun endpoint scrive), **nessun SQL arriva dall'esterno** — tabella,
+filtri e ordinamento si scelgono da un'allowlist e i valori passano sempre
+come parametri, quindi un nome fuori elenco è un `400` e non c'è modo di
+iniettare query — e solo stdlib, nessuna dipendenza in più sul Pi.
+
+**Non ha autenticazione**, esattamente come la cartella `dashboard/` servita
+con `python3 -m http.server`: è pensata per la LAN di casa, e per questo il
+default di `--api-host` è `127.0.0.1`. Aprendola alla LAN
+(`--api-host 0.0.0.0`) vale la pena restringere anche
+`--api-allow-origin` all'origine della propria dashboard, invece del `*` di
+default. Nella dashboard, l'indirizzo si imposta in **Impostazioni → Query
+API**.
 
 ## Report periodico via email
 

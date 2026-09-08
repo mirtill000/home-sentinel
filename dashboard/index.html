@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Home Sentinel — Dashboard</title>
 <link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="theme-color" content="#0a0e16">
 </head>
 <body>
 <div class="app-shell" id="app-shell">
@@ -27,6 +31,7 @@
 
     <div class="sidebar-footer">
       <span>Home Sentinel v1.0.0</span>
+      <span class="pwa-badge hidden" id="pwa-badge" title="Installed as an app"></span>
     </div>
   </aside>
 
@@ -45,6 +50,7 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <select id="time-range" class="select-control" title="Time window applied across the whole app" aria-label="Time range"></select>
         <button id="cmdk-open" class="btn btn-icon" title="Search pages, devices, alerts… (Ctrl+K)" aria-label="Search">
           <span id="icon-cmdk-open"></span>
         </button>

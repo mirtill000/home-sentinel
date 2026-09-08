@@ -53,6 +53,7 @@ except ImportError as exc:  # pragma: no cover
         "scapy non è installato. Installa le dipendenze con: pip install -r requirements.txt"
     ) from exc
 
+import sentinel_api
 from sentinel_ble import (
     BleEvilTwinDetector,
     BleIdentityLinker,
@@ -66,11 +67,13 @@ from sentinel_detection import (
     DeauthFloodDetector,
     EvilTwinDetector,
     RogueDhcpDetector,
+    WifiRecurrenceDetector,
 )
 from sentinel_dhcp_leases import fetch_dhcp_leases
+from sentinel_exposure import list_port_mappings
 from sentinel_fingerprint import fingerprint_device, netbios_probe
 from sentinel_handshake import HandshakeCapture
-from sentinel_presence import PresenceTracker
+from sentinel_presence import HomeOccupancy, PresenceTracker
 from sentinel_storage import SqliteStore
 
 LOG = logging.getLogger("home_sentinel")
@@ -493,6 +496,12 @@ class LanDiscoveryService:
         if self.devices:
             LOG.info("LAN discovery: ripristinati %d device noti dallo specchio SQLite", len(self.devices))
 
+    def known_macs(self) -> set[str]:
+        """MAC già visti almeno una volta sulla LAN (compresi quelli ora offline e quelli
+        ripristinati dallo specchio SQLite all'avvio). Serve ai rilevatori che devono distinguere
+        "device di casa" da "device esterno" — es. WifiRecurrenceDetector."""
+        return set(self.devices.keys())
+
     def note_dhcp_client(self, mac: str, hostname: str) -> None:
         """Callback per il DHCP discovery monitor (DHCPDISCOVER/DHCPREQUEST osservati passivamente).
 
@@ -828,6 +837,7 @@ class WifiProbeMonitor:
         home_channel_priority: bool = True,
         presence_tracker: PresenceTracker | None = None,
         presence_log: JsonlLogger | None = None,
+        recurrence_detector: WifiRecurrenceDetector | None = None,
     ):
         self.iface = iface
         self.channels = channels
@@ -847,6 +857,7 @@ class WifiProbeMonitor:
         self.home_channel_priority = home_channel_priority
         self.presence_tracker = presence_tracker
         self.presence_log = presence_log
+        self.recurrence_detector = recurrence_detector
         self._current_channel = channels[0]
         self._home_channel: int | None = None
         self._traffic_lock = threading.Lock()
@@ -960,6 +971,9 @@ class WifiProbeMonitor:
             if event is not None:
                 self._write_presence_event(event)
 
+        if self.recurrence_detector is not None:
+            self.recurrence_detector.observe(mac, rssi)
+
     def _write_presence_event(self, event: dict) -> None:
         self.presence_log.write(event)
         if self.sqlite_store:
@@ -992,7 +1006,7 @@ class WifiProbeMonitor:
         if self.evil_twin_detector is not None:
             self.evil_twin_detector.observe_beacon(ssid, bssid or "")
         if self.handshake_capture is not None:
-            self.handshake_capture.observe_beacon(ssid, bssid or "")
+            self.handshake_capture.observe_beacon(ssid, bssid or "", pkt)
             if ssid in self.home_ssids and channel is not None:
                 self._home_channel = channel
 
@@ -1459,6 +1473,183 @@ class TrendRollupService:
             self.stop_event.wait(self.interval)
 
 
+def ipv6_neighbors(iface: str | None) -> list[dict]:
+    """Neighbor table IPv6 del kernel (`ip -6 neighbor`), già filtrata e normalizzata.
+
+    A differenza dell'ARP scan IPv4 qui non si sonda nulla: la tabella è popolata dal traffico
+    IPv6 che il Pi vede comunque passare (NDP è il corrispettivo dell'ARP, e su una rete
+    dual-stack è costantemente attivo). Le voci senza lladdr o in stato FAILED/INCOMPLETE sono
+    scartate: sono tentativi di risoluzione non andati a buon fine, non device.
+    """
+    cmd = ["ip", "-6", "neighbor", "show"]
+    if iface:
+        cmd += ["dev", iface]
+    try:
+        out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return []
+
+    found = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or "lladdr" not in parts:
+            continue
+        address = parts[0]
+        mac = parts[parts.index("lladdr") + 1].lower()
+        state = parts[-1].upper()
+        if state in {"FAILED", "INCOMPLETE"}:
+            continue
+        found.append({
+            "mac": mac,
+            "ipv6": address,
+            # link-local (fe80::/10) vs globale: il primo esiste sempre su ogni interfaccia IPv6 e
+            # dice poco, il secondo indica un device davvero raggiungibile in IPv6 dall'esterno
+            # della sua sottorete — distinguerli è l'informazione utile qui.
+            "scope": "link-local" if address.lower().startswith("fe80") else "global",
+            "state": state,
+        })
+    return found
+
+
+class Ipv6NeighborMonitor:
+    """Osserva periodicamente la neighbor table IPv6 e logga gli indirizzi per MAC.
+
+    Non crea device propri: la chiave resta il MAC, lo stesso già usato da tutto il resto del
+    sistema, così la dashboard può semplicemente affiancare gli indirizzi IPv6 al device IPv4
+    che già conosce. Riscrive una riga per coppia (mac, ipv6) solo quando è nuova o dopo
+    `interval_repeat`, per non riempire il log ripetendo ogni ciclo la stessa tabella statica.
+    """
+
+    def __init__(self, iface: str | None, log: JsonlLogger, stop_event: threading.Event,
+                 sqlite_store: SqliteStore | None = None, interval: float = 300.0,
+                 interval_repeat: float = 3600.0) -> None:
+        self.iface = iface
+        self.log = log
+        self.stop_event = stop_event
+        self.sqlite_store = sqlite_store
+        self.interval = interval
+        self.interval_repeat = interval_repeat
+        self._last_logged: dict[tuple[str, str], float] = {}
+
+    def _do_cycle(self) -> None:
+        now = time.time()
+        for entry in ipv6_neighbors(self.iface):
+            key = (entry["mac"], entry["ipv6"])
+            if now - self._last_logged.get(key, 0.0) < self.interval_repeat:
+                continue
+            self._last_logged[key] = now
+            row = {"timestamp": now_iso(), **entry}
+            self.log.write(row)
+            if self.sqlite_store:
+                self.sqlite_store.insert_ipv6_neighbor(row)
+
+    def run(self) -> None:
+        LOG.info("IPv6 neighbor discovery avviato (intervallo=%ss)", self.interval)
+        while not self.stop_event.is_set():
+            try:
+                self._do_cycle()
+            except Exception:
+                LOG.exception("Ciclo IPv6 neighbor discovery fallito")
+            self.stop_event.wait(self.interval)
+
+
+class ExposureAuditService:
+    """Elenca periodicamente i port forwarding attivi sul router (UPnP/IGD) e ne segnala i rischi.
+
+    È l'unico modulo che guarda la rete "dal lato Internet": tutto il resto del daemon osserva
+    cosa succede dentro la LAN. Un forwarding verso una porta a rischio (Telnet, RDP, SMB, VNC,
+    FTP) genera un alert, perché è esattamente la combinazione che espone un device di casa a
+    tutta la rete pubblica.
+    """
+
+    # Stesse porte considerate a rischio dalla dashboard (RISK_PORTS in app.js): un servizio
+    # rischioso in LAN è un problema, lo stesso servizio inoltrato da Internet è un'altra cosa.
+    RISKY_PORTS = {21: "FTP", 23: "Telnet", 445: "SMB", 3389: "RDP", 5900: "VNC"}
+
+    def __init__(self, log: JsonlLogger, stop_event: threading.Event,
+                 alert_manager: AlertManager | None = None, sqlite_store: SqliteStore | None = None,
+                 interval: float = 3600.0) -> None:
+        self.log = log
+        self.stop_event = stop_event
+        self.alert_manager = alert_manager
+        self.sqlite_store = sqlite_store
+        self.interval = interval
+        self._alerted: set[tuple] = set()
+
+    def _do_cycle(self) -> None:
+        mappings, router = list_port_mappings()
+        for mapping in mappings:
+            row = {"timestamp": now_iso(), "router": router, **mapping}
+            self.log.write(row)
+            if self.sqlite_store:
+                self.sqlite_store.insert_exposure(row)
+
+            port = mapping.get("internal_port")
+            service = self.RISKY_PORTS.get(port)
+            key = (mapping.get("internal_ip"), port, mapping.get("external_port"))
+            if service and self.alert_manager and mapping.get("enabled") and key not in self._alerted:
+                self._alerted.add(key)
+                self.alert_manager.emit(
+                    "high", "esposizione_internet",
+                    f"Port forwarding attivo dal router verso {mapping.get('internal_ip')}:{port} "
+                    f"({service}) — raggiungibile da Internet sulla porta {mapping.get('external_port')}",
+                    ip=mapping.get("internal_ip"),
+                    details={"router": router, **mapping, "service": service},
+                )
+        LOG.info("Audit esposizione: %d port forwarding attivi sul router", len(mappings))
+
+    def run(self) -> None:
+        LOG.info("Audit esposizione Internet (UPnP) avviato (intervallo=%ss)", self.interval)
+        while not self.stop_event.is_set():
+            try:
+                self._do_cycle()
+            except Exception:
+                LOG.exception("Audit esposizione fallito")
+            self.stop_event.wait(self.interval)
+
+
+class HeartbeatService:
+    """Prova di vita del daemon, riscritta periodicamente su un file di una sola riga.
+
+    Senza, la dashboard non ha modo di distinguere "rete tranquilla" da "daemon fermo": legge
+    file statici via HTTP, quindi un daemon spento continua a servire gli stessi JSONL e tutto
+    sembra a posto finché non si nota che il timestamp più recente non avanza più. Qui il file
+    viene *sovrascritto* (scrittura atomica su temporaneo + rename) invece che appeso: interessa
+    solo l'ultimo battito, non lo storico, così non cresce e non serve rotazione."""
+
+    def __init__(self, path: Path, stop_event: threading.Event, interval: float = 30.0,
+                 started_at: float | None = None, extra: dict | None = None) -> None:
+        self.path = path
+        self.stop_event = stop_event
+        self.interval = interval
+        self.started_at = started_at if started_at is not None else time.time()
+        self.extra = extra or {}
+
+    def _write(self) -> None:
+        row = {
+            "timestamp": now_iso(),
+            "started_at": datetime.fromtimestamp(self.started_at, timezone.utc).isoformat(),
+            "uptime_s": round(time.time() - self.started_at, 1),
+            "interval_s": self.interval,
+            "pid": os.getpid(),
+            "threads": sorted(t.name for t in threading.enumerate() if t.is_alive() and not t.daemon or t.daemon),
+            **self.extra,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps(row, ensure_ascii=False) + "\n")
+        tmp.replace(self.path)  # atomico: chi legge vede sempre un file completo, mai a metà
+
+    def run(self) -> None:
+        LOG.info("Heartbeat avviato su %s (intervallo=%ss)", self.path, self.interval)
+        while not self.stop_event.is_set():
+            try:
+                self._write()
+            except Exception:
+                LOG.exception("Scrittura heartbeat fallita")
+            self.stop_event.wait(self.interval)
+
+
 # --------------------------------------------------------------------------
 # File di configurazione opzionale (--config)
 # --------------------------------------------------------------------------
@@ -1481,32 +1672,58 @@ def load_config_file(path: str) -> dict:
     return data
 
 
-def devices_from_config(config: dict) -> tuple[set[str], set[str], dict[str, str]]:
+@dataclass
+class ConfigDevices:
+    """Sezione 'devices' del file di configurazione, già normalizzata: i MAC "di casa" per il
+    tracking presenza, la mappa mac -> alias e la scheda d'inventario completa per MAC."""
+
+    wifi_macs: set[str] = field(default_factory=set)
+    ble_macs: set[str] = field(default_factory=set)
+    aliases: dict[str, str] = field(default_factory=dict)
+    inventory: dict[str, dict] = field(default_factory=dict)
+
+
+# Campi liberi d'inventario per device (--config, sezione "devices"): non hanno alcun effetto sul
+# comportamento del daemon, viaggiano solo fino alla dashboard via daemon_config.jsonl, dove
+# diventano la scheda del device condivisa fra tutti i browser (invece della sola etichetta locale
+# per-browser in localStorage, che continua comunque a vincere se impostata).
+INVENTORY_FIELDS = ("owner", "room", "type", "notes")
+
+
+def devices_from_config(config: dict) -> ConfigDevices:
     """Estrae dalla sezione 'devices' del file di configurazione i MAC WiFi/BLE 'di casa' (si
     sommano a quelli eventualmente passati con --wifi-home-macs/--ble-home-macs, non li
-    sostituiscono) e la mappa mac -> alias per la dashboard (daemon_config.jsonl, campo
-    'device_aliases')."""
+    sostituiscono), la mappa mac -> alias e la scheda d'inventario per MAC (proprietario, stanza,
+    tipo, tag, note) — questi ultimi puramente descrittivi, per la dashboard."""
     devices = config.get("devices", [])
     if not isinstance(devices, list):
         raise SystemExit("File di configurazione: 'devices' deve essere una lista")
-    wifi_macs: set[str] = set()
-    ble_macs: set[str] = set()
-    aliases: dict[str, str] = {}
+    result = ConfigDevices()
     for entry in devices:
         if not isinstance(entry, dict):
             raise SystemExit(f"File di configurazione: voce 'devices' non valida (deve essere un oggetto): {entry!r}")
         name = str(entry.get("name") or "").strip()
+        tags = entry.get("tags") or []
+        if not isinstance(tags, list):
+            raise SystemExit(f"File di configurazione: 'tags' del device {name or '(senza nome)'} deve essere una lista")
+        card = {"name": name, "tags": [str(t).strip() for t in tags if str(t).strip()]}
+        for key in INVENTORY_FIELDS:
+            value = str(entry.get(key) or "").strip()
+            if value:
+                card[key] = value
+
         wifi_mac = str(entry.get("wifi_mac") or "").strip().lower()
         ble_mac = str(entry.get("ble_mac") or "").strip().lower()
-        if wifi_mac:
-            wifi_macs.add(wifi_mac)
+        for mac, bucket in ((wifi_mac, result.wifi_macs), (ble_mac, result.ble_macs)):
+            if not mac:
+                continue
+            bucket.add(mac)
             if name:
-                aliases[wifi_mac] = name
-        if ble_mac:
-            ble_macs.add(ble_mac)
-            if name:
-                aliases[ble_mac] = name
-    return wifi_macs, ble_macs, aliases
+                result.aliases[mac] = name
+            # Entrambi i MAC dello stesso device puntano alla stessa scheda: per la dashboard sono
+            # due indirizzi della stessa identità fisica, esattamente come un link manuale.
+            result.inventory[mac] = card
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -1522,16 +1739,22 @@ MODULE_LABELS = {
     "detect_rogue_dhcp": "Rogue DHCP detection (--detect-rogue-dhcp)",
     "dhcp_lease_source": "DHCP lease cross-check (--dhcp-lease-source)",
     "deep_port_scan": "Deep port scan (--deep-port-scan)",
+    "ipv6_discovery": "IPv6 neighbor discovery (--ipv6-discovery)",
+    "exposure_audit": "Internet exposure audit / UPnP (--exposure-audit)",
     "arp_detection": "ARP spoofing detection",
     "trend_rollup": "Daily trend rollup",
     "ble": "BLE scan (--ble)",
     "ble_tracker_detection": "BLE tracker detection",
     "ble_identity_linking": "BLE identity link suggestions",
     "ble_evil_twin": "BLE evil twin/spoofing (--ble-watch-names)",
+    "ble_presence": "BLE presence tracking (--ble-home-macs)",
+    "wifi_presence": "WiFi presence tracking (--wifi-home-macs)",
+    "presence_aware_alerts": "Presence-aware alerting (--presence-aware-alerts)",
     "wifi_networks": "Adjacent WiFi networks",
     "wifi_traffic": "Estimated WiFi traffic",
     "evil_twin": "WiFi evil twin detection (--home-ssid)",
     "deauth_detection": "Deauth/disassoc flood detection",
+    "wifi_recurring_devices": "Recurring unknown WiFi devices (--wifi-recurrence-detection)",
     "capture_handshakes": "WPA handshake capture (--capture-handshakes)",
 }
 
@@ -1871,6 +2094,39 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
+        "--ipv6-discovery",
+        action="store_true",
+        help="Affianca allo scan ARP IPv4 la lettura della neighbor table IPv6 del kernel (NDP, "
+        "'ip -6 neighbor'): molte reti domestiche sono ormai dual-stack e un device può essere "
+        "pienamente attivo in IPv6 anche quando risponde poco o nulla in IPv4. Gli indirizzi "
+        "trovati sono associati al MAC già noto dallo scan LAN, non creano device separati",
+    )
+    p.add_argument(
+        "--ipv6-log",
+        default="/var/log/home-sentinel/ipv6_neighbors.jsonl",
+        help="Percorso file JSON Lines degli indirizzi IPv6 osservati per MAC (richiede --ipv6-discovery)",
+    )
+    p.add_argument(
+        "--exposure-audit",
+        action="store_true",
+        help="Interroga il router via UPnP/IGD (SSDP multicast + SOAP, solo LAN) per elencare i "
+        "port forwarding attivi verso Internet e incrociarli con le porte già scoperte sui device: "
+        "risponde alla domanda 'cosa è raggiungibile da fuori', che il solo port scan interno non "
+        "può dire. Un forwarding verso un device con una porta a rischio genera un alert",
+    )
+    p.add_argument(
+        "--exposure-log",
+        default="/var/log/home-sentinel/exposure_audit.jsonl",
+        help="Percorso file JSON Lines dei port forwarding rilevati sul router (richiede --exposure-audit)",
+    )
+    p.add_argument(
+        "--exposure-audit-interval",
+        type=float,
+        default=3600.0,
+        help="Intervallo (s) tra due interrogazioni UPnP del router",
+    )
+
+    p.add_argument(
         "--home-ssid",
         default="",
         help="SSID di casa da monitorare per possibili evil twin, separati da virgola "
@@ -1930,6 +2186,60 @@ def parse_args() -> argparse.Namespace:
         "(stesso default del BLE — i probe WiFi possono comunque essere meno frequenti e "
         "prevedibili dei suoi advertisement, specie con MAC randomization e probing ridotto "
         "per privacy: alzalo se noti falsi 'left')",
+    )
+    p.add_argument(
+        "--presence-aware-alerts",
+        action="store_true",
+        help="Alza di un livello la severità degli alert generati mentre in casa non c'è nessuno "
+        "dei MAC configurati per il tracking presenza (--wifi-home-macs/--ble-home-macs): un device "
+        "mai visto che compare sulla LAN a casa vuota merita più attenzione dello stesso evento a "
+        "casa piena. Richiede almeno un MAC 'di casa' configurato; ogni alert riporta comunque in "
+        "chiaro (campo 'home_occupied') lo stato usato per la decisione",
+    )
+    p.add_argument(
+        "--wifi-recurrence-detection",
+        action="store_true",
+        help="Segnala i MAC WiFi sconosciuti (non di casa, mai visti sulla LAN) che ricompaiono "
+        "nei dintorni in più giorni distinti: è l'equivalente WiFi del rilevamento tracker BLE — "
+        "la randomizzazione dei MAC rende inutile cercare una presenza continuativa, mentre un "
+        "ritorno ricorrente resta un segnale. Richiede --wifi-iface",
+    )
+    p.add_argument(
+        "--wifi-recurrence-days",
+        type=int,
+        default=3,
+        help="Numero di giorni distinti in cui lo stesso MAC WiFi sconosciuto deve ricomparire "
+        "prima di generare un alert (richiede --wifi-recurrence-detection)",
+    )
+    p.add_argument(
+        "--api",
+        action="store_true",
+        help="Avvia un'API HTTP locale in sola lettura sullo specchio SQLite (vedi sentinel_api.py): "
+        "permette alla dashboard di interrogare l'intero storico invece di scaricare solo la coda "
+        "più recente dei JSONL, che oltre qualche MB viene necessariamente troncata. Nessuna "
+        "autenticazione: pensata per la LAN di casa, di default in ascolto solo su 127.0.0.1",
+    )
+    p.add_argument("--api-host", default="127.0.0.1", help="Indirizzo di ascolto dell'API (0.0.0.0 per tutta la LAN)")
+    p.add_argument("--api-port", type=int, default=8099, help="Porta di ascolto dell'API")
+    p.add_argument(
+        "--api-allow-origin",
+        default="*",
+        help="Valore dell'header CORS Access-Control-Allow-Origin: serve perché la dashboard è "
+        "servita da un'altra porta rispetto all'API. Restringilo all'origine della tua dashboard "
+        "(es. http://raspberrypi.local:8080) se l'API è esposta oltre 127.0.0.1",
+    )
+    p.add_argument(
+        "--heartbeat-log",
+        default="/var/log/home-sentinel/heartbeat.jsonl",
+        help="Percorso del file di prova di vita del daemon, riscritto (non appeso) ogni "
+        "--heartbeat-interval secondi: permette alla dashboard di distinguere 'rete tranquilla' "
+        "da 'daemon fermo', cosa che leggendo solo file statici non potrebbe fare",
+    )
+    p.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=30.0,
+        help="Intervallo (s) di riscrittura del file di heartbeat (0 per disabilitarlo)",
     )
     p.add_argument(
         "--daemon-config-log",
@@ -2034,7 +2344,7 @@ def main() -> None:
         LOG.warning("Processo non in esecuzione come root: ARP scan e sniffing WiFi potrebbero fallire")
 
     config = load_config_file(args.config) if args.config else {}
-    config_wifi_macs, config_ble_macs, device_aliases = devices_from_config(config)
+    config_devices = devices_from_config(config)
 
     subnet = str(config["subnet"]).strip() if config.get("subnet") else detect_subnet(args.lan_iface)
     LOG.info(
@@ -2102,7 +2412,7 @@ def main() -> None:
     # attivo, WifiProbeMonitor alimenta la stessa istanza anche dai probe request (utile per un
     # device non ancora connesso, es. appena rientrato in zona), i due segnali si sommano invece
     # di competere.
-    wifi_home_macs = {m.strip().lower() for m in args.wifi_home_macs.split(",") if m.strip()} | config_wifi_macs
+    wifi_home_macs = {m.strip().lower() for m in args.wifi_home_macs.split(",") if m.strip()} | config_devices.wifi_macs
     wifi_presence_tracker = None
     wifi_presence_log = None
     if wifi_home_macs:
@@ -2145,6 +2455,20 @@ def main() -> None:
     if os_fingerprint_service is not None:
         threads.append(threading.Thread(target=os_fingerprint_service.run, name="os-fingerprint", daemon=True))
 
+    if args.ipv6_discovery:
+        ipv6_service = Ipv6NeighborMonitor(
+            iface=args.lan_iface, log=make_logger(args.ipv6_log), stop_event=stop_event,
+            sqlite_store=sqlite_store, interval=args.interval,
+        )
+        threads.append(threading.Thread(target=ipv6_service.run, name="ipv6-neighbors", daemon=True))
+
+    if args.exposure_audit:
+        exposure_service = ExposureAuditService(
+            log=make_logger(args.exposure_log), stop_event=stop_event, alert_manager=alert_manager,
+            sqlite_store=sqlite_store, interval=args.exposure_audit_interval,
+        )
+        threads.append(threading.Thread(target=exposure_service.run, name="exposure-audit", daemon=True))
+
     trend_rollup_log = None
     if sqlite_store is not None and not args.no_trend_rollup:
         trend_rollup_log = make_logger(args.trend_rollup_log)
@@ -2186,6 +2510,17 @@ def main() -> None:
             else:
                 LOG.warning("--capture-handshakes richiede --home-ssid: cattura handshake disabilitata")
 
+        recurrence_detector = None
+        if args.wifi_recurrence_detection:
+            # I MAC "noti" da escludere sono quelli di casa più tutti quelli già visti sulla LAN:
+            # il secondo insieme cresce nel tempo, quindi va letto ad ogni osservazione (callable)
+            # e non fotografato adesso, altrimenti un device di casa scoperto più tardi resterebbe
+            # per sempre "sconosciuto" agli occhi del rilevatore.
+            recurrence_detector = WifiRecurrenceDetector(
+                alert_manager, min_days=args.wifi_recurrence_days,
+                known_macs_provider=lambda: wifi_home_macs | lan_service.known_macs(),
+            )
+
         wifi_service = WifiProbeMonitor(
             iface=args.wifi_iface,
             channels=channels,
@@ -2204,6 +2539,7 @@ def main() -> None:
             home_ssids=home_ssids,
             home_channel_priority=not args.no_home_channel_priority,
             presence_tracker=wifi_presence_tracker, presence_log=wifi_presence_log,
+            recurrence_detector=recurrence_detector,
         )
         threads.append(threading.Thread(target=wifi_service.run, name="wifi-probe-monitor", daemon=True))
     else:
@@ -2236,7 +2572,7 @@ def main() -> None:
         ble_watch_names = {s.strip() for s in args.ble_watch_names.split(",") if s.strip()}
         ble_evil_twin_detector = BleEvilTwinDetector(ble_watch_names, alert_manager) if ble_watch_names else None
 
-        ble_home_macs = {m.strip().lower() for m in args.ble_home_macs.split(",") if m.strip()} | config_ble_macs
+        ble_home_macs = {m.strip().lower() for m in args.ble_home_macs.split(",") if m.strip()} | config_devices.ble_macs
         ble_presence_tracker = None
         ble_presence_log = None
         if ble_home_macs:
@@ -2256,6 +2592,22 @@ def main() -> None:
         threads.append(threading.Thread(target=ble_service.run, name="ble-scan", daemon=True))
     else:
         LOG.info("Nessun --ble indicato: modulo scan BLE disabilitato")
+        ble_presence_tracker = None
+
+    # Collegato qui, e non nel costruttore dell'AlertManager, perché i due PresenceTracker nascono
+    # più in basso di lui (quello WiFi prima della LAN discovery, quello BLE dentro il blocco --ble).
+    # Da questo momento ogni alert porta con sé lo stato di occupazione della casa e, se richiesto,
+    # sale di un gradino di severità quando non c'è nessuno.
+    occupancy = HomeOccupancy([wifi_presence_tracker, ble_presence_tracker])
+    if args.presence_aware_alerts and not occupancy.configured:
+        LOG.warning(
+            "--presence-aware-alerts richiede almeno un MAC 'di casa' "
+            "(--wifi-home-macs/--ble-home-macs o la sezione devices di --config): escalation disattivata"
+        )
+    alert_manager.set_occupancy(occupancy, escalate_when_empty=args.presence_aware_alerts)
+
+    if args.wifi_recurrence_detection and not args.wifi_iface:
+        LOG.warning("--wifi-recurrence-detection richiede --wifi-iface: rilevamento ricorrenze disabilitato")
 
     # Scritto una sola volta all'avvio: la dashboard non ha altrimenti alcuna visibilità sui
     # parametri del daemon (niente endpoint di stato dedicato, solo file JSONL). Da qui legge sia
@@ -2274,16 +2626,22 @@ def main() -> None:
         "detect_rogue_dhcp": bool(args.detect_rogue_dhcp),
         "dhcp_lease_source": bool(args.dhcp_lease_source),
         "deep_port_scan": bool(args.deep_port_scan),
+        "ipv6_discovery": bool(args.ipv6_discovery),
+        "exposure_audit": bool(args.exposure_audit),
         "arp_detection": not args.no_arp_detection,
         "trend_rollup": bool(sqlite_store is not None and not args.no_trend_rollup),
         "ble": bool(args.ble),
         "ble_tracker_detection": bool(args.ble and not args.no_ble_tracker_detection),
         "ble_identity_linking": bool(args.ble and not args.no_ble_identity_linking),
         "ble_evil_twin": bool(args.ble and ble_watch_names),
+        "ble_presence": bool(args.ble and ble_home_macs),
+        "wifi_presence": bool(wifi_home_macs),
+        "presence_aware_alerts": bool(args.presence_aware_alerts and (wifi_home_macs or ble_home_macs)),
         "wifi_networks": bool(args.wifi_iface and not args.no_wifi_networks),
         "wifi_traffic": bool(args.wifi_iface and not args.no_wifi_traffic),
         "evil_twin": bool(args.wifi_iface and home_ssids),
         "deauth_detection": bool(args.wifi_iface and not args.no_deauth_detection),
+        "wifi_recurring_devices": bool(args.wifi_iface and args.wifi_recurrence_detection),
         "capture_handshakes": bool(args.wifi_iface and args.capture_handshakes and home_ssids),
     }
 
@@ -2296,9 +2654,30 @@ def main() -> None:
         "ble_home_macs": sorted(ble_home_macs),
         "wifi_home_macs": sorted(wifi_home_macs),
         "home_ssids": sorted(home_ssids),
-        "device_aliases": device_aliases,
+        "device_aliases": config_devices.aliases,
+        "device_inventory": config_devices.inventory,
         "modules": modules,
     })
+
+    if args.api:
+        if sqlite_store is None:
+            LOG.warning("--api richiede lo specchio SQLite: incompatibile con --no-db, API non avviata")
+        else:
+            threads.append(threading.Thread(
+                target=sentinel_api.serve, name="query-api", daemon=True,
+                kwargs={
+                    "db_path": Path(args.db), "host": args.api_host, "port": args.api_port,
+                    "stop_event": stop_event, "allow_origin": args.api_allow_origin,
+                    "heartbeat_path": Path(args.heartbeat_log) if args.heartbeat_interval > 0 else None,
+                },
+            ))
+
+    if args.heartbeat_interval > 0:
+        heartbeat = HeartbeatService(
+            path=Path(args.heartbeat_log), stop_event=stop_event, interval=args.heartbeat_interval,
+            extra={"subnet": subnet, "lan_iface": args.lan_iface, "wifi_iface": args.wifi_iface or None},
+        )
+        threads.append(threading.Thread(target=heartbeat.run, name="heartbeat", daemon=True))
 
     # Riepilogo leggibile in un unico punto del journal, invece di doverlo ricostruire mentalmente
     # dai singoli warning sparsi nel resto di questa funzione (che restano al loro posto, per il

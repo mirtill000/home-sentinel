@@ -204,6 +204,31 @@ CREATE TABLE IF NOT EXISTS dhcp_leases (
 );
 CREATE INDEX IF NOT EXISTS idx_dhcplease_mac ON dhcp_leases(mac);
 CREATE INDEX IF NOT EXISTS idx_dhcplease_ts ON dhcp_leases(timestamp);
+
+CREATE TABLE IF NOT EXISTS ipv6_neighbors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    mac TEXT NOT NULL,
+    ipv6 TEXT NOT NULL,
+    scope TEXT,
+    state TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ipv6_mac ON ipv6_neighbors(mac);
+CREATE INDEX IF NOT EXISTS idx_ipv6_ts ON ipv6_neighbors(timestamp);
+
+CREATE TABLE IF NOT EXISTS exposure_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    external_port INTEGER,
+    internal_port INTEGER,
+    internal_ip TEXT,
+    protocol TEXT,
+    description TEXT,
+    enabled INTEGER,
+    router TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_exposure_ts ON exposure_audit(timestamp);
+CREATE INDEX IF NOT EXISTS idx_exposure_ip ON exposure_audit(internal_ip);
 """
 
 
@@ -221,6 +246,7 @@ class SqliteStore:
         self._migrate_add_fingerprint_mdns_name()
         self._migrate_add_wifi_networks_security()
         self._migrate_add_ble_device_type()
+        self._migrate_add_alert_home_occupied()
         self._conn.commit()
 
     def _migrate_drop_hour_histogram(self) -> None:
@@ -276,6 +302,15 @@ class SqliteStore:
         cols = [row[1] for row in self._conn.execute("PRAGMA table_info(ble_events)").fetchall()]
         if "device_type" not in cols:
             self._conn.execute("ALTER TABLE ble_events ADD COLUMN device_type TEXT")
+
+    def _migrate_add_alert_home_occupied(self) -> None:
+        """Aggiunge la colonna home_occupied agli alert di un database precedente (contesto di
+        occupazione della casa al momento dell'alert, vedi AlertManager). ADD COLUMN nullable:
+        le righe già presenti restano NULL, che è esattamente il significato giusto per loro
+        ("non sappiamo se ci fosse qualcuno"), non un valore inventato."""
+        cols = [row[1] for row in self._conn.execute("PRAGMA table_info(alerts)").fetchall()]
+        if "home_occupied" not in cols:
+            self._conn.execute("ALTER TABLE alerts ADD COLUMN home_occupied INTEGER")
 
     def insert_lan_event(self, row: dict) -> None:
         with self._lock:
@@ -353,13 +388,36 @@ class SqliteStore:
             self._conn.commit()
 
     def insert_alert(self, row: dict) -> None:
+        occupied = row.get("home_occupied")
         with self._lock:
             self._conn.execute(
-                "INSERT INTO alerts (timestamp, severity, type, mac, ip, message, details) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO alerts (timestamp, severity, type, mac, ip, message, home_occupied, details) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["timestamp"], row["severity"], row["type"], row.get("mac"), row.get("ip"),
-                    row["message"], json.dumps(row.get("details", {})),
+                    row["message"], None if occupied is None else int(occupied),
+                    json.dumps(row.get("details", {})),
+                ),
+            )
+            self._conn.commit()
+
+    def insert_ipv6_neighbor(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO ipv6_neighbors (timestamp, mac, ipv6, scope, state) VALUES (?, ?, ?, ?, ?)",
+                (row["timestamp"], row["mac"], row["ipv6"], row.get("scope"), row.get("state")),
+            )
+            self._conn.commit()
+
+    def insert_exposure(self, row: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO exposure_audit (timestamp, external_port, internal_port, internal_ip, "
+                "protocol, description, enabled, router) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["timestamp"], row.get("external_port"), row.get("internal_port"),
+                    row.get("internal_ip"), row.get("protocol"), row.get("description"),
+                    int(bool(row.get("enabled"))), row.get("router"),
                 ),
             )
             self._conn.commit()
