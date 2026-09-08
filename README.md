@@ -38,10 +38,13 @@ stesso.
 
 ## Uso
 
-Solo discovery LAN:
+Solo discovery LAN — la subnet da scansionare viene dedotta automaticamente
+dall'indirizzo IPv4 (e relativa netmask) dell'interfaccia di rete, ottenuto
+via DHCP o configurato staticamente non fa differenza, quindi non va
+indicata esplicitamente:
 
 ```bash
-sudo python3 home_sentinel.py --subnet 192.168.1.0/24
+sudo python3 home_sentinel.py
 ```
 
 Con anche il monitor probe WiFi su un'interfaccia già in monitor mode
@@ -50,7 +53,6 @@ scan BLE sull'adattatore Bluetooth di sistema:
 
 ```bash
 sudo python3 home_sentinel.py \
-    --subnet 192.168.1.0/24 \
     --wifi-iface wlan1 \
     --auto-monitor \
     --ble
@@ -58,6 +60,43 @@ sudo python3 home_sentinel.py \
 
 Va eseguito come root (necessario per ARP scan, sniffing 802.11 raw e,
 tipicamente, per lo scan BLE via BlueZ).
+
+Per il rilevamento automatico della subnet, con più interfacce di rete
+disponibili (es. sia `eth0` sia `wlan0`) indica quella giusta con
+`--lan-iface`: senza, viene usata l'interfaccia della rotta di default.
+Nei rari casi limite in cui il rilevamento automatico non basta (VLAN o
+più subnet sulla stessa interfaccia), puoi comunque forzare la subnet
+esplicitamente con il campo `"subnet"` del file di configurazione
+(`--config`, vedi sotto).
+
+### File di configurazione (`--config`)
+
+`--config /percorso/config.json` legge da un file JSON opzionale
+impostazioni comuni che altrimenti andrebbero ripetute da riga di comando —
+per ora, soprattutto, l'elenco dei device "di casa" con un alias o il nome
+della persona a cui sono associati (vedi `config.example.json` come punto
+di partenza):
+
+```json
+{
+  "devices": [
+    { "name": "Marco", "wifi_mac": "aa:bb:cc:dd:ee:01", "ble_mac": "11:22:33:44:55:01" },
+    { "name": "Sonia", "wifi_mac": "aa:bb:cc:dd:ee:02" }
+  ]
+}
+```
+
+I MAC WiFi/BLE elencati qui si **sommano** a quelli eventualmente passati
+con `--wifi-home-macs`/`--ble-home-macs` (stesso tracking presenza/assenza,
+vedi sotto), non li sostituiscono — puoi usare solo il file, solo i flag, o
+entrambi insieme. Gli alias vengono scritti anche in `daemon_config.jsonl`
+(campo `device_aliases`), da cui la dashboard li legge automaticamente per
+mostrare subito il nome della persona invece del solo MAC/hostname, su
+qualunque browser la si apra — senza dover reimpostare l'etichetta a mano
+per ognuno (un'etichetta impostata localmente dalla dashboard stessa
+continua comunque a valere, e ha sempre la precedenza su quella del file).
+Un parametro passato esplicitamente da riga di comando ha sempre la
+precedenza sul valore corrispondente nel file di configurazione.
 
 ## Output
 
@@ -125,10 +164,14 @@ ri-interrogato, quindi il costo aggiuntivo resta contenuto quando la rete è
 già stabile. `--arp-timeout` (default 2s) regola l'attesa per ogni giro:
 alzalo se hai molti device che rispondono lentamente (risparmio energetico
 WiFi, reti particolarmente affollate). Se dopo aver alzato entrambi
-continuano a mancare host visti da nmap, verifica che `--subnet` copra
-l'intero range DHCP effettivo e che `--lan-iface` sia la stessa interfaccia
-di rete del segmento in cui si trovano quegli host (l'ARP non attraversa
-router/VLAN diverse).
+continuano a mancare host visti da nmap, verifica che la subnet rilevata
+automaticamente (vedi il log di avvio, o `subnet` in `daemon_config.jsonl`)
+copra l'intero range DHCP effettivo e che `--lan-iface` sia la stessa
+interfaccia di rete del segmento in cui si trovano quegli host (l'ARP non
+attraversa router/VLAN diverse) — nei rari casi in cui il rilevamento
+automatico prende la subnet sbagliata (es. più subnet sulla stessa
+interfaccia), forzala esplicitamente con `"subnet"` nel file di
+configurazione (`--config`).
 
 Se anche con `--arp-retries` più alto restano host mancanti, sono
 disponibili due fallback opzionali (disattivati di default: costano tempo
@@ -198,7 +241,7 @@ tipico di una rotazione di indirizzo BLE privato risolvibile (RPA). La
 dashboard li mostra come suggerimento scartabile nel profilo device,
 stesso principio della "Group by identity" lato LAN/WiFi.
 
-**`ble_presence.jsonl`** (`--ble-home-macs`, opzionale):
+**`ble_presence.jsonl`** (`--ble-home-macs`, o la sezione `devices` del file di configurazione, vedi `--config` sopra — opzionale):
 `{timestamp, mac, event, duration_s}`
 Un evento per ogni transizione presente/assente di un MAC BLE "di casa"
 (es. lo smartphone di un componente della famiglia): `event` è `"arrived"`
@@ -225,11 +268,14 @@ Un MAC è considerato assente dopo `--wifi-presence-away-timeout-s`
 (default 300s, come il BLE) senza segnali da **nessuna** delle due fonti.
 
 **`daemon_config.jsonl`**:
-`{timestamp, lan_iface, wifi_iface, ble_home_macs, wifi_home_macs, home_ssids, modules}`
+`{timestamp, subnet, lan_iface, wifi_iface, ble_home_macs, wifi_home_macs, home_ssids, device_aliases, modules}`
 Una riga scritta una sola volta ad ogni avvio del daemon, snapshot della
-configurazione effettiva: le interfacce in uso, l'elenco completo dei MAC
-"di casa" configurati via `--ble-home-macs`/`--wifi-home-macs`, gli SSID
-di casa (`--home-ssid`) e un oggetto `modules` con un booleano per ciascun
+configurazione effettiva: la subnet rilevata automaticamente (o forzata via
+`--config`), le interfacce in uso, l'elenco completo dei MAC "di casa"
+configurati via `--ble-home-macs`/`--wifi-home-macs` e/o la sezione
+`devices` del file di configurazione, gli alias assegnati a ciascun MAC
+(`device_aliases`, mappa mac -> nome, usata dalla dashboard come vedi
+sopra), gli SSID di casa (`--home-ssid`) e un oggetto `modules` con un booleano per ciascun
 modulo opzionale (`fingerprint`, `os_fingerprint`, `dhcp_discovery`,
 `detect_rogue_dhcp`, `dhcp_lease_source`, `deep_port_scan`,
 `arp_detection`, `trend_rollup`, `ble`, `ble_tracker_detection`,
@@ -781,7 +827,7 @@ sudo cp systemd/home-sentinel-report.service systemd/home-sentinel-report.timer 
 sudo mkdir -p /etc/home-sentinel
 echo "HOME_SENTINEL_SMTP_PASSWORD=..." | sudo tee /etc/home-sentinel/report.env
 sudo chmod 600 /etc/home-sentinel/report.env
-# adatta subnet/percorsi/destinatari in home-sentinel-report.service
+# adatta percorsi/destinatari in home-sentinel-report.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now home-sentinel-report.timer
 ```
