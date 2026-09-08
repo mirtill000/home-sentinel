@@ -3431,6 +3431,192 @@ const MODULE_META = {
   capture_handshakes: { label: "WPA handshake capture", flag: "--wifi-iface --capture-handshakes --home-ssid ..." },
 };
 
+/** Riferimento completo dei flag CLI di home_sentinel.py per la Help page: fonte di verità è
+ * parse_args() nel daemon, non il contrario. Ogni nuovo --flag aggiunto lì va aggiunto anche qui
+ * (stesso principio di allineamento di MODULE_META qui sopra) — altrimenti resterebbe visibile
+ * solo con --help sul Pi, invisibile a chi guarda solo la dashboard. Raggruppati per area
+ * funzionale, non per ordine di parse_args(), per essere effettivamente consultabili. */
+const CLI_FLAG_GROUPS = [
+  {
+    title: "Core & LAN discovery",
+    flags: [
+      ["--config", "Optional JSON config file for settings otherwise repeated on the command line — mainly the list of \"home\" devices with their alias (see config.example.json). CLI flags always take precedence over the file."],
+      ["--lan-iface", "Interface for the ARP scan and automatic subnet detection (default: the default route's interface)."],
+      ["--interval", "Seconds between LAN scan cycles (default: 60)."],
+      ["--arp-timeout", "How long to wait for ARP replies per scan round, in seconds (default: 2)."],
+      ["--arp-retries", "Re-sends the ARP request only to hosts that haven't answered yet, up to N more times — compensates for replies lost to collisions on busy WiFi networks (default: 2, 0 to disable)."],
+      ["--icmp-fallback", "If a host still doesn't answer after all ARP retries, try a direct ICMP ping before considering it absent (optional, doesn't replace ARP — a host with a firewall blocking ICMP, e.g. Windows by default, wouldn't answer this either)."],
+      ["--tcp-fallback", "Last-resort fallback for hosts still unanswered after ARP and (if enabled) ICMP: try a TCP SYN to --tcp-fallback-ports — useful for hosts whose firewall blocks ping but not TCP."],
+      ["--tcp-fallback-ports", "Ports used by --tcp-fallback, comma-separated (default: 80,443,22,445,3389)."],
+      ["--fallback-timeout", "How long to wait for ICMP/TCP fallback replies, in seconds (default: 1.5)."],
+    ],
+  },
+  {
+    title: "Port scanning",
+    flags: [
+      ["--ports", "Ports to check, comma-separated (default: 1-1024 plus ~50 common \"high\" ports for self-hosted/home-lab/IoT services, e.g. 8080, 8123, 9100, 32400)."],
+      ["--port-scan-interval", "Minimum interval between two port scans of the same device, in seconds (default: 3600)."],
+      ["--deep-port-scan", "Enables a second, wider periodic port scan (default: all 65535 TCP ports, see --deep-ports) but much less frequent than the regular one, to avoid missing services on non-standard ports."],
+      ["--deep-ports", "Ports for the deep port scan, same format as --ports plus 'start-end' ranges (default: all, 1-65535)."],
+      ["--deep-port-scan-interval", "Minimum interval between two deep port scans of the same device, in seconds (default: one week)."],
+      ["--deep-scan-log", "Path of the JSON Lines file for deep port scan results (default: /var/log/home-sentinel/deep_port_scan.jsonl)."],
+      ["--lan-log", "Path of the JSON Lines file for LAN discovery output (default: /var/log/home-sentinel/lan_discovery.jsonl)."],
+    ],
+  },
+  {
+    title: "DHCP lease cross-check",
+    flags: [
+      ["--dhcp-lease-source", "Local path or http(s) URL of the router's DHCP lease table, for cross-checking against the ARP scan (empty = disabled; see README for supported formats)."],
+      ["--dhcp-lease-format", "Format of --dhcp-lease-source: 'dnsmasq' (native dnsmasq.leases), 'json' (generic array, see README), or 'auto' (guess from content; default)."],
+      ["--dhcp-lease-poll-interval", "Minimum interval between two reads of --dhcp-lease-source, in seconds (default: 300)."],
+      ["--dhcp-leases-log", "Path of the JSON Lines file for the DHCP lease/ARP scan cross-check, requires --dhcp-lease-source (default: /var/log/home-sentinel/dhcp_leases.jsonl)."],
+    ],
+  },
+  {
+    title: "DHCP monitoring",
+    flags: [
+      ["--detect-rogue-dhcp", "Enables passive DHCP sniffing to detect unexpected DHCP servers (possible rogue DHCP)."],
+      ["--dhcp-trusted-servers", "IPs of trusted DHCP servers, comma-separated (default: learns the first one observed)."],
+      ["--dhcp-iface", "Interface to sniff DHCP traffic on (default: same as --lan-iface)."],
+      ["--dhcp-discovery", "Passively observes clients' DHCPDISCOVER/DHCPREQUEST (same sniff loop as --detect-rogue-dhcp, independent of it) for a more reliable hostname than reverse DNS, and an immediate LAN rescan when a never-seen MAC appears."],
+      ["--dhcp-events-log", "Path of the JSON Lines file for observed DHCP client events, requires --dhcp-discovery (default: /var/log/home-sentinel/dhcp_events.jsonl)."],
+    ],
+  },
+  {
+    title: "WiFi monitor",
+    flags: [
+      ["--wifi-iface", "WiFi interface in monitor mode for probe sniffing (omit to disable the whole WiFi monitor)."],
+      ["--probe-log", "Path of the JSON Lines file for WiFi probe output (default: /var/log/home-sentinel/wifi_probes.jsonl)."],
+      ["--wifi-channels", "WiFi channels to hop across, comma-separated (default: 1-13)."],
+      ["--wifi-hop-interval", "Seconds spent on each channel before hopping to the next (default: 0.5)."],
+      ["--auto-monitor", "Tries to automatically set --wifi-iface into monitor mode."],
+      ["--no-wifi-traffic", "Disables the per-device estimated WiFi traffic (requires --wifi-iface; on by default when it's set)."],
+      ["--wifi-traffic-log", "Path of the JSON Lines file for the per-device WiFi traffic estimate (default: /var/log/home-sentinel/wifi_traffic.jsonl)."],
+      ["--wifi-traffic-interval", "Interval for aggregating WiFi traffic counters before writing them to the log, in seconds (default: 60)."],
+      ["--no-wifi-networks", "Disables logging of WiFi networks actually detected from their beacons (requires --wifi-iface; on by default when it's set)."],
+      ["--wifi-networks-log", "Path of the JSON Lines file for detected WiFi networks — BSSID/SSID/channel/RSSI from 802.11 beacons (default: /var/log/home-sentinel/wifi_networks.jsonl)."],
+      ["--wifi-networks-interval", "Minimum interval between two log lines for the same BSSID, in seconds (default: 30)."],
+    ],
+  },
+  {
+    title: "WiFi security",
+    flags: [
+      ["--home-ssid", "Home SSID(s) to monitor for possible evil twins, comma-separated (requires --wifi-iface; every new BSSID for a monitored SSID raises an alert)."],
+      ["--capture-handshakes", "Passively captures the 4-way EAPOL handshake (WPA/WPA2) of the networks listed in --home-ssid, for an offline password-strength audit with aircrack-ng/hashcat (requires --wifi-iface and --home-ssid; no frame is ever sent, only passive listening to handshakes that happen on their own)."],
+      ["--handshake-pcap-dir", "Folder where captured handshake .pcap files are saved (default: /var/log/home-sentinel/handshakes)."],
+      ["--handshake-log", "Path of the JSON Lines file for handshake capture events — metadata only, not the pcap (default: /var/log/home-sentinel/handshake_captures.jsonl)."],
+      ["--handshake-window-s", "Seconds of inactivity on an AP/station pair before saving the partial handshake collected so far, if it already reached --handshake-min-frames (default: 2)."],
+      ["--handshake-min-frames", "Minimum number of EAPOL frames for a capture to be considered useful for an offline audit attempt — normally at least messages 1 and 2 of the 4-way handshake are needed (default: 2)."],
+      ["--no-deauth-detection", "Disables detection of 802.11 deauth/disassoc frame bursts (requires --wifi-iface; on by default when it's set)."],
+      ["--deauth-window-seconds", "Time window for counting deauth/disassoc frames to detect a burst, in seconds (default: 10)."],
+      ["--deauth-threshold", "Minimum number of deauth/disassoc frames within the window to raise an alert (default: 10)."],
+      ["--no-home-channel-priority", "Disables channel priority for the home network. With --capture-handshakes or deauth detection active (the latter on by default) and --home-ssid configured, once the home network's channel is learned from its beacon the sniffer stays parked there most of the time instead of hopping uniformly — this flag reverts to uniform hopping (useful if your priority is monitoring neighboring networks rather than your own)."],
+      ["--wifi-recurrence-detection", "Flags unknown WiFi MACs (not home, never seen on the LAN) that reappear nearby on multiple distinct days — the WiFi equivalent of BLE tracker detection, since MAC randomization makes looking for continuous presence useless. Requires --wifi-iface."],
+      ["--wifi-recurrence-days", "Number of distinct days the same unknown WiFi MAC must reappear before raising an alert, requires --wifi-recurrence-detection (default: 3)."],
+    ],
+  },
+  {
+    title: "WiFi presence",
+    flags: [
+      ["--wifi-home-macs", "\"Home\" WiFi MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated — same principle as --ble-home-macs on the WiFi side. Detected both by the ARP scan (--lan-iface, works even without --wifi-iface: a device already connected is already present) and, if --wifi-iface is active, by probe requests (useful for a device not yet connected)."],
+      ["--wifi-presence-log", "Path of the JSON Lines file for WiFi arrival/departure events (default: /var/log/home-sentinel/wifi_presence.jsonl)."],
+      ["--wifi-presence-away-timeout-s", "Seconds without a probe request from a \"home\" MAC before considering it away — same default as BLE, but WiFi probes can be less frequent/predictable due to MAC randomization and reduced probing for privacy; raise it if you notice false \"left\" events (default: 300)."],
+    ],
+  },
+  {
+    title: "BLE",
+    flags: [
+      ["--ble", "Enables passive scanning of nearby BLE devices via the local Bluetooth adapter."],
+      ["--ble-adapter", "Bluetooth adapter to use for the BLE scan, e.g. hci0 (default: the system adapter)."],
+      ["--ble-log", "Path of the JSON Lines file for BLE scan output (default: /var/log/home-sentinel/ble_discovery.jsonl)."],
+      ["--ble-active", "Active BLE scan instead of passive: requests scan responses from devices, often revealing more information (full name, other UUIDs) but making the Pi itself more visible over radio."],
+      ["--no-ble-tracker-detection", "Disables the alert for BLE trackers (AirTag/Find My/Tile/SmartTag) present for too long (on by default together with --ble)."],
+      ["--ble-trusted-macs", "BLE MACs excluded from the tracker alert (e.g. your own AirTag), comma-separated."],
+      ["--ble-tracker-window-hours", "Hours of continuous presence of a BLE tracker beyond which the alert fires (default: 3)."],
+      ["--no-ble-identity-linking", "Disables identity link suggestions across BLE address rotation (RPA), on by default together with --ble."],
+      ["--ble-identity-log", "Path of the JSON Lines file for BLE identity link suggestions (default: /var/log/home-sentinel/ble_identity_links.jsonl)."],
+      ["--ble-identity-rotation-window-s", "Maximum window, in seconds, between a MAC disappearing and a new one appearing with the same advertised signature, for them to be suggested as the same device (default: 1200)."],
+      ["--ble-watch-names", "\"Home\" BLE names to monitor for possible spoofing/cloning (e.g. a smart lock), comma-separated."],
+      ["--ble-home-macs", "\"Home\" BLE MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated."],
+      ["--ble-presence-log", "Path of the JSON Lines file for BLE arrival/departure events (default: /var/log/home-sentinel/ble_presence.jsonl)."],
+      ["--ble-presence-away-timeout-s", "Seconds without an advertisement from a \"home\" MAC before considering it away (default: 300)."],
+    ],
+  },
+  {
+    title: "Storage & trend",
+    flags: [
+      ["--db", "Path of the SQLite database — an indexed mirror of the JSON Lines logs, for historical queries (default: /var/log/home-sentinel/home-sentinel.db)."],
+      ["--no-db", "Disables the SQLite mirror."],
+      ["--no-trend-rollup", "Disables the daily rollup behind the dashboard's Trend page (requires the SQLite mirror, so it has no effect combined with --no-db)."],
+      ["--trend-rollup-log", "Path of the JSON Lines file for the daily rollup — new devices, alerts (default: /var/log/home-sentinel/trend_daily.jsonl)."],
+      ["--trend-rollup-interval", "Interval for recomputing the daily rollup from the SQLite mirror, in seconds (default: 3600)."],
+    ],
+  },
+  {
+    title: "Device fingerprinting",
+    flags: [
+      ["--fingerprint", "Enables LAN device fingerprinting (mDNS/SSDP/NetBIOS/banner) on every port scan."],
+      ["--fingerprint-log", "Path of the JSON Lines file for device fingerprint output (default: /var/log/home-sentinel/fingerprint_discovery.jsonl)."],
+      ["--os-fingerprint", "Enables the OS heuristic (from TTL/window size of TCP SYN/SYN-ACK packets): passive on traffic already visible on --lan-iface, plus an immediate active probe on newly discovered devices (see --no-os-fingerprint-active-probe)."],
+      ["--os-fingerprint-log", "Path of the JSON Lines file for OS heuristic output (default: /var/log/home-sentinel/os_fingerprint.jsonl)."],
+      ["--os-fingerprint-interval", "Minimum interval between two log lines for the same MAC, applies to both passive and active probe (default: 300)."],
+      ["--no-os-fingerprint-active-probe", "Disables the active probe on newly discovered devices (a single TCP SYN): only passive listening remains, which for a device with all ports filtered might never produce an OS guess."],
+      ["--os-fingerprint-active-probe-port", "Port used by the active probe — works whether it's open (SYN-ACK reply) or closed (RST reply), the TTL in the response is valid either way (default: 80)."],
+      ["--os-fingerprint-active-probe-timeout", "How long to wait for the active probe's reply before giving up on that device, in seconds (default: 1.0)."],
+    ],
+  },
+  {
+    title: "Alerts & anomaly detection",
+    flags: [
+      ["--alerts-log", "Path of the JSON Lines file for alerts generated by the detectors — anomalies, ARP, DHCP, evil twin (default: /var/log/home-sentinel/alerts_detection.jsonl)."],
+      ["--no-anomaly-detection", "Disables the per-device behavioral baseline (known ports)."],
+      ["--no-arp-detection", "Disables detection of IP/MAC conflicts (possible ARP spoofing) during the LAN scan (on by default)."],
+      ["--presence-aware-alerts", "Raises the severity of alerts generated while none of the MACs configured for presence tracking (--wifi-home-macs/--ble-home-macs) are home — a never-seen device appearing on the LAN with an empty home deserves more attention than the same event with people home. Requires at least one \"home\" MAC configured; every alert still reports the state used for the decision in its 'home_occupied' field."],
+    ],
+  },
+  {
+    title: "IPv6 & exposure audit",
+    flags: [
+      ["--ipv6-discovery", "Alongside the IPv4 ARP scan, reads the kernel's IPv6 neighbor table (NDP, 'ip -6 neighbor'): many home networks are dual-stack and a device can be fully active on IPv6 while barely responding on IPv4. Addresses found are associated with the MAC already known from the LAN scan, not treated as separate devices."],
+      ["--ipv6-log", "Path of the JSON Lines file for IPv6 addresses observed per MAC, requires --ipv6-discovery (default: /var/log/home-sentinel/ipv6_neighbors.jsonl)."],
+      ["--exposure-audit", "Queries the router via UPnP/IGD (SSDP multicast + SOAP, LAN only) to list active port forwards to the Internet and cross-check them against ports already found open on devices — answers 'what's reachable from outside', which the internal port scan alone can't. A forward to a device with a risky port raises an alert."],
+      ["--exposure-log", "Path of the JSON Lines file for port forwards detected on the router, requires --exposure-audit (default: /var/log/home-sentinel/exposure_audit.jsonl)."],
+      ["--exposure-audit-interval", "Interval between two UPnP queries to the router, in seconds (default: 3600)."],
+    ],
+  },
+  {
+    title: "Local query API",
+    flags: [
+      ["--api", "Starts a local read-only HTTP API on top of the SQLite mirror (see sentinel_api.py): lets the dashboard query the full history instead of only the JSONL tail, which gets truncated past a few MB. No authentication — meant for the home LAN, listens on 127.0.0.1 only by default."],
+      ["--api-host", "Listen address for the API, use 0.0.0.0 for the whole LAN (default: 127.0.0.1)."],
+      ["--api-port", "Listen port for the API (default: 8099)."],
+      ["--api-allow-origin", "Value of the CORS Access-Control-Allow-Origin header — needed because the dashboard is served from a different port than the API. Restrict it to your dashboard's origin (e.g. http://raspberrypi.local:8080) if the API is exposed beyond 127.0.0.1 (default: *)."],
+    ],
+  },
+  {
+    title: "Daemon housekeeping",
+    flags: [
+      ["--heartbeat-log", "Path of the daemon's liveness file, rewritten (not appended) every --heartbeat-interval seconds — lets the dashboard distinguish a \"quiet network\" from a \"stopped daemon\", which reading only static files couldn't do (default: /var/log/home-sentinel/heartbeat.jsonl)."],
+      ["--heartbeat-interval", "Interval for rewriting the heartbeat file, in seconds (0 to disable; default: 30)."],
+      ["--daemon-config-log", "Path of the JSON Lines file written once at every startup with a snapshot of the daemon's actual configuration — interfaces, configured \"home\" MACs, which optional modules are really active. Feeds the dashboard's Presence KPI denominator and the \"System health\" panel (default: /var/log/home-sentinel/daemon_config.jsonl)."],
+      ["--max-log-size-mb", "Maximum size (MB) of each JSONL file before logrotate-style rotation, 0 disables rotation and files grow unbounded (default: 20)."],
+      ["--log-backup-count", "Number of rotated files kept per log, e.g. wifi_probes.1.jsonl, .2.jsonl, ... (default: 3)."],
+      ["--log-level", "Python logging level for the daemon's own console/journal output (default: INFO)."],
+    ],
+  },
+];
+
+function renderCliFlagGroups() {
+  return CLI_FLAG_GROUPS.map((group, i) => `
+    <details class="flag-group"${i === 0 ? " open" : ""}>
+      <summary>${escapeHtml(group.title)} <span class="flag-group-count">${group.flags.length}</span></summary>
+      <dl class="flag-list">
+        ${group.flags.map(([flag, desc]) => `<dt><code>${escapeHtml(flag)}</code></dt><dd>${escapeHtml(desc)}</dd>`).join("")}
+      </dl>
+    </details>
+  `).join("");
+}
+
 /** Pannello "Salute del sistema": stato reale (non dedotto) dei moduli opzionali, letto da
  * daemon_config.jsonl (vedi item 1/4 dell'analisi di armonizzazione) invece della lista sparsa
  * e per-pagina di "Module status" in Settings, che può solo indovinare dallo stato dei dati. */
@@ -5156,6 +5342,11 @@ function renderHelpPage(container) {
       <p>The selector in the top bar sets one time window for the whole app: KPIs, charts, the Nearby view and the period comparison all follow it, so a number seen on one page always covers the same period as a number on another. It's remembered between reloads.</p>
       <p>The dashboard can be installed as an app (Add to home screen / Install): once installed it opens in its own window and still starts when the Pi is unreachable, showing why instead of a browser error. Data is never served from the cache — only the app itself is — so what you see is always live or nothing at all.</p>
       <p>The status pill next to the refresh button answers two separate questions: whether the logs are reachable from this browser, and whether the daemon that writes them is still alive (it writes a heartbeat file every 30s). A stopped daemon leaves its files in place, so without the heartbeat everything would keep looking fine while the data quietly aged.</p>
+    </div>
+    <div class="card help-section">
+      <h3>CLI flags reference</h3>
+      <p class="field-hint">Every option <code>home_sentinel.py</code> accepts, grouped by area. Run <code>python3 home_sentinel.py --help</code> on the Pi for the same list straight from the daemon.</p>
+      ${renderCliFlagGroups()}
     </div>
     <div class="card help-section">
       <h3>Known limitations</h3>
