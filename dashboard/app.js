@@ -2889,22 +2889,25 @@ function renderHandshakeCapturesTable(container) {
   container.innerHTML = `
     <div class="card-head">
       <h2>Handshake captures</h2>
-      <span class="card-sub">passive WPA/WPA2 4-way handshake capture for the home networks in <code>--home-ssid</code>, for offline password-strength auditing (aircrack-ng/hashcat) — no password is ever stored in clear text, and no frame is ever sent to trigger this. Rows highlighted in green have a usable message pair (2 with 1 and/or 3); the rest are logged but likely won't crack with aircrack-ng/hashcat.</span>
+      <span class="card-sub">passive WPA/WPA2 4-way handshake capture for the home networks in <code>--home-ssid</code>, for offline password-strength auditing (aircrack-ng/hashcat) — no password is ever stored in clear text, and no frame is ever sent to trigger this. A "Crackable" tag marks captures with a usable message pair (2 with 1 and/or 3); the rest are logged but likely won't crack with aircrack-ng/hashcat.</span>
     </div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Timestamp</th><th>SSID</th><th>BSSID</th><th>Station</th><th>Messages</th><th>Pcap file</th></tr></thead>
+        <thead><tr><th>Timestamp</th><th>SSID</th><th>BSSID</th><th>Station</th><th>Messages</th><th>Status</th><th>Pcap file</th></tr></thead>
         <tbody>${rows.map((r) => {
           const usable = handshakeHasCrackablePair(r.messages);
-          return `<tr${usable ? ` class="row-usable" title="Has a usable message pair (2 with 1 and/or 3) — ready for aircrack-ng/hashcat"` : ""}>
+          return `<tr>
           <td>${formatTs(r.timestamp)}</td>
           <td>${escapeHtml(r.ssid) || '<span class="muted">—</span>'}</td>
           <td class="mono">${escapeHtml(r.bssid)}</td>
           <td class="mono">${escapeHtml(r.sta_mac)}</td>
           <td>${Array.isArray(r.messages) && r.messages.length ? `${r.messages.length}/4 (${r.messages.join(",")})` : `${r.frame_count || 0} frame`}</td>
+          <td>${usable
+            ? `<span class="badge risk-badge tone-good" title="Has a usable message pair (2 with 1 and/or 3) — ready for aircrack-ng/hashcat">Crackable</span>`
+            : `<span class="badge risk-badge tone-muted" title="No usable message pair captured (needs 2 together with 1 and/or 3) — aircrack-ng/hashcat will likely report 0 handshake">Partial</span>`}</td>
           <td class="mono" title="${escapeHtml(r.pcap_path)}">${escapeHtml((r.pcap_path || "").split("/").pop())}</td>
         </tr>`;
-        }).join("") || '<tr><td colspan="6"><p class="empty-state">No handshake captured yet — enable <code>--capture-handshakes</code> (requires <code>--home-ssid</code>) on the daemon, or check the data source in Settings.</p></td></tr>'}</tbody>
+        }).join("") || '<tr><td colspan="7"><p class="empty-state">No handshake captured yet — enable <code>--capture-handshakes</code> (requires <code>--home-ssid</code>) on the daemon, or check the data source in Settings.</p></td></tr>'}</tbody>
       </table>
     </div>`;
 }
