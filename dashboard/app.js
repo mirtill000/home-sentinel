@@ -48,6 +48,7 @@ function ICON(name) {
 
 const SETTINGS_KEYS = {
   lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", bleUrl: "hs.bleUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
+  density: "hs.density",
   netLabel: "hs.net.label", netGateway: "hs.net.gateway",
   alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl", wifiTrafficUrl: "hs.wifiTrafficUrl",
   wifiNetworksUrl: "hs.wifiNetworksUrl",
@@ -59,6 +60,7 @@ const SETTINGS_KEYS = {
 };
 const SETTINGS_DEFAULTS = {
   lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
+  density: "comfortable",
   netLabel: "", netGateway: "",
   alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl", wifiTrafficUrl: "wifi_traffic.jsonl",
   wifiNetworksUrl: "wifi_networks.jsonl",
@@ -76,6 +78,18 @@ function getSetting(key) {
 }
 function setSetting(key, value) {
   localStorage.setItem(SETTINGS_KEYS[key], value);
+}
+
+/** Piccolo stato di UI persistito tra un refresh di pagina e l'altro (tab WiFi/BLE aperto, filtro
+ * Timeline...) — a differenza di getSetting/setSetting non è pensato per campi mostrati in
+ * Impostazioni, solo per "l'ultima cosa che l'utente stava guardando" su ricarica completa (un
+ * semplice cambio di route/tab nella stessa sessione già persiste da solo, essendo solo `state`). */
+const UI_STATE_KEY = "hs.uiState";
+function loadPersistedUiState() {
+  try { return JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}"); } catch { return {}; }
+}
+function savePersistedUiState(patch) {
+  try { localStorage.setItem(UI_STATE_KEY, JSON.stringify({ ...loadPersistedUiState(), ...patch })); } catch { /* storage non disponibile (es. modalità privata): degrada silenziosamente a non persistere */ }
 }
 
 const DISMISSED_KEY = "hs.alerts.dismissed";
@@ -127,6 +141,7 @@ const state = {
   route: "dashboard",
   refreshTimer: null,
   lastFetchOk: null,
+  initialLoadDone: false,
   openMenuMac: null,
   expandedMac: null,
   alertsFilter: "active",
@@ -136,7 +151,7 @@ const state = {
   cmdkOpen: false,
   trendRangeDays: 7,
   deviceProfileMac: null,
-  timelineKindFilter: "all",
+  timelineKindFilter: loadPersistedUiState().timelineKindFilter || "all",
   radarFilters: { network: true, probe: true, ap: true, ble: true },
   hostFilters: { type: "all", vendor: "all", risk: "all", trust: "all", ports: "all" },
   hostStaleOnly: false,
@@ -144,8 +159,8 @@ const state = {
   hostSelectedMacs: new Set(),
   wifiSsidExpanded: null,
   wifiApFilters: { security: "all", band: "all" },
-  wifiTab: "overview",
-  bleTab: "overview",
+  wifiTab: loadPersistedUiState().wifiTab || "overview",
+  bleTab: loadPersistedUiState().bleTab || "overview",
   pageScrollTarget: null,
   pagination: {},
 };
@@ -413,6 +428,7 @@ async function loadAllOnce() {
 
   updateStatusPill();
   checkAlertNotifications();
+  state.initialLoadDone = true;
   renderCurrentRoute();
 }
 
@@ -439,7 +455,7 @@ function escapeHtml(value) {
 }
 
 function parseTs(value) {
-  const t = Date.parse(value);
+  const t = typeof value === "number" ? value : Date.parse(value);
   return Number.isNaN(t) ? null : t;
 }
 
@@ -585,6 +601,40 @@ function sortRows(rows, key, dir) {
       return (compareIp(a.ip, b.ip)) * dir;
     }
     return String(a[key] ?? "").localeCompare(String(b[key] ?? "")) * dir;
+  });
+}
+
+/** <th> ordinabile con freccia ▲/▼ quando è la colonna attualmente in ordinamento — senza, l'unico
+ * modo per capire come è ordinata una tabella è osservare l'ordine delle righe dopo il click. */
+function sortableTh(label, key, sortState) {
+  const arrow = sortState.key === key ? (sortState.dir === 1 ? " ▲" : " ▼") : "";
+  return `<th data-sort="${key}">${escapeHtml(label)}${arrow}</th>`;
+}
+
+/** Wiring comune per gli header ordinabili di una tabella (Network Discovery, log grezzi WiFi/BLE):
+ * click su un data-sort th cambia chiave/verso dell'ordinamento e richiama onChange per
+ * ri-renderizzare — le tre tabelle duplicavano lo stesso blocco identico prima di questo helper. */
+function wireSortableHeaders(theadEl, sortState, onChange) {
+  theadEl.querySelectorAll("th[data-sort]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (sortState.key === key) sortState.dir *= -1;
+      else { sortState.key = key; sortState.dir = 1; }
+      onChange();
+    });
+  });
+}
+
+/** Aggiorna solo la freccia ▲/▼ sugli header di una tabella il cui <thead> è markup statico,
+ * ricostruito una sola volta (log grezzi WiFi/BLE: solo il tbody viene ri-renderizzato ad ogni
+ * ordinamento/ricerca/paginazione) — a differenza di sortableTh(), che invece va bene quando è
+ * l'intero <thead> ad essere rigenerato ogni volta (Network Discovery). Il testo "pulito" della
+ * colonna viene letto e memorizzato al primo giro, per non accumulare frecce sui giri successivi. */
+function updateSortArrows(theadEl, sortState) {
+  theadEl.querySelectorAll("th[data-sort]").forEach((th) => {
+    const key = th.dataset.sort;
+    if (!th.dataset.sortLabel) th.dataset.sortLabel = th.textContent;
+    th.textContent = th.dataset.sortLabel + (sortState.key === key ? (sortState.dir === 1 ? " ▲" : " ▼") : "");
   });
 }
 
@@ -1389,7 +1439,7 @@ function renderWifiSsidTableBody() {
       <td>${e.macs.size}</td>
       <td>${e.sightings}</td>
       <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
-      <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+      <td>${formatTs(e.lastTs)}</td>
     </tr>`;
     if (expanded) {
       const devices = computeSsidDeviceDetail(e.key);
@@ -1402,7 +1452,7 @@ function renderWifiSsidTableBody() {
               <td>${escapeHtml(d.vendor) || '<span class="muted">—</span>'}</td>
               <td>${d.sightings}</td>
               <td>${d.avgRssi === null ? '<span class="muted">—</span>' : `${d.avgRssi} dBm`}</td>
-              <td>${formatTs(new Date(d.lastTs).toISOString())}</td>
+              <td>${formatTs(d.lastTs)}</td>
             </tr>`).join("") || '<tr><td colspan="5"><p class="empty-state">No devices found for this SSID.</p></td></tr>'}</tbody>
           </table>
         </div>
@@ -1466,7 +1516,7 @@ function renderWifiDevicesTableBody() {
     <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
     <td>${e.sightings}</td>
     <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
-    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+    <td>${formatTs(e.lastTs)}</td>
   </tr>`).join("");
   document.getElementById("wifi-devices-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("wifi-devices-pagination").innerHTML = rows.length ? paginationHtml("wifi-devices", info) : "";
@@ -1540,7 +1590,7 @@ function renderWifiApsTableBody() {
     <td>${e.channel ?? '<span class="muted">—</span>'}</td>
     <td>${e.sightings}</td>
     <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
-    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+    <td>${formatTs(e.lastTs)}</td>
   </tr>`).join("");
   document.getElementById("wifi-aps-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("wifi-aps-pagination").innerHTML = rows.length ? paginationHtml("wifi-aps", info) : "";
@@ -1799,7 +1849,7 @@ function timelineItemHtml(e) {
     <div class="timeline-body">
       <div class="timeline-title">${escapeHtml(e.title)}</div>
       <div class="timeline-desc">${escapeHtml(e.desc)}${e.mac ? ` — <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(e.mac)}</button>` : ""}</div>
-      <div class="timeline-ts">${formatTs(new Date(e.ts).toISOString())}</div>
+      <div class="timeline-ts">${formatTs(e.ts)}</div>
     </div>
   </div>`;
 }
@@ -1823,6 +1873,7 @@ function renderTimeline(container) {
   document.getElementById("timeline-kind-filter").value = state.timelineKindFilter;
   document.getElementById("timeline-kind-filter").addEventListener("change", (e) => {
     state.timelineKindFilter = e.target.value;
+    savePersistedUiState({ timelineKindFilter: e.target.value });
     renderList();
   });
   renderList();
@@ -1904,7 +1955,7 @@ function renderHostSection(container) {
     </div>
     <div class="preset-row" id="host-preset-row"></div>
     <div id="host-bulk-bar"></div>
-    <div class="table-scroll">
+    <div class="table-scroll table-scroll-tall">
       <table class="data-table" id="host-table">
         <thead id="host-thead"></thead>
         <tbody id="host-table-body"></tbody>
@@ -2045,30 +2096,23 @@ function renderHostSection(container) {
 
     document.getElementById("host-thead").innerHTML = `<tr>
       <th><input type="checkbox" id="host-select-all" ${info.pageRows.length && info.pageRows.every((d) => state.hostSelectedMacs.has(d.mac)) ? "checked" : ""}></th>
-      <th data-sort="status">Status</th>
-      <th data-sort="ip">IP</th>
-      <th data-sort="hostname">Hostname</th>
-      <th data-sort="mac">MAC address</th>
-      <th data-sort="vendor">Vendor</th>
+      ${sortableTh("Status", "status", state.lanSort)}
+      ${sortableTh("IP", "ip", state.lanSort)}
+      ${sortableTh("Hostname", "hostname", state.lanSort)}
+      ${sortableTh("MAC address", "mac", state.lanSort)}
+      ${sortableTh("Vendor", "vendor", state.lanSort)}
       <th>Type</th>
       <th>Risk</th>
-      <th data-sort="open_ports">Open ports</th>
+      ${sortableTh("Open ports", "open_ports", state.lanSort)}
       ${visibleColumns.has("osGuess") ? "<th>OS guess</th>" : ""}
       ${visibleColumns.has("mdns") ? "<th>mDNS name</th>" : ""}
       ${visibleColumns.has("arp") ? "<th>ARP status</th>" : ""}
       ${visibleColumns.has("uptime") ? "<th>Uptime %</th>" : ""}
       ${visibleColumns.has("traffic") ? "<th>WiFi traffic (24h)</th>" : ""}
-      <th data-sort="last_seen">Last seen</th>
+      ${sortableTh("Last seen", "last_seen", state.lanSort)}
       <th></th>
     </tr>`;
-    document.getElementById("host-thead").querySelectorAll("th[data-sort]").forEach((th) => {
-      th.addEventListener("click", () => {
-        const key = th.dataset.sort;
-        if (state.lanSort.key === key) state.lanSort.dir *= -1;
-        else { state.lanSort.key = key; state.lanSort.dir = 1; }
-        renderHostTable();
-      });
-    });
+    wireSortableHeaders(document.getElementById("host-thead"), state.lanSort, renderHostTable);
     document.getElementById("host-select-all").addEventListener("change", (e) => {
       for (const d of info.pageRows) {
         if (e.target.checked) state.hostSelectedMacs.add(d.mac); else state.hostSelectedMacs.delete(d.mac);
@@ -2143,16 +2187,23 @@ function renderHostSection(container) {
       <button type="button" class="btn btn-icon" id="host-bulk-clear" title="Clear selection">${ICON("x")}</button>
     </div>`;
     document.getElementById("host-bulk-trust").addEventListener("click", () => {
+      // Solo per una selezione multipla: su un singolo device è la stessa identica azione già
+      // disponibile dal menu della riga, senza bisogno di un passaggio di conferma in più.
+      if (n > 1 && !confirm(`Mark ${n} devices as trusted?`)) return;
       for (const mac of state.hostSelectedMacs) setDeviceLabel(mac, { trusted: true });
+      showToast(`${n} device${n === 1 ? "" : "s"} marked as trusted`);
       renderHostTable();
     });
     document.getElementById("host-bulk-untrust").addEventListener("click", () => {
+      if (n > 1 && !confirm(`Remove trust from ${n} devices?`)) return;
       for (const mac of state.hostSelectedMacs) setDeviceLabel(mac, { trusted: false });
+      showToast(`Trust removed from ${n} device${n === 1 ? "" : "s"}`);
       renderHostTable();
     });
     document.getElementById("host-bulk-export").addEventListener("click", () => {
       const rows = latestLanByMac(state.lanRows).filter((d) => state.hostSelectedMacs.has(d.mac)).map(stripInternal);
       downloadBlob(toCsvBlob(rows), "hosts_selection.csv");
+      showToast(`Exported ${rows.length.toLocaleString("en-GB")} row${rows.length === 1 ? "" : "s"} to hosts_selection.csv`);
     });
     document.getElementById("host-bulk-clear").addEventListener("click", () => {
       state.hostSelectedMacs.clear();
@@ -2237,7 +2288,7 @@ function renderWifiSection(container) {
         <div class="search-input">${ICON("search")}<input type="text" id="wifi-search" placeholder="Search by MAC, SSID, vendor…"></div>
       </div>
     </div>
-    <div class="table-scroll">
+    <div class="table-scroll table-scroll-tall">
       <table class="data-table" id="wifi-table">
         <thead><tr>
           <th data-sort="timestamp">Timestamp</th>
@@ -2254,14 +2305,9 @@ function renderWifiSection(container) {
     </div>`;
 
   document.getElementById("wifi-search").addEventListener("input", () => { getPagination("wifi-raw").page = 1; renderWifiTableBody(); });
-  container.querySelectorAll("#wifi-table thead th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
-      const key = th.dataset.sort;
-      if (state.wifiSort.key === key) state.wifiSort.dir *= -1;
-      else { state.wifiSort.key = key; state.wifiSort.dir = 1; }
-      renderWifiTableBody();
-    });
-  });
+  const wifiThead = container.querySelector("#wifi-table thead");
+  wireSortableHeaders(wifiThead, state.wifiSort, () => { renderWifiTableBody(); updateSortArrows(wifiThead, state.wifiSort); });
+  updateSortArrows(wifiThead, state.wifiSort);
   renderWifiTableBody();
 }
 
@@ -2302,6 +2348,7 @@ function wirePageTabs(container, stateKey, onChange) {
     btn.addEventListener("click", () => {
       if (state[stateKey] === btn.dataset.pageTab) return;
       state[stateKey] = btn.dataset.pageTab;
+      savePersistedUiState({ [stateKey]: btn.dataset.pageTab });
       onChange();
     });
   });
@@ -2618,7 +2665,7 @@ function renderBleDevicesTableBody() {
     <td>${escapeHtml(e.manufacturer) || '<span class="muted">—</span>'}</td>
     <td>${signalBarsHtml(e.avgRssi)}</td>
     <td>${e.sightings}</td>
-    <td>${formatTs(new Date(e.lastTs).toISOString())}</td>
+    <td>${formatTs(e.lastTs)}</td>
   </tr>`).join("");
   document.getElementById("ble-devices-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("ble-devices-pagination").innerHTML = rows.length ? paginationHtml("ble-devices", info) : "";
@@ -2637,7 +2684,7 @@ function renderBleSection(container) {
         <div class="search-input">${ICON("search")}<input type="text" id="ble-search" placeholder="Search by MAC, name, manufacturer…"></div>
       </div>
     </div>
-    <div class="table-scroll">
+    <div class="table-scroll table-scroll-tall">
       <table class="data-table" id="ble-table">
         <thead><tr>
           <th data-sort="timestamp">Timestamp</th>
@@ -2655,14 +2702,9 @@ function renderBleSection(container) {
     </div>`;
 
   document.getElementById("ble-search").addEventListener("input", () => { getPagination("ble-raw").page = 1; renderBleTableBody(); });
-  container.querySelectorAll("#ble-table thead th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
-      const key = th.dataset.sort;
-      if (state.bleSort.key === key) state.bleSort.dir *= -1;
-      else { state.bleSort.key = key; state.bleSort.dir = 1; }
-      renderBleTableBody();
-    });
-  });
+  const bleThead = container.querySelector("#ble-table thead");
+  wireSortableHeaders(bleThead, state.bleSort, () => { renderBleTableBody(); updateSortArrows(bleThead, state.bleSort); });
+  updateSortArrows(bleThead, state.bleSort);
   renderBleTableBody();
 }
 
@@ -3085,7 +3127,7 @@ function renderHomePresenceCard(container) {
         <tbody>${rows.map((r) => `<tr>
           <td><button class="link-cell" data-mac-link="${escapeHtml(r.canonical)}">${escapeHtml(r.label)}</button></td>
           <td>${r.home ? '<span class="badge status-online"><span class="dot"></span>Home</span>' : '<span class="badge status-offline"><span class="dot"></span>Away</span>'}</td>
-          <td>${r.home && r.since ? new Date(r.since).toLocaleString("en-GB") : '<span class="muted">—</span>'}</td>
+          <td>${r.home && r.since ? formatTs(r.since) : '<span class="muted">—</span>'}</td>
           <td>${r.techs.map((t) => `<span class="badge">${t === "ble" ? "BLE" : "WiFi"}</span>`).join(" ")}</td>
           <td><button type="button" class="btn btn-icon" data-rename-mac="${escapeHtml(r.canonical)}" title="Name this device (e.g. a person's name)">${ICON("edit")}</button></td>
         </tr>`).join("")}</tbody>
@@ -3103,8 +3145,28 @@ function renderHomePresenceCard(container) {
   renderBarChart(document.getElementById("home-presence-chart"), occupancy);
 }
 
+/** Banner unico di "primo avvio" quando anche la sorgente obbligatoria (LAN) non è raggiungibile —
+ * molto più probabile un problema di setup (daemon mai avviato, dashboard non puntata alla
+ * cartella giusta) che un guasto di rete. Senza questo, l'utente vedrebbe la stessa domanda
+ * ("perché non vedo niente?") ripetuta come "No data" in ogni singola card della pagina, senza un
+ * punto unico che spieghi i passi di setup più comuni. */
+function renderOnboardingBanner() {
+  return `<div class="page-section card onboarding-banner">
+    <div class="card-head"><h2>Not seeing any data yet</h2></div>
+    <p>The LAN discovery log itself isn't reachable — the most common reasons:</p>
+    <ol>
+      <li>The daemon (<code>home_sentinel.py</code>) hasn't been started yet, or has no <code>--subnet</code> configured.</li>
+      <li>This dashboard isn't served from a folder with the log symlinks — run <code>dashboard/link-logs.sh</code> from the daemon's log directory, then reload.</li>
+      <li>The data source URL in <strong>Settings</strong> doesn't match where the daemon actually writes its logs.</li>
+    </ol>
+    <p class="field-hint">See <strong>Help</strong> for the full setup guide, or <strong>Settings → Data sources</strong> to point the dashboard at the right files.</p>
+  </div>`;
+}
+
 function renderHouseRadarPage(container) {
   container.innerHTML = `
+    ${state.sourceStatus.lan && !state.sourceStatus.lan.ok ? renderOnboardingBanner() : ""}
+
     <div class="page-section kpi-row">
       ${topKpiRowHtml()}
     </div>
@@ -3220,7 +3282,7 @@ function renderDintorniPanels(data) {
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
         <span class="dintorni-row-name mono" title="${escapeHtml(e.label)}">${escapeHtml(e.label)}</span>
-        <span class="dintorni-row-meta">${formatRelativeTime(e.lastTs)}</span>
+        <span class="dintorni-row-meta" title="${escapeHtml(formatTs(e.lastTs))}">${formatRelativeTime(e.lastTs)}</span>
       </button>`,
     }) : "",
     state.radarFilters.ap ? dintorniPanelHtml({
@@ -3329,11 +3391,13 @@ function renderHouseRadar(container, data) {
     const valueText = e.category === "probe" ? formatRelativeTime(e.lastTs)
       : e.category === "ap" ? `Ch.${e.channel ?? "?"} · ${e.avgRssi}dBm`
       : `${e.avgRssi} dBm`;
+    // Il tempo assoluto tra parentesi dopo quello relativo: al passaggio del mouse su un
+    // "23 h ago" si vuole comunque poter leggere l'orario preciso, non solo la stima.
     const tip = e.category === "network"
-      ? `${e.label} — SSID requested by ${e.macs.size} devices — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)}`
+      ? `${e.label} — SSID requested by ${e.macs.size} devices — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)} (${formatTs(e.lastTs)})`
       : e.category === "ap"
-      ? `${e.label} — BSSID ${e.bssid} — channel ${e.channel ?? "unknown"} — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)}`
-      : `${e.label} — ${e.avgRssi} dBm — ${e.sightings} sightings — ${formatRelativeTime(e.lastTs)}`;
+      ? `${e.label} — BSSID ${e.bssid} — channel ${e.channel ?? "unknown"} — ${e.avgRssi} dBm — ${formatRelativeTime(e.lastTs)} (${formatTs(e.lastTs)})`
+      : `${e.label} — ${e.avgRssi} dBm — ${e.sightings} sightings — ${formatRelativeTime(e.lastTs)} (${formatTs(e.lastTs)})`;
 
     lines.push(`<line x1="${routerPoint.x.toFixed(1)}" y1="${routerPoint.y.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" class="radar-callout-line"/>`);
     cards.push(`<g class="radar-callout" data-tip="${escapeHtml(tip)}" ${e.mac ? `data-mac="${escapeHtml(e.mac)}"` : ""} transform="translate(${(x - cardW / 2).toFixed(1)},${(y - cardH / 2).toFixed(1)})">
@@ -3683,14 +3747,14 @@ function renderDeviceProfile(container, mac) {
     <div class="page-section card">
       <div class="card-head">
         <h2>Uptime</h2>
-        <span class="card-sub">${uptimeSummary ? `${uptimeSummary.pct}% online since ${formatTs(new Date(uptimeSummary.periodStart).toISOString())} (from the loaded history)` : "Not enough history to reconstruct sessions"}</span>
+        <span class="card-sub">${uptimeSummary ? `${uptimeSummary.pct}% online since ${formatTs(uptimeSummary.periodStart)} (from the loaded history)` : "Not enough history to reconstruct sessions"}</span>
       </div>
       ${uptimeSummary && uptimeSummary.sessions.length ? `
         <div class="table-scroll">
           <table class="data-table"><thead><tr><th>From</th><th>To</th><th>Duration</th></tr></thead>
           <tbody>${uptimeSummary.sessions.slice().reverse().slice(0, 20).map((s) => `<tr>
-            <td>${formatTs(new Date(s.start).toISOString())}</td>
-            <td>${s.end !== null ? formatTs(new Date(s.end).toISOString()) : `<span class="badge status-online"><span class="dot"></span>Ongoing</span>`}</td>
+            <td>${formatTs(s.start)}</td>
+            <td>${s.end !== null ? formatTs(s.end) : `<span class="badge status-online"><span class="dot"></span>Ongoing</span>`}</td>
             <td>${formatDuration((s.end ?? Date.now()) - s.start)}</td>
           </tr>`).join("")}</tbody></table>
         </div>
@@ -3776,7 +3840,7 @@ function renderScansioniBody(container) {
         <thead><tr><th>Time</th><th>Devices seen</th><th>New</th><th>Offline</th></tr></thead>
         <tbody>
           ${info.pageRows.map((c) => `<tr>
-            <td>${formatTs(new Date(c.startTs).toISOString())}</td>
+            <td>${formatTs(c.startTs)}</td>
             <td>${c.deviceCount}</td>
             <td>${c.newCount ? `<span class="badge status-new"><span class="dot"></span>${c.newCount}</span>` : '<span class="muted">0</span>'}</td>
             <td>${c.offlineCount ? `<span class="badge status-offline"><span class="dot"></span>${c.offlineCount}</span>` : '<span class="muted">0</span>'}</td>
@@ -3801,7 +3865,7 @@ function alertItemHtml(a) {
       <div class="alert-title">
         ${escapeHtml(a.title)}
         ${a.source === "detect" ? `<span class="source-tag">${ICON("shield")}Detected by daemon</span>` : ""}
-        ${snoozed ? `<span class="source-tag" title="Snoozed until ${formatTs(new Date(snoozedUntil(a.id)).toISOString())}">${ICON("clock")}Snoozed until ${formatTs(new Date(snoozedUntil(a.id)).toISOString())}</span>` : ""}
+        ${snoozed ? `<span class="source-tag" title="Snoozed until ${formatTs(snoozedUntil(a.id))}">${ICON("clock")}Snoozed until ${formatTs(snoozedUntil(a.id))}</span>` : ""}
       </div>
       <div class="alert-desc">${escapeHtml(a.desc)}</div>
       <div class="alert-meta"><span>${formatTs(a.ts ? new Date(a.ts).toISOString() : "")}</span>${identifier ? `<span>${identifier}</span>` : ""}</div>
@@ -3967,6 +4031,7 @@ function moduleStatusRow(label, key) {
 
 function renderImpostazioni(container) {
   const themeMode = getSetting("theme");
+  const densityMode = getSetting("density");
   container.innerHTML = `
     <div class="page-section card">
       <div class="card-head"><h2>Module status</h2><span class="card-sub">inferred from the data actually loaded, not from a status endpoint</span></div>
@@ -4037,9 +4102,14 @@ function renderImpostazioni(container) {
           <label>Desktop notifications</label>
           ${typeof Notification === "undefined"
             ? `<p class="field-hint" style="margin:0;">This browser doesn't support the Notifications API.</p>`
-            : `<button class="btn ${getNotificationsEnabled() && Notification.permission === "granted" ? "btn-primary" : ""}" id="set-notifications-toggle">
-                 ${ICON("bell")}${getNotificationsEnabled() && Notification.permission === "granted" ? "Enabled — disable" : "Enable"}
-               </button>`}
+            : `<div style="display:flex;gap:8px;flex-wrap:wrap;">
+                 <button class="btn ${getNotificationsEnabled() && Notification.permission === "granted" ? "btn-primary" : ""}" id="set-notifications-toggle">
+                   ${ICON("bell")}${getNotificationsEnabled() && Notification.permission === "granted" ? "Enabled — disable" : "Enable"}
+                 </button>
+                 ${getNotificationsEnabled() && Notification.permission === "granted"
+                   ? `<button class="btn" id="set-notifications-test">Send test notification</button>`
+                   : ""}
+               </div>`}
         </div>
       </div>
       <p class="field-hint" id="set-notifications-hint"></p>
@@ -4060,6 +4130,13 @@ function renderImpostazioni(container) {
         <button type="button" data-theme-choice="light" class="${themeMode === "light" ? "active" : ""}">${ICON("sun")}Light</button>
         <button type="button" data-theme-choice="dark" class="${themeMode === "dark" ? "active" : ""}">${ICON("moon")}Dark</button>
         <button type="button" data-theme-choice="system" class="${themeMode === "system" ? "active" : ""}">${ICON("monitor")}System</button>
+      </div>
+      <div class="field" style="margin-top:14px;">
+        <label>Table row density</label>
+        <div class="theme-choice">
+          <button type="button" data-density-choice="comfortable" class="${densityMode === "comfortable" ? "active" : ""}">Comfortable</button>
+          <button type="button" data-density-choice="compact" class="${densityMode === "compact" ? "active" : ""}">Compact</button>
+        </div>
       </div>
     </div>
   `;
@@ -4093,6 +4170,9 @@ function renderImpostazioni(container) {
   container.querySelectorAll("[data-theme-choice]").forEach((btn) => {
     btn.addEventListener("click", () => setThemeMode(btn.dataset.themeChoice));
   });
+  container.querySelectorAll("[data-density-choice]").forEach((btn) => {
+    btn.addEventListener("click", () => setDensityMode(btn.dataset.densityChoice));
+  });
 
   refreshNotificationsHint();
   document.getElementById("set-notifications-toggle")?.addEventListener("click", async () => {
@@ -4107,6 +4187,11 @@ function renderImpostazioni(container) {
       }
     }
     renderImpostazioni(container);
+  });
+  document.getElementById("set-notifications-test")?.addEventListener("click", () => {
+    new Notification("Home Sentinel — test notification", {
+      body: "If you can see this, desktop notifications are working correctly.",
+    });
   });
 }
 
@@ -4123,9 +4208,16 @@ function refreshNotificationsHint() {
   }
 }
 
-function exportCardHtml(title, sub, key) {
+/** `statusKey` collega la card al relativo state.sourceStatus, per segnalare quando l'export non
+ * copre l'intero storico ma solo la coda caricata dalla dashboard (log oltre TAIL_FETCH_BYTES, vedi
+ * fetchJsonl) — altrimenti un utente potrebbe scaricare un CSV credendolo completo e non esserlo. */
+function exportCardHtml(title, sub, key, statusKey) {
+  const truncated = statusKey && state.sourceStatus[statusKey]?.truncated;
   return `<div class="card export-card">
-    <div><h2 style="margin:0 0 4px;font-size:0.92rem;">${escapeHtml(title)}</h2><p>${escapeHtml(sub)}</p></div>
+    <div>
+      <h2 style="margin:0 0 4px;font-size:0.92rem;">${escapeHtml(title)}</h2>
+      <p>${escapeHtml(sub)}${truncated ? ` <span class="export-truncated-tag" title="Log larger than ${formatBytes(TAIL_FETCH_BYTES)}: the dashboard only loads the most recent tail, so this export reflects only that">partial history</span>` : ""}</p>
+    </div>
     <div class="export-actions">
       <button class="btn" data-export="${key}" data-format="csv">${ICON("download")}CSV</button>
       <button class="btn" data-export="${key}" data-format="json">${ICON("download")}JSON</button>
@@ -4137,18 +4229,18 @@ function renderEsporta(container) {
   const lanCurrent = latestLanByMac(state.lanRows);
   const alerts = computeAlerts();
   container.innerHTML = `<div class="export-grid">
-    ${exportCardHtml("LAN devices (current status)", `${lanCurrent.length} devices`, "lan-current")}
-    ${exportCardHtml("Full LAN discovery log", `${state.lanRows.length} rows`, "lan-log")}
-    ${exportCardHtml("WiFi probes", `${state.wifiRows.length} rows`, "wifi")}
-    ${exportCardHtml("BLE scan", `${state.bleRows.length} rows`, "ble")}
-    ${exportCardHtml("Device fingerprints", `${state.fingerprintRows.length} rows`, "fingerprint")}
-    ${exportCardHtml("Estimated WiFi traffic", `${state.wifiTrafficRows.length} rows`, "wifi-traffic")}
-    ${exportCardHtml("Adjacent WiFi networks", `${state.wifiNetworksRows.length} rows`, "wifi-networks")}
-    ${exportCardHtml("DHCP client discovery", `${state.dhcpEventsRows.length} rows`, "dhcp-events")}
-    ${exportCardHtml("OS fingerprint", `${state.osFingerprintRows.length} rows`, "os-fingerprint")}
-    ${exportCardHtml("DHCP lease cross-check", `${state.dhcpLeasesRows.length} rows`, "dhcp-leases")}
-    ${exportCardHtml("Daily trend rollup", `${state.trendDailyRows.length} rows`, "trend-daily")}
-    ${exportCardHtml("Alerts", `${alerts.length} alerts`, "alerts")}
+    ${exportCardHtml("LAN devices (current status)", `${lanCurrent.length} devices`, "lan-current", "lan")}
+    ${exportCardHtml("Full LAN discovery log", `${state.lanRows.length} rows`, "lan-log", "lan")}
+    ${exportCardHtml("WiFi probes", `${state.wifiRows.length} rows`, "wifi", "wifi")}
+    ${exportCardHtml("BLE scan", `${state.bleRows.length} rows`, "ble", "ble")}
+    ${exportCardHtml("Device fingerprints", `${state.fingerprintRows.length} rows`, "fingerprint", "fingerprint")}
+    ${exportCardHtml("Estimated WiFi traffic", `${state.wifiTrafficRows.length} rows`, "wifi-traffic", "wifiTraffic")}
+    ${exportCardHtml("Adjacent WiFi networks", `${state.wifiNetworksRows.length} rows`, "wifi-networks", "wifiNetworks")}
+    ${exportCardHtml("DHCP client discovery", `${state.dhcpEventsRows.length} rows`, "dhcp-events", "dhcpEvents")}
+    ${exportCardHtml("OS fingerprint", `${state.osFingerprintRows.length} rows`, "os-fingerprint", "osFingerprint")}
+    ${exportCardHtml("DHCP lease cross-check", `${state.dhcpLeasesRows.length} rows`, "dhcp-leases", "dhcpLeases")}
+    ${exportCardHtml("Daily trend rollup", `${state.trendDailyRows.length} rows`, "trend-daily", "trendDaily")}
+    ${exportCardHtml("Alerts", `${alerts.length} alerts`, "alerts", "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
     btn.addEventListener("click", () => doExport(btn.dataset.export, btn.dataset.format));
@@ -4177,6 +4269,27 @@ function toCsvBlob(rows) {
   const lines = [headers.join(","), ...rows.map((r) => headers.map((h) => esc(r[h])).join(","))];
   return new Blob([lines.join("\n")], { type: "text/csv" });
 }
+/** Messaggio transitorio in basso a destra (auto-scompare) — usato per confermare un'azione senza
+ * interrompere il flusso con un alert(): export completati, azioni bulk applicate, ecc. Crea il
+ * contenitore alla prima chiamata invece di richiedere markup dedicato in index.html. */
+function showToast(message) {
+  let stack = document.getElementById("toast-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "toast-stack";
+    stack.className = "toast-stack";
+    document.body.appendChild(stack);
+  }
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = message;
+  stack.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("toast-out");
+    setTimeout(() => el.remove(), 250);
+  }, 3500);
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -4205,6 +4318,7 @@ function doExport(key, format) {
     filename = "alerts";
   } else return;
   downloadBlob(format === "json" ? toJsonBlob(rows) : toCsvBlob(rows), `${filename}.${format}`);
+  showToast(`Exported ${rows.length.toLocaleString("en-GB")} row${rows.length === 1 ? "" : "s"} to ${filename}.${format}`);
 }
 
 function renderAiuto(container) {
@@ -4382,11 +4496,27 @@ function onRouteChange() {
   renderCurrentRoute();
 }
 
+/** Placeholder mostrato solo per il primissimo giro di caricamento (prima ancora che loadAllOnce()
+ * completi una volta): senza, la primissima renderCurrentRoute() (chiamata da onRouteChange() in
+ * init(), sincrona e quindi prima che qualunque fetch sia partito) mostrerebbe gli empty-state
+ * "No data" di ogni pagina — indistinguibili per l'utente da "il modulo non è configurato". */
+function renderInitialLoadingPlaceholder() {
+  return `<div class="page-section card initial-loading">
+    <span class="spin-loop">${ICON("refresh")}</span>
+    <p>Loading Home Sentinel data…</p>
+  </div>`;
+}
+
 function renderCurrentRoute() {
+  const root = document.getElementById("view-root");
+  if (!state.initialLoadDone) {
+    root.innerHTML = renderInitialLoadingPlaceholder();
+    return;
+  }
   if (state.route === "device") {
-    renderDeviceProfile(document.getElementById("view-root"), state.deviceProfileMac);
+    renderDeviceProfile(root, state.deviceProfileMac);
   } else {
-    getRouteById(state.route).render(document.getElementById("view-root"));
+    getRouteById(state.route).render(root);
   }
   updateNavBadge();
 
@@ -4421,11 +4551,19 @@ function navigateToWifiSection(section) {
  * ---------------------------------------------------------------------- */
 
 function setupTopbar() {
-  document.getElementById("refresh-now").addEventListener("click", () => {
+  document.getElementById("refresh-now").addEventListener("click", async () => {
+    const btn = document.getElementById("refresh-now");
     const icon = document.getElementById("icon-refresh");
-    icon.classList.add("spin");
-    setTimeout(() => icon.classList.remove("spin"), 600);
-    loadAll();
+    if (btn.disabled) return; // un fetch è già in corso (loadAll ha comunque il suo guard interno)
+    btn.disabled = true;
+    icon.classList.remove("spin");
+    icon.classList.add("spin-loop");
+    try {
+      await loadAll();
+    } finally {
+      icon.classList.remove("spin-loop");
+      btn.disabled = false;
+    }
   });
   document.getElementById("status-pill").addEventListener("click", (e) => {
     e.stopPropagation();
@@ -4494,6 +4632,21 @@ function initTheme() {
       if (getSetting("theme") === "system") applyThemeMode("system");
     });
   }
+}
+
+/** Densità delle righe nelle tabelle (comfortable/compact) — stesso meccanismo del tema
+ * (data-attribute sulla root + persistenza in localStorage), utile per vedere più righe a schermo
+ * su tabelle grandi (Network Discovery, log grezzi WiFi/BLE). */
+function applyDensityMode(mode) {
+  document.documentElement.dataset.density = mode;
+}
+function setDensityMode(mode) {
+  setSetting("density", mode);
+  applyDensityMode(mode);
+  if (state.route === "settings") renderCurrentRoute();
+}
+function initDensity() {
+  applyDensityMode(getSetting("density"));
 }
 
 function setupRefreshTimer() {
@@ -4617,6 +4770,7 @@ function setupCmdk() {
 function init() {
   readUrlParams();
   initTheme();
+  initDensity();
   document.getElementById("icon-brand").innerHTML = ICON("wifi");
   document.getElementById("icon-refresh").innerHTML = ICON("refresh");
   document.getElementById("icon-cmdk-open").innerHTML = ICON("search");

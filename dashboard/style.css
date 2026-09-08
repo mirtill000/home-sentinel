@@ -253,6 +253,7 @@ svg { display: block; }
 }
 .btn svg { width: 15px; height: 15px; }
 .btn:hover { background: var(--surface-hover); }
+.btn:disabled { opacity: 0.55; cursor: default; pointer-events: none; }
 .btn-primary { background: var(--brand-wash); border-color: transparent; color: var(--brand); }
 .btn-primary:hover { filter: brightness(1.1); }
 .btn-icon { padding: 8px; }
@@ -509,6 +510,16 @@ select.select-control {
 }
 
 .table-scroll { overflow-x: auto; }
+/* Per le tabelle grandi (Network Discovery, log grezzi WiFi/BLE): senza un vincolo di altezza qui,
+   "position: sticky" sull'header non avrebbe mai un effetto visibile. Il motivo è una regola della
+   spec CSS Overflow: appena overflow-x è diverso da "visible" (qui "auto", per lo scroll
+   orizzontale delle tabelle larghe) e overflow-y non lo è esplicitamente, quest'ultimo viene
+   comunque calcolato come "auto" — rendendo .table-scroll il vero "nearest scrolling ancestor" per
+   sticky. Ma senza un max-height esplicito la sua altezza combacia sempre col contenuto (non scrolla
+   mai), quindi lo sticky "si aggancia" a un contenitore che di fatto non scrolla mai mentre l'utente
+   scrolla la pagina: qui rendiamo esplicito quel comportamento, dando alla tabella stessa uno scroll
+   verticale interno con altezza massima, dentro cui l'header sticky funziona davvero. */
+.table-scroll-tall { max-height: 65vh; overflow-y: auto; }
 table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .data-table thead th {
   text-align: left;
@@ -522,9 +533,15 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
 }
 .data-table thead th:hover { color: var(--text-secondary); }
 .data-table tbody td { padding: 11px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; color: var(--text-primary); }
+[data-density="compact"] .data-table thead th { padding: 6px 12px; }
+[data-density="compact"] .data-table tbody td { padding: 4px 12px; }
 .data-table tbody tr:last-child td { border-bottom: none; }
 .data-table tbody tr:hover { background: var(--surface-2); }
 .data-table tbody tr.row-flagged { background: var(--status-critical-wash); }
@@ -932,6 +949,16 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .export-card { display: flex; flex-direction: column; gap: 10px; }
 .export-card p { margin: 0; font-size: 0.8rem; color: var(--text-secondary); flex: 1; }
 .export-card .export-actions { display: flex; gap: 8px; }
+.onboarding-banner { border-color: var(--brand); }
+.onboarding-banner p { margin: 0 0 8px; font-size: 0.86rem; color: var(--text-secondary); }
+.onboarding-banner ol { margin: 0 0 10px; padding-left: 20px; font-size: 0.86rem; color: var(--text-secondary); line-height: 1.7; }
+.onboarding-banner .field-hint { margin: 0; }
+
+.export-truncated-tag {
+  display: inline-block; font-size: 0.68rem; font-weight: 650; text-transform: uppercase;
+  letter-spacing: 0.03em; color: var(--status-warning); background: var(--status-warning-wash);
+  padding: 1px 7px; border-radius: 999px; cursor: help;
+}
 
 .help-section { margin-bottom: 22px; }
 .help-section:last-child { margin-bottom: 0; }
@@ -987,6 +1014,27 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.6s linear; }
+.spin-loop { animation: spin 0.9s linear infinite; }
+
+.initial-loading {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  padding: 64px 20px; color: var(--text-muted); font-size: 0.86rem;
+}
+.initial-loading .spin-loop { display: inline-flex; color: var(--brand); }
+.initial-loading .spin-loop svg { width: 26px; height: 26px; }
+
+.toast-stack {
+  position: fixed; bottom: 20px; right: 20px; z-index: 600;
+  display: flex; flex-direction: column; gap: 8px; max-width: 360px;
+}
+.toast {
+  background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-primary);
+  padding: 10px 16px; border-radius: var(--radius-sm); font-size: 0.82rem; line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  animation: toast-in 0.2s ease;
+}
+.toast.toast-out { opacity: 0; transform: translateY(6px); transition: opacity 0.25s, transform 0.25s; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
 /* Bottone hamburger e overlay del menu su mobile: nascosti su desktop, dove esiste già la sidebar
  * fissa. Sotto i 980px .sidebar sparisce (regola sotto) — senza questo drawer non ci sarebbe alcun
