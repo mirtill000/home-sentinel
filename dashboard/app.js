@@ -46,31 +46,79 @@ function ICON(name) {
  * Settings (persisted in localStorage)
  * ---------------------------------------------------------------------- */
 
+/**
+ * Registro unico delle sorgenti dati del daemon: un'unica riga per file JSONL, da cui derivano
+ * il caricamento, lo stato delle sorgenti in Impostazioni, i campi URL configurabili e le card
+ * di Esporta. Prima ognuna di queste quattro cose aveva il proprio elenco scritto a mano, e ad
+ * ogni modulo nuovo se ne aggiornava una dimenticandone un'altra (era il caso di presence, deep
+ * scan e handshake, esportabili da nessuna parte pur essendo caricati).
+ *
+ *   key        chiave in state.sourceStatus e suffisso di stato
+ *   rows       proprietà di `state` in cui finiscono le righe
+ *   file       nome file di default sotto la cartella dei log
+ *   label      etichetta leggibile (Impostazioni, Esporta, messaggi d'errore)
+ *   required   true solo per le sorgenti sempre presenti: un errore lì è un errore visibile,
+ *              sulle altre è la normalità (modulo opzionale non attivo sul daemon)
+ *   fileKey    proprietà di `state` per il file locale caricato a mano (solo LAN/WiFi/BLE)
+ *   exportName nome del file scaricato da Esporta (omesso = non esportabile: solo daemon_config
+ *              e heartbeat, che sono stato corrente e non serie storiche)
+ */
+const DATA_SOURCES = [
+  { key: "lan", rows: "lanRows", file: "lan_discovery.jsonl", label: "LAN discovery", required: true, fileKey: "lanFile", exportName: "lan_discovery_log" },
+  { key: "wifi", rows: "wifiRows", file: "wifi_probes.jsonl", label: "WiFi probes", fileKey: "wifiFile", exportName: "wifi_probes" },
+  { key: "ble", rows: "bleRows", file: "ble_discovery.jsonl", label: "BLE scan", fileKey: "bleFile", exportName: "ble_discovery" },
+  { key: "alerts", rows: "alertsRows", file: "alerts_detection.jsonl", label: "Detection alerts", exportName: "alerts_detection" },
+  { key: "fingerprint", rows: "fingerprintRows", file: "fingerprint_discovery.jsonl", label: "Device fingerprints", exportName: "fingerprint_discovery" },
+  { key: "wifiTraffic", rows: "wifiTrafficRows", file: "wifi_traffic.jsonl", label: "Estimated WiFi traffic", exportName: "wifi_traffic" },
+  { key: "wifiNetworks", rows: "wifiNetworksRows", file: "wifi_networks.jsonl", label: "Adjacent WiFi networks", exportName: "wifi_networks" },
+  { key: "dhcpEvents", rows: "dhcpEventsRows", file: "dhcp_events.jsonl", label: "DHCP client discovery", exportName: "dhcp_events" },
+  { key: "osFingerprint", rows: "osFingerprintRows", file: "os_fingerprint.jsonl", label: "OS fingerprint", exportName: "os_fingerprint" },
+  { key: "dhcpLeases", rows: "dhcpLeasesRows", file: "dhcp_leases.jsonl", label: "DHCP lease cross-check", exportName: "dhcp_leases" },
+  { key: "trendDaily", rows: "trendDailyRows", file: "trend_daily.jsonl", label: "Daily trend rollup", exportName: "trend_daily" },
+  { key: "bleIdentityLinks", rows: "bleIdentityLinksRows", file: "ble_identity_links.jsonl", label: "BLE identity links", exportName: "ble_identity_links" },
+  { key: "blePresence", rows: "blePresenceRows", file: "ble_presence.jsonl", label: "BLE presence", exportName: "ble_presence" },
+  { key: "wifiPresence", rows: "wifiPresenceRows", file: "wifi_presence.jsonl", label: "WiFi presence", exportName: "wifi_presence" },
+  { key: "deepScan", rows: "deepScanRows", file: "deep_port_scan.jsonl", label: "Deep port scan", exportName: "deep_port_scan" },
+  { key: "handshake", rows: "handshakeRows", file: "handshake_captures.jsonl", label: "Handshake captures", exportName: "handshake_captures" },
+  { key: "ipv6", rows: "ipv6Rows", file: "ipv6_neighbors.jsonl", label: "IPv6 neighbours", exportName: "ipv6_neighbors" },
+  { key: "exposure", rows: "exposureRows", file: "exposure_audit.jsonl", label: "Internet exposure (UPnP)", exportName: "exposure_audit" },
+  { key: "daemonConfig", rows: "daemonConfigRows", file: "daemon_config.jsonl", label: "Daemon config snapshot" },
+  { key: "heartbeat", rows: "heartbeatRows", file: "heartbeat.jsonl", label: "Daemon heartbeat" },
+];
+
+const sourceByKey = Object.fromEntries(DATA_SOURCES.map((s) => [s.key, s]));
+/** Chiave di impostazione dell'URL per una sorgente (stessa forma storica: hs.lanUrl, hs.bleUrl…). */
+function sourceSettingKey(source) { return `${source.key}Url`; }
+
 const SETTINGS_KEYS = {
-  lanUrl: "hs.lanUrl", wifiUrl: "hs.wifiUrl", bleUrl: "hs.bleUrl", refreshMs: "hs.refreshMs", theme: "hs.theme",
+  refreshMs: "hs.refreshMs", theme: "hs.theme",
   density: "hs.density",
+  logBase: "hs.logBase",
+  apiUrl: "hs.apiUrl",
   netLabel: "hs.net.label", netGateway: "hs.net.gateway",
-  alertsUrl: "hs.alertsUrl", fingerprintUrl: "hs.fingerprintUrl", wifiTrafficUrl: "hs.wifiTrafficUrl",
-  wifiNetworksUrl: "hs.wifiNetworksUrl",
-  dhcpEventsUrl: "hs.dhcpEventsUrl", osFingerprintUrl: "hs.osFingerprintUrl", dhcpLeasesUrl: "hs.dhcpLeasesUrl",
-  trendDailyUrl: "hs.trendDailyUrl",
-  bleIdentityLinksUrl: "hs.bleIdentityLinksUrl", blePresenceUrl: "hs.blePresenceUrl",
-  deepScanUrl: "hs.deepScanUrl", handshakeUrl: "hs.handshakeUrl", wifiPresenceUrl: "hs.wifiPresenceUrl",
-  daemonConfigUrl: "hs.daemonConfigUrl",
+  ...Object.fromEntries(DATA_SOURCES.map((s) => [sourceSettingKey(s), `hs.${sourceSettingKey(s)}`])),
 };
 const SETTINGS_DEFAULTS = {
-  lanUrl: "lan_discovery.jsonl", wifiUrl: "wifi_probes.jsonl", bleUrl: "ble_discovery.jsonl", refreshMs: "30000", theme: "dark",
+  refreshMs: "30000", theme: "dark",
   density: "comfortable",
+  // Cartella base da cui vengono serviti i log: nella pratica tutte le sorgenti stanno insieme
+  // (dashboard/link-logs.sh le linka lì), quindi impostarla una volta sola evita di riscrivere
+  // venti URL. Un singolo campo per sorgente resta disponibile per i casi misti.
+  logBase: "",
+  apiUrl: "",
   netLabel: "", netGateway: "",
-  alertsUrl: "alerts_detection.jsonl", fingerprintUrl: "fingerprint_discovery.jsonl", wifiTrafficUrl: "wifi_traffic.jsonl",
-  wifiNetworksUrl: "wifi_networks.jsonl",
-  dhcpEventsUrl: "dhcp_events.jsonl", osFingerprintUrl: "os_fingerprint.jsonl", dhcpLeasesUrl: "dhcp_leases.jsonl",
-  trendDailyUrl: "trend_daily.jsonl",
-  bleIdentityLinksUrl: "ble_identity_links.jsonl", blePresenceUrl: "ble_presence.jsonl",
-  deepScanUrl: "deep_port_scan.jsonl", handshakeUrl: "handshake_captures.jsonl",
-  wifiPresenceUrl: "wifi_presence.jsonl",
-  daemonConfigUrl: "daemon_config.jsonl",
+  ...Object.fromEntries(DATA_SOURCES.map((s) => [sourceSettingKey(s), s.file])),
 };
+
+/** URL effettivo di una sorgente: l'eventuale override per-sorgente, altrimenti la cartella base
+ * (se impostata) più il nome file di default. */
+function sourceUrl(source) {
+  const override = getSetting(sourceSettingKey(source));
+  if (override && override !== source.file) return override;
+  const base = (getSetting("logBase") || "").trim();
+  if (!base) return source.file;
+  return `${base.replace(/\/+$/, "")}/${source.file}`;
+}
 
 function getSetting(key) {
   const raw = localStorage.getItem(SETTINGS_KEYS[key]);
@@ -115,23 +163,10 @@ function bleCompanyLabel(id) {
  * ---------------------------------------------------------------------- */
 
 const state = {
-  lanRows: [],
-  wifiRows: [],
-  bleRows: [],
-  alertsRows: [],
-  fingerprintRows: [],
-  wifiTrafficRows: [],
-  wifiNetworksRows: [],
-  dhcpEventsRows: [],
-  osFingerprintRows: [],
-  dhcpLeasesRows: [],
-  trendDailyRows: [],
-  bleIdentityLinksRows: [],
-  blePresenceRows: [],
-  deepScanRows: [],
-  handshakeRows: [],
-  wifiPresenceRows: [],
-  daemonConfigRows: [],
+  // Un array vuoto per ogni sorgente del registro (lanRows, wifiRows, …, heartbeatRows): così
+  // aggiungere una sorgente resta una riga sola in DATA_SOURCES, senza doversi ricordare di
+  // dichiarare anche qui il suo array.
+  ...Object.fromEntries(DATA_SOURCES.map((s) => [s.rows, []])),
   lanFile: null,
   wifiFile: null,
   bleFile: null,
@@ -146,12 +181,14 @@ const state = {
   expandedMac: null,
   alertsFilter: "active",
   alertsTypeFilter: "all",
+  alertsSeverityFilter: "all",
+  alertsHomeEmptyOnly: false,
   dismissedAlerts: new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]")),
   sourceStatus: {},
   cmdkOpen: false,
-  trendRangeDays: 7,
   deviceProfileMac: null,
   timelineKindFilter: loadPersistedUiState().timelineKindFilter || "all",
+  timeRange: loadPersistedUiState().timeRange || "24h",
   radarFilters: { network: true, probe: true, ap: true, ble: true },
   hostFilters: { type: "all", vendor: "all", risk: "all", trust: "all", ports: "all" },
   hostStaleOnly: false,
@@ -162,6 +199,8 @@ const state = {
   wifiTab: loadPersistedUiState().wifiTab || "overview",
   bleTab: loadPersistedUiState().bleTab || "overview",
   pageScrollTarget: null,
+  networkProfileBssid: null,
+  profileOrigin: null,
   pagination: {},
 };
 
@@ -258,168 +297,25 @@ async function loadAllOnce() {
   hideError();
   const errors = [];
 
-  try {
-    if (state.lanFile) {
-      state.lanRows = await readJsonlFile(state.lanFile);
-      state.sourceStatus.lan = { ok: true, count: state.lanRows.length, truncated: false };
-    } else {
-      const r = await fetchJsonl(getSetting("lanUrl"));
-      state.lanRows = r.rows;
-      state.sourceStatus.lan = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+  // Un unico ciclo sul registro DATA_SOURCES al posto di venti blocchi try/catch identici: le
+  // sorgenti opzionali che non esistono (modulo spento sul daemon) restano un caso normale e
+  // silenzioso, solo quelle `required` risalgono come errore visibile all'utente.
+  for (const source of DATA_SOURCES) {
+    try {
+      const localFile = source.fileKey ? state[source.fileKey] : null;
+      if (localFile) {
+        state[source.rows] = await readJsonlFile(localFile);
+        state.sourceStatus[source.key] = { ok: true, count: state[source.rows].length, truncated: false };
+      } else {
+        const r = await fetchJsonl(sourceUrl(source));
+        state[source.rows] = r.rows;
+        state.sourceStatus[source.key] = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
+      }
+    } catch (err) {
+      if (source.required) errors.push(`${source.label}: ${err.message}`);
+      state[source.rows] = state[source.rows] || [];
+      state.sourceStatus[source.key] = { ok: false, count: 0, truncated: false };
     }
-  } catch (err) {
-    errors.push(`LAN: ${err.message}`);
-    state.lanRows = state.lanRows || [];
-    state.sourceStatus.lan = { ok: false, count: 0, truncated: false };
-  }
-
-  try {
-    if (state.wifiFile) {
-      state.wifiRows = await readJsonlFile(state.wifiFile);
-      state.sourceStatus.wifi = { ok: true, count: state.wifiRows.length, truncated: false };
-    } else {
-      const r = await fetchJsonl(getSetting("wifiUrl"));
-      state.wifiRows = r.rows;
-      state.sourceStatus.wifi = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-    }
-  } catch (err) {
-    errors.push(`WiFi: ${err.message}`);
-    state.wifiRows = state.wifiRows || [];
-    state.sourceStatus.wifi = { ok: false, count: 0, truncated: false };
-  }
-
-  try {
-    if (state.bleFile) {
-      state.bleRows = await readJsonlFile(state.bleFile);
-      state.sourceStatus.ble = { ok: true, count: state.bleRows.length, truncated: false };
-    } else {
-      const r = await fetchJsonl(getSetting("bleUrl"));
-      state.bleRows = r.rows;
-      state.sourceStatus.ble = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-    }
-  } catch (err) {
-    errors.push(`BLE: ${err.message}`);
-    state.bleRows = state.bleRows || [];
-    state.sourceStatus.ble = { ok: false, count: 0, truncated: false };
-  }
-
-  // Alert/fingerprint sono generati dai moduli di detection opzionali del
-  // daemon: possono legittimamente non esistere ancora (feature non
-  // abilitata, o versione del daemon precedente alla loro introduzione),
-  // quindi un fallimento qui resta silenzioso invece di comparire come
-  // errore di caricamento (ma viene comunque tracciato per il pannello
-  // "Stato moduli" in Impostazioni).
-  try {
-    const r = await fetchJsonl(getSetting("alertsUrl"));
-    state.alertsRows = r.rows;
-    state.sourceStatus.alerts = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.alertsRows = state.alertsRows || [];
-    state.sourceStatus.alerts = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("fingerprintUrl"));
-    state.fingerprintRows = r.rows;
-    state.sourceStatus.fingerprint = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.fingerprintRows = state.fingerprintRows || [];
-    state.sourceStatus.fingerprint = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("wifiTrafficUrl"));
-    state.wifiTrafficRows = r.rows;
-    state.sourceStatus.wifiTraffic = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.wifiTrafficRows = state.wifiTrafficRows || [];
-    state.sourceStatus.wifiTraffic = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("wifiNetworksUrl"));
-    state.wifiNetworksRows = r.rows;
-    state.sourceStatus.wifiNetworks = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.wifiNetworksRows = state.wifiNetworksRows || [];
-    state.sourceStatus.wifiNetworks = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("dhcpEventsUrl"));
-    state.dhcpEventsRows = r.rows;
-    state.sourceStatus.dhcpEvents = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.dhcpEventsRows = state.dhcpEventsRows || [];
-    state.sourceStatus.dhcpEvents = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("osFingerprintUrl"));
-    state.osFingerprintRows = r.rows;
-    state.sourceStatus.osFingerprint = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.osFingerprintRows = state.osFingerprintRows || [];
-    state.sourceStatus.osFingerprint = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("dhcpLeasesUrl"));
-    state.dhcpLeasesRows = r.rows;
-    state.sourceStatus.dhcpLeases = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.dhcpLeasesRows = state.dhcpLeasesRows || [];
-    state.sourceStatus.dhcpLeases = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("trendDailyUrl"));
-    state.trendDailyRows = r.rows;
-    state.sourceStatus.trendDaily = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.trendDailyRows = state.trendDailyRows || [];
-    state.sourceStatus.trendDaily = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("bleIdentityLinksUrl"));
-    state.bleIdentityLinksRows = r.rows;
-    state.sourceStatus.bleIdentityLinks = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.bleIdentityLinksRows = state.bleIdentityLinksRows || [];
-    state.sourceStatus.bleIdentityLinks = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("blePresenceUrl"));
-    state.blePresenceRows = r.rows;
-    state.sourceStatus.blePresence = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.blePresenceRows = state.blePresenceRows || [];
-    state.sourceStatus.blePresence = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("deepScanUrl"));
-    state.deepScanRows = r.rows;
-    state.sourceStatus.deepScan = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.deepScanRows = state.deepScanRows || [];
-    state.sourceStatus.deepScan = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("handshakeUrl"));
-    state.handshakeRows = r.rows;
-    state.sourceStatus.handshake = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.handshakeRows = state.handshakeRows || [];
-    state.sourceStatus.handshake = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("wifiPresenceUrl"));
-    state.wifiPresenceRows = r.rows;
-    state.sourceStatus.wifiPresence = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.wifiPresenceRows = state.wifiPresenceRows || [];
-    state.sourceStatus.wifiPresence = { ok: false, count: 0, truncated: false };
-  }
-  try {
-    const r = await fetchJsonl(getSetting("daemonConfigUrl"));
-    state.daemonConfigRows = r.rows;
-    state.sourceStatus.daemonConfig = { ok: true, count: r.rows.length, truncated: r.truncated, totalBytes: r.totalBytes };
-  } catch {
-    state.daemonConfigRows = state.daemonConfigRows || [];
-    state.sourceStatus.daemonConfig = { ok: false, count: 0, truncated: false };
   }
 
   state.lastFetchOk = errors.length === 0;
@@ -469,8 +365,40 @@ function formatPorts(ports) {
   return Array.isArray(ports) && ports.length ? escapeHtml(ports.join(", ")) : "";
 }
 
+/**
+ * Finestra temporale unica per tutta l'app. Prima ogni vista aveva la sua, hardcoded: 24h quasi
+ * ovunque, 7/30 giorni solo nel Trend, "tutto lo storico caricato" altrove — e ognuna lo
+ * dichiarava con parole sue ("last 24h", "all time", "across all loaded history"), lasciando
+ * all'utente il compito di ricordarsi quale numero stesse guardando su quale periodo.
+ */
+const TIME_RANGES = [
+  { id: "24h", label: "Last 24 hours", short: "24h", hours: 24 },
+  { id: "7d", label: "Last 7 days", short: "7 days", hours: 24 * 7 },
+  { id: "30d", label: "Last 30 days", short: "30 days", hours: 24 * 30 },
+  { id: "all", label: "All loaded history", short: "all history", hours: null },
+];
+
+function currentRange() {
+  return TIME_RANGES.find((r) => r.id === state.timeRange) || TIME_RANGES[0];
+}
+/** Etichetta breve da usare nei sottotitoli delle card, al posto dei vari "last 24h" scritti a mano. */
+function rangeLabel() { return currentRange().short; }
+/** Giorni coperti dalla finestra, per le viste giornaliere (Trend): almeno 7, perché un grafico
+ * per giorno su 24 ore sarebbe una barra sola. */
+function rangeDays() {
+  const hours = currentRange().hours;
+  return hours ? Math.max(7, Math.round(hours / 24)) : 30;
+}
+
+function withinRange(ts) {
+  if (ts === null) return false;
+  const hours = currentRange().hours;
+  return hours === null || ts >= Date.now() - hours * 3600 * 1000;
+}
+
+/** Alias storico, mantenuto perché il nome compare in molti punti: ora segue la finestra scelta. */
 function within24h(ts) {
-  return ts !== null && ts >= Date.now() - 24 * 3600 * 1000;
+  return withinRange(ts);
 }
 
 function avgRssi(rows) {
@@ -707,8 +635,39 @@ function computeUptimeSummary(mac) {
   return { pct: Math.round((onlineMs / totalPeriod) * 100), sessions, periodStart, periodEnd };
 }
 
+/** Da dove si è arrivati a un profilo, per farci tornare indietro davvero: prima il pulsante
+ * "back" riportava sempre a Network Discovery, anche arrivandoci da Avvisi, Timeline, Who's home
+ * o dalla ricerca — il punto in cui l'app "dimenticava" il percorso dell'utente. */
+function rememberOrigin() {
+  const hash = window.location.hash || "#/dashboard";
+  if (hash.startsWith("#/device/") || hash.startsWith("#/network/")) return; // profilo -> profilo: si tiene l'origine iniziale
+  const route = getRouteById(hash.replace(/^#\/?/, "").split("/")[0]);
+  state.profileOrigin = { hash, label: route.label };
+}
+
+function backToOriginHtml() {
+  const origin = state.profileOrigin;
+  return `<div class="page-section" style="margin-bottom:10px;">
+    <button class="btn btn-icon" id="profile-back" title="Back to ${escapeHtml(origin ? origin.label : "Network Discovery")}">${ICON("arrow-left")}</button>
+  </div>`;
+}
+
+function wireBackToOrigin(container) {
+  container.querySelector("#profile-back")?.addEventListener("click", () => {
+    const target = state.profileOrigin?.hash || "#/host";
+    if (window.location.hash === target) onRouteChange();
+    else window.location.hash = target;
+  });
+}
+
 function goToDevice(mac) {
+  rememberOrigin();
   window.location.hash = `#/device/${encodeURIComponent(mac)}`;
+}
+
+function goToNetwork(bssid) {
+  rememberOrigin();
+  window.location.hash = `#/network/${encodeURIComponent(bssid)}`;
 }
 
 /* ---------------------------------------------------------------------- *
@@ -814,6 +773,91 @@ function daemonDeviceAlias(mac) {
   const daemonConfig = latestDaemonConfig(state.daemonConfigRows);
   const aliases = daemonConfig && daemonConfig.device_aliases;
   return (aliases && aliases[String(mac).toLowerCase()]) || "";
+}
+
+/* ---------------------------------------------------------------------- *
+ * Scheda d'inventario di un device (proprietario, stanza, tipo, tag, note).
+ * Due livelli, stessa logica dei nomi: quella del file di configurazione del
+ * daemon vale per tutti i browser, quella locale la sovrascrive solo qui.
+ * Prima esistevano solo nome e "fidato", entrambi in localStorage: nessun
+ * posto dove annotare di chi è un device o in che stanza sta.
+ * ---------------------------------------------------------------------- */
+
+const DEVICE_CARDS_KEY = "hs.deviceCards";
+const INVENTORY_FIELDS = [
+  { key: "owner", label: "Owner", placeholder: "e.g. Marco" },
+  { key: "room", label: "Room", placeholder: "e.g. Study" },
+  { key: "type", label: "Type", placeholder: "e.g. Smartphone" },
+  { key: "tags", label: "Tags", placeholder: "comma-separated" },
+  { key: "notes", label: "Notes", placeholder: "anything worth remembering" },
+];
+
+function getLocalDeviceCards() {
+  try { return JSON.parse(localStorage.getItem(DEVICE_CARDS_KEY) || "{}"); } catch { return {}; }
+}
+function saveLocalDeviceCards(cards) { localStorage.setItem(DEVICE_CARDS_KEY, JSON.stringify(cards)); }
+
+function daemonDeviceCard(mac) {
+  const daemonConfig = latestDaemonConfig(state.daemonConfigRows);
+  const inventory = daemonConfig && daemonConfig.device_inventory;
+  return (inventory && inventory[String(mac).toLowerCase()]) || {};
+}
+
+/** Scheda risultante: i campi del daemon, sovrascritti da quelli impostati localmente. */
+function getDeviceCard(mac) {
+  const canonical = canonicalMac(mac);
+  const local = getLocalDeviceCards()[canonical] || {};
+  const fromDaemon = daemonDeviceCard(mac);
+  const merged = { ...fromDaemon, ...local };
+  merged._sources = Object.fromEntries(INVENTORY_FIELDS.map((f) =>
+    [f.key, local[f.key] !== undefined && local[f.key] !== "" ? "local" : (fromDaemon[f.key] ? "daemon" : null)]));
+  return merged;
+}
+
+function setDeviceCardField(mac, key, value) {
+  const canonical = canonicalMac(mac);
+  const cards = getLocalDeviceCards();
+  const card = { ...(cards[canonical] || {}) };
+  const trimmed = String(value || "").trim();
+  if (trimmed) card[key] = key === "tags" ? trimmed.split(",").map((t) => t.trim()).filter(Boolean) : trimmed;
+  else delete card[key];
+  if (Object.keys(card).length) cards[canonical] = card;
+  else delete cards[canonical];
+  saveLocalDeviceCards(cards);
+}
+
+function inventoryValueText(card, key) {
+  const value = card[key];
+  if (Array.isArray(value)) return value.join(", ");
+  return value || "";
+}
+
+function inventoryEditorHtml(mac) {
+  const card = getDeviceCard(mac);
+  const hasDaemonCard = Object.keys(daemonDeviceCard(mac)).length > 0;
+  return `<div class="inventory-editor">
+    <div class="inventory-head">
+      <strong>Device card</strong>
+      ${hasDaemonCard ? `<span class="source-tag">${ICON("server")}From the daemon's config file</span>` : ""}
+    </div>
+    <div class="settings-grid">
+      ${INVENTORY_FIELDS.map((f) => `<div class="field">
+        <label for="inv-${f.key}">${escapeHtml(f.label)}${card._sources[f.key] === "daemon" ? " <span class=\"muted\">(from config)</span>" : ""}</label>
+        <input type="text" id="inv-${f.key}" data-inventory-field="${f.key}"
+               value="${escapeHtml(inventoryValueText(card, f.key))}" placeholder="${escapeHtml(f.placeholder)}">
+      </div>`).join("")}
+    </div>
+    <p class="field-hint">Set here, these fields live in this browser only. To have them on every browser, add the device to the <code>devices</code> section of the daemon's config file (<code>--config</code>) — a value typed here always wins over the one from the file.</p>
+  </div>`;
+}
+
+function wireInventoryEditor(container, mac, rerender) {
+  container.querySelectorAll("[data-inventory-field]").forEach((input) => {
+    input.addEventListener("change", (e) => {
+      setDeviceCardField(mac, input.dataset.inventoryField, e.target.value);
+      rerender();
+    });
+  });
 }
 
 /** Nome da mostrare per un device: etichetta locale se impostata (propria o ereditata
@@ -1096,8 +1140,166 @@ function renderDayBarChart(container, buckets, days) {
   container.append(plot, ticks);
 }
 
+/* ---------------------------------------------------------------------- *
+ * "What changed": confronto fra il periodo corrente e quello precedente.
+ * Il Trend risponde a "quanti", questa pagina a "quali" — la domanda che ci
+ * si pone davvero riaprendo la dashboard dopo qualche giorno.
+ * ---------------------------------------------------------------------- */
+
+/** Stato della rete a una certa data limite: device noti, porte aperte per device, reti viste.
+ * Ricostruito dagli eventi già caricati, senza bisogno di snapshot lato daemon. */
+function networkSnapshotAt(cutoffMs) {
+  const devices = new Map();
+  for (const row of state.lanRows) {
+    const ts = parseTs(row.timestamp);
+    if (ts === null || ts > cutoffMs || !row.mac) continue;
+    const prev = devices.get(row.mac);
+    if (!prev || ts >= prev.ts) {
+      devices.set(row.mac, {
+        ts, mac: row.mac, ip: row.ip, hostname: row.hostname || "", status: row.status,
+        ports: Array.isArray(row.open_ports) ? [...row.open_ports] : (prev ? prev.ports : []),
+      });
+    }
+  }
+  const networks = new Map();
+  for (const row of state.wifiNetworksRows) {
+    const ts = parseTs(row.timestamp);
+    if (ts === null || ts > cutoffMs || !row.bssid) continue;
+    networks.set(row.bssid, { bssid: row.bssid, ssid: row.ssid || "", security: row.security });
+  }
+  return { devices, networks };
+}
+
+/** Differenze fra due istantanee: device comparsi/spariti, porte aperte/chiuse, reti nuove o
+ * sparite, e cambi di sicurezza di una rete (il più interessante dei tre lato sicurezza). */
+function computeNetworkDiff(previousCutoff, currentCutoff) {
+  const before = networkSnapshotAt(previousCutoff);
+  const now = networkSnapshotAt(currentCutoff);
+
+  const appearedDevices = [...now.devices.values()].filter((d) => !before.devices.has(d.mac));
+  const goneDevices = [...before.devices.values()].filter((d) => {
+    const current = now.devices.get(d.mac);
+    return d.status !== "offline" && (!current || current.status === "offline");
+  });
+
+  const portChanges = [];
+  for (const [mac, current] of now.devices) {
+    const previous = before.devices.get(mac);
+    if (!previous) continue;
+    const opened = current.ports.filter((p) => !previous.ports.includes(p));
+    const closed = previous.ports.filter((p) => !current.ports.includes(p));
+    if (opened.length || closed.length) portChanges.push({ mac, hostname: current.hostname, opened, closed });
+  }
+
+  const appearedNetworks = [...now.networks.values()].filter((n) => !before.networks.has(n.bssid));
+  const goneNetworks = [...before.networks.values()].filter((n) => !now.networks.has(n.bssid));
+  const securityChanges = [];
+  for (const [bssid, current] of now.networks) {
+    const previous = before.networks.get(bssid);
+    if (previous && previous.security !== current.security) {
+      securityChanges.push({ ...current, from: previous.security, to: current.security });
+    }
+  }
+
+  return { appearedDevices, goneDevices, portChanges, appearedNetworks, goneNetworks, securityChanges };
+}
+
+function diffSectionHtml(title, sub, rows, emptyText) {
+  return `<div class="card">
+    <div class="card-head"><h2>${escapeHtml(title)}</h2><span class="card-sub">${escapeHtml(sub)}</span></div>
+    ${rows.length ? `<div class="diff-list">${rows.join("")}</div>` : `<p class="empty-state">${escapeHtml(emptyText)}</p>`}
+  </div>`;
+}
+
+function renderWhatChanged(container) {
+  const hours = currentRange().hours || 24 * 30;
+  const now = Date.now();
+  const diff = computeNetworkDiff(now - hours * 3600 * 1000, now);
+  const totalChanges = diff.appearedDevices.length + diff.goneDevices.length + diff.portChanges.length
+    + diff.appearedNetworks.length + diff.goneNetworks.length + diff.securityChanges.length;
+
+  const deviceRow = (d, tone, verb) => `<div class="diff-row tone-${tone}">
+    <button class="link-cell" data-mac-link="${escapeHtml(d.mac)}">${escapeHtml(displayName(d.mac, d.hostname || d.mac))}</button>
+    <span class="muted">${escapeHtml(d.ip || "")}</span>
+    <span class="diff-verb">${escapeHtml(verb)}</span>
+  </div>`;
+
+  container.innerHTML = `
+    <div class="page-section kpi-row">
+      ${kpiTile({
+        label: "Changes in this window", icon: "layers", tone: totalChanges ? "violet" : "good",
+        value: totalChanges, sub: `compared with the ${rangeLabel()} before it`,
+      })}
+      ${kpiTile({
+        label: "Devices appeared", icon: "monitor", tone: diff.appearedDevices.length ? "critical" : "good",
+        value: diff.appearedDevices.length, sub: diff.appearedDevices.length ? "Not present in the previous window" : "None new",
+        subTone: diff.appearedDevices.length ? "critical" : "good",
+      })}
+      ${kpiTile({
+        label: "Ports opened/closed", icon: "shield", tone: diff.portChanges.length ? "critical" : "good",
+        value: diff.portChanges.length, sub: "Devices whose open ports changed",
+        subTone: diff.portChanges.length ? "critical" : "good",
+      })}
+      ${kpiTile({
+        label: "Network changes", icon: "wifi", tone: diff.securityChanges.length ? "critical" : "blue",
+        value: diff.appearedNetworks.length + diff.goneNetworks.length + diff.securityChanges.length,
+        sub: `${diff.securityChanges.length} changed security type`,
+        subTone: diff.securityChanges.length ? "critical" : undefined,
+      })}
+    </div>
+
+    <div class="page-section grid-2">
+      ${diffSectionHtml("Devices appeared", `${diff.appearedDevices.length} new on the LAN`,
+        diff.appearedDevices.map((d) => deviceRow(d, "critical", "first seen " + formatRelativeTime(d.ts))),
+        "No device appeared that wasn't already there.")}
+      ${diffSectionHtml("Devices gone", `${diff.goneDevices.length} no longer online`,
+        diff.goneDevices.map((d) => deviceRow(d, "muted", "last seen " + formatRelativeTime(d.ts))),
+        "Nothing that was online has disappeared.")}
+    </div>
+
+    <div class="page-section">
+      ${diffSectionHtml("Open ports changed", `${diff.portChanges.length} device(s)`,
+        diff.portChanges.map((c) => `<div class="diff-row tone-${c.opened.length ? "critical" : "good"}">
+          <button class="link-cell" data-mac-link="${escapeHtml(c.mac)}">${escapeHtml(displayName(c.mac, c.hostname || c.mac))}</button>
+          ${c.opened.length ? `<span class="diff-verb tone-critical">opened ${c.opened.join(", ")}</span>` : ""}
+          ${c.closed.length ? `<span class="diff-verb tone-good">closed ${c.closed.join(", ")}</span>` : ""}
+        </div>`),
+        "No device opened or closed a port in this window.")}
+    </div>
+
+    <div class="page-section grid-2">
+      ${diffSectionHtml("WiFi networks appeared", `${diff.appearedNetworks.length} new BSSID(s) nearby`,
+        diff.appearedNetworks.map((n) => `<div class="diff-row tone-blue">
+          <button class="link-cell" data-bssid-link="${escapeHtml(n.bssid)}">${escapeHtml(n.ssid || "(hidden network)")}</button>
+          <span class="muted mono">${escapeHtml(n.bssid)}</span>
+          ${wifiSecurityBadgeHtml(n.security)}${homeNetworkBadgeHtml(n.ssid)}
+        </div>`),
+        "No new WiFi network appeared nearby.")}
+      ${diffSectionHtml("Security changed", `${diff.securityChanges.length} network(s)`,
+        diff.securityChanges.map((n) => `<div class="diff-row tone-critical">
+          <button class="link-cell" data-bssid-link="${escapeHtml(n.bssid)}">${escapeHtml(n.ssid || "(hidden network)")}</button>
+          <span class="diff-verb">${escapeHtml(WIFI_SECURITY_META[n.from]?.label || n.from)} → ${escapeHtml(WIFI_SECURITY_META[n.to]?.label || n.to)}</span>
+          ${homeNetworkBadgeHtml(n.ssid)}
+        </div>`),
+        "No network changed its advertised security type.")}
+    </div>
+
+    <p class="field-hint">Both windows are reconstructed from the log history already loaded, so a period longer than the retained logs will show fewer changes than really happened. Use the range selector in the top bar to change the comparison window: it always compares the selected window with the one immediately before it.</p>
+  `;
+
+  container.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
+  container.querySelectorAll("[data-bssid-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToNetwork(btn.dataset.bssidLink));
+  });
+}
+
 function renderTrend(container) {
-  const range = state.trendRangeDays || 7;
+  // Il periodo arriva dal controllo globale in topbar invece che da un secondo selettore locale:
+  // era l'unica pagina con una nozione di tempo tutta sua, e con due controlli non si capiva
+  // quale comandasse cosa.
+  const range = rangeDays();
   const useRollup = hasRollupCoverage(range);
 
   let newDelta, alertDelta, newBuckets, alertBuckets;
@@ -1116,14 +1318,6 @@ function renderTrend(container) {
   }
 
   container.innerHTML = `
-    <div class="page-section">
-      <div class="filter-row" style="margin:0;">
-        <select class="select-control" id="trend-range">
-          <option value="7">Last 7 days</option>
-          <option value="30">Last 30 days</option>
-        </select>
-      </div>
-    </div>
     <div class="page-section kpi-row">
       ${kpiTile({
         label: `New devices (${range}d)`, icon: "monitor", tone: "violet",
@@ -1149,11 +1343,6 @@ function renderTrend(container) {
       : `Calculated in the browser from the log history already loaded — no separate query server needed. The daemon rotates the JSONL files past a certain size (<code>--max-log-size-mb</code>, default 20MB) and, to stay fast, the dashboard only downloads the most recent tail of the largest files (see the warning on the WiFi/BLE page, if shown): over 30 days the trend may therefore not cover the whole period if the log has already rotated or was truncated on load. Enable the daemon's daily rollup (on by default, needs the SQLite mirror) for an accurate trend regardless of log size.`}</p>
   `;
 
-  document.getElementById("trend-range").value = String(range);
-  document.getElementById("trend-range").addEventListener("change", (e) => {
-    state.trendRangeDays = Number(e.target.value);
-    renderTrend(container);
-  });
   renderDayBarChart(document.getElementById("chart-trend-new"), newBuckets, range);
   renderDayBarChart(document.getElementById("chart-trend-alerts"), alertBuckets, range);
 }
@@ -1537,12 +1726,13 @@ function renderWifiDevicesTable(container) {
       <h2>Nearby WiFi devices</h2>
       <span class="card-sub">devices detected via probe requests, not on this LAN, across all loaded history</span>
       <div class="filter-row" style="margin:0;">
-        <div class="search-input">${ICON("search")}<input type="text" id="wifi-devices-search" placeholder="Search by MAC or vendor…"></div>
+        <div class="search-input">${ICON("search")}<input type="text" id="wifi-devices-search" placeholder="Search by MAC, name or vendor…"></div>
+        ${inlineExportHtml("wifi-devices")}
       </div>
     </div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Device</th><th>Vendor</th><th>Probes</th><th>Average signal</th><th>Last seen</th></tr></thead>
+        <thead><tr><th>Device</th><th>Vendor</th><th>Probes</th><th>Average signal</th><th>Last seen</th><th></th></tr></thead>
         <tbody id="wifi-devices-body"></tbody>
       </table>
       <p class="empty-state hidden" id="wifi-devices-empty">No external WiFi devices detected — check the data source in Settings.</p>
@@ -1551,6 +1741,31 @@ function renderWifiDevicesTable(container) {
   `;
   document.getElementById("wifi-devices-search").addEventListener("input", () => { getPagination("wifi-devices").page = 1; renderWifiDevicesTableBody(); });
   renderWifiDevicesTableBody();
+}
+
+/** Azioni per riga condivise dalle tabelle device WiFi e BLE: dare un nome e marcare come fidato.
+ * Prima erano disponibili solo sui device LAN, quindi un tracker BLE o un device WiFi rumoroso non
+ * potevano essere "già valutati" e continuavano a pesare sugli alert per sempre — la promessa
+ * "trusted riduce il rumore" valeva solo su un terzo dell'app. */
+function deviceRowActionsHtml(mac) {
+  const trusted = getDeviceLabel(mac).trusted;
+  return `<td class="row-actions">
+    <button type="button" class="btn btn-icon" data-rename-mac="${escapeHtml(mac)}" title="Name this device">${ICON("edit")}</button>
+    <button type="button" class="btn btn-icon ${trusted ? "is-trusted" : ""}" data-trust-mac="${escapeHtml(mac)}" title="${trusted ? "Trusted — remove" : "Mark as trusted"}">${ICON("shield")}</button>
+  </td>`;
+}
+
+function wireDeviceRowActions(container, rerender) {
+  container.querySelectorAll("[data-rename-mac]").forEach((btn) => {
+    btn.addEventListener("click", () => promptRenameDevice(btn.dataset.renameMac, rerender));
+  });
+  container.querySelectorAll("[data-trust-mac]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mac = btn.dataset.trustMac;
+      setDeviceLabel(mac, { trusted: !getDeviceLabel(mac).trusted });
+      rerender();
+    });
+  });
 }
 
 function renderWifiDevicesTableBody() {
@@ -1570,6 +1785,7 @@ function renderWifiDevicesTableBody() {
     <td>${e.sightings}</td>
     <td>${e.avgRssi === null ? '<span class="muted">—</span>' : `${e.avgRssi} dBm`}</td>
     <td>${formatTs(e.lastTs)}</td>
+    ${deviceRowActionsHtml(e.mac)}
   </tr>`).join("");
   document.getElementById("wifi-devices-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("wifi-devices-pagination").innerHTML = rows.length ? paginationHtml("wifi-devices", info) : "";
@@ -1578,6 +1794,9 @@ function renderWifiDevicesTableBody() {
   body.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
   });
+  wireDeviceRowActions(body, renderWifiDevicesTableBody);
+  const devicesCard = document.getElementById("wifi-devices-mount");
+  if (devicesCard) wireInlineExport(devicesCard, "wifi-devices", "wifi_devices", () => rows);
 }
 
 /** Tabella di dettaglio completa delle reti WiFi adiacenti (catturate dai loro stessi beacon,
@@ -1602,6 +1821,7 @@ function renderWifiApsTable(container) {
           <option value="2.4">2.4 GHz</option>
           <option value="5">5 GHz</option>
         </select>
+        ${inlineExportHtml("wifi-aps")}
       </div>
     </div>
     <div class="table-scroll">
@@ -1636,7 +1856,7 @@ function renderWifiApsTableBody() {
 
   const info = paginate(rows, "wifi-aps");
   body.innerHTML = info.pageRows.map((e) => `<tr>
-    <td>${escapeHtml(e.label)}</td>
+    <td><button class="link-cell" data-bssid-link="${escapeHtml(e.bssid)}">${escapeHtml(displayName(e.bssid, e.label))}</button> ${homeNetworkBadgeHtml(e.label)}</td>
     <td class="mono">${escapeHtml(e.bssid)}</td>
     <td>${escapeHtml(e.vendor) || '<span class="muted">—</span>'}</td>
     <td>${wifiSecurityBadgeHtml(e.security)}</td>
@@ -1648,6 +1868,11 @@ function renderWifiApsTableBody() {
   document.getElementById("wifi-aps-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("wifi-aps-pagination").innerHTML = rows.length ? paginationHtml("wifi-aps", info) : "";
   wirePagination(document.getElementById("wifi-aps-pagination"), "wifi-aps", renderWifiApsTableBody);
+  body.querySelectorAll("[data-bssid-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToNetwork(btn.dataset.bssidLink));
+  });
+  const apsCard = document.getElementById("wifi-aps-mount");
+  if (apsCard) wireInlineExport(apsCard, "wifi-aps", "adjacent_networks", () => rows);
 }
 
 /** Severity dei rilevatori server-side (low/medium/high) -> classi CSS esistenti (info/serious/critical). */
@@ -1685,6 +1910,10 @@ function computeAlerts() {
       desc: row.message || "",
       mac: row.mac,
       ip: row.ip,
+      // Contesto di occupazione al momento dell'alert (--presence-aware-alerts sul daemon):
+      // true/false, oppure undefined se il daemon non lo sapeva o è una versione precedente.
+      homeOccupied: typeof row.home_occupied === "boolean" ? row.home_occupied : undefined,
+      escalated: row.details && row.details.escalated_reason === "home_empty",
       ts,
     });
   }
@@ -1891,51 +2120,155 @@ function computeTimeline() {
     });
   }
 
+  // Presenza: arrivi e uscite di casa. Sono gli eventi più leggibili di tutta l'app — "Marco è
+  // tornato" — e per una svista storica erano proprio quelli che il feed "unificato" non
+  // mostrava: c'erano solo nel loro riquadro dedicato nelle pagine WiFi/BLE.
+  for (const [rows, radio] of [[state.wifiPresenceRows, "WiFi"], [state.blePresenceRows, "BLE"]]) {
+    for (const r of rows) {
+      const ts = parseTs(r.timestamp);
+      if (ts === null) continue;
+      const arrived = r.event === "arrived";
+      events.push({
+        ts, kind: "presence",
+        icon: "users", tone: arrived ? "good" : "muted",
+        title: `${displayName(r.mac, r.mac)} ${arrived ? "arrived home" : "left home"}`,
+        desc: arrived
+          ? `detected over ${radio}`
+          : `away after ${typeof r.duration_s === "number" ? formatDuration(r.duration_s * 1000) : "an unknown time"} at home (${radio})`,
+        mac: r.mac,
+      });
+    }
+  }
+
+  for (const h of state.handshakeRows) {
+    const ts = parseTs(h.timestamp);
+    if (ts === null) continue;
+    events.push({
+      ts, kind: "security", icon: "wifi", tone: "blue",
+      title: `WPA handshake captured: ${h.ssid || h.bssid || ""}`,
+      desc: `${Array.isArray(h.messages) ? `${h.messages.length}/4 messages` : `${h.frame_count || 0} frames`} · station ${h.sta_mac || "?"}`,
+      mac: h.sta_mac,
+    });
+  }
+
+  for (const d of state.deepScanRows) {
+    const ts = parseTs(d.timestamp);
+    if (ts === null) continue;
+    const newPorts = Array.isArray(d.new_ports) ? d.new_ports : [];
+    events.push({
+      ts, kind: "scan", icon: "radar", tone: newPorts.length ? "serious" : "blue",
+      title: newPorts.length ? `Deep scan found ${newPorts.length} new port(s)` : "Deep port scan completed",
+      desc: `${d.ip || ""}${newPorts.length ? ` — ${newPorts.join(", ")}` : ""}`,
+      mac: d.mac,
+    });
+  }
+
+  for (const e of state.exposureRows) {
+    const ts = parseTs(e.timestamp);
+    if (ts === null) continue;
+    events.push({
+      ts, kind: "security", icon: "shield", tone: "serious",
+      title: `Port forward on the router: ${e.external_port} → ${e.internal_ip}:${e.internal_port}`,
+      desc: `${e.protocol || ""} ${e.description ? `· ${e.description}` : ""}`.trim(),
+    });
+  }
+
+  for (const d of state.dhcpEventsRows) {
+    const ts = parseTs(d.timestamp);
+    if (ts === null) continue;
+    events.push({
+      ts, kind: "network", icon: "server", tone: "blue",
+      title: `DHCP request from ${displayName(d.mac, d.hostname || d.mac)}`,
+      desc: d.hostname ? `declared hostname: ${d.hostname}` : "",
+      mac: d.mac,
+    });
+  }
+
+  for (const o of state.osFingerprintRows) {
+    const ts = parseTs(o.timestamp);
+    if (ts === null) continue;
+    events.push({
+      ts, kind: "fingerprint", icon: "monitor", tone: "blue",
+      title: `OS guess: ${o.os_guess || "unknown"}`,
+      desc: o.ip || "", mac: o.mac,
+    });
+  }
+
   return events.sort((a, b) => b.ts - a.ts);
 }
 
-const TIMELINE_KIND_LABELS = { lan: "Devices (new/offline)", alert: "Alert", fingerprint: "Fingerprint" };
+const TIMELINE_KIND_LABELS = {
+  lan: "Devices (new/offline)",
+  presence: "Presence (arrivals/departures)",
+  alert: "Alerts",
+  security: "Security captures",
+  scan: "Deep scans",
+  network: "DHCP / network",
+  fingerprint: "Fingerprint / OS",
+};
 
 function timelineItemHtml(e) {
   return `<div class="timeline-item">
     <span class="timeline-icon tone-${e.tone}">${ICON(e.icon)}</span>
     <div class="timeline-body">
       <div class="timeline-title">${escapeHtml(e.title)}</div>
-      <div class="timeline-desc">${escapeHtml(e.desc)}${e.mac ? ` — <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(e.mac)}</button>` : ""}</div>
+      <div class="timeline-desc">${escapeHtml(e.desc)}${e.mac ? ` — <button class="link-cell" data-mac-link="${escapeHtml(e.mac)}">${escapeHtml(displayName(e.mac, e.mac))}</button>` : ""}</div>
       <div class="timeline-ts">${formatTs(e.ts)}</div>
     </div>
   </div>`;
 }
 
 function renderTimeline(container) {
-  const events = computeTimeline().slice(0, 300);
+  const events = computeTimeline();
   container.innerHTML = `
     <div class="card">
       <div class="card-head">
         <h2>Event timeline</h2>
-        <select class="select-control" id="timeline-kind-filter">
-          <option value="all">All events</option>
-          <option value="lan">${TIMELINE_KIND_LABELS.lan}</option>
-          <option value="alert">${TIMELINE_KIND_LABELS.alert}</option>
-          <option value="fingerprint">${TIMELINE_KIND_LABELS.fingerprint}</option>
-        </select>
+        <span class="card-sub">every notable event from every active module, newest first</span>
+        <div class="filter-row" style="margin:0;">
+          <div class="search-input">${ICON("search")}<input type="text" id="timeline-search" placeholder="Search events…"></div>
+          <select class="select-control" id="timeline-kind-filter">
+            <option value="all">All events</option>
+            ${Object.entries(TIMELINE_KIND_LABELS).map(([kind, label]) =>
+              `<option value="${kind}">${escapeHtml(label)}</option>`).join("")}
+          </select>
+        </div>
       </div>
       <div class="timeline" id="timeline-list"></div>
+      <div id="timeline-pagination"></div>
     </div>`;
 
   document.getElementById("timeline-kind-filter").value = state.timelineKindFilter;
   document.getElementById("timeline-kind-filter").addEventListener("change", (e) => {
     state.timelineKindFilter = e.target.value;
     savePersistedUiState({ timelineKindFilter: e.target.value });
+    getPagination("timeline").page = 1;
+    renderList();
+  });
+  document.getElementById("timeline-search").addEventListener("input", () => {
+    getPagination("timeline").page = 1;
     renderList();
   });
   renderList();
 
   function renderList() {
-    const list = state.timelineKindFilter === "all" ? events : events.filter((e) => e.kind === state.timelineKindFilter);
+    const search = document.getElementById("timeline-search").value.trim().toLowerCase();
+    const list = events
+      .filter((e) => state.timelineKindFilter === "all" || e.kind === state.timelineKindFilter)
+      .filter((e) => !search || `${e.title} ${e.desc} ${e.mac || ""}`.toLowerCase().includes(search));
     const el = document.getElementById("timeline-list");
-    if (!list.length) { el.innerHTML = '<p class="empty-state">No events in this category.</p>'; return; }
-    el.innerHTML = list.map(timelineItemHtml).join("");
+    const pager = document.getElementById("timeline-pagination");
+    if (!list.length) {
+      el.innerHTML = '<p class="empty-state">No events in this category.</p>';
+      pager.innerHTML = "";
+      return;
+    }
+    // Paginato invece che troncato in silenzio ai primi 300: con presence, handshake, scan e
+    // DHCP nel feed il tetto veniva raggiunto in fretta, e nulla lo diceva all'utente.
+    const info = paginate(list, "timeline");
+    el.innerHTML = info.pageRows.map(timelineItemHtml).join("");
+    pager.innerHTML = paginationHtml("timeline", info);
+    wirePagination(pager, "timeline", renderList);
     el.querySelectorAll("[data-mac-link]").forEach((btn) => {
       btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
     });
@@ -2161,7 +2494,7 @@ function renderHostSection(container) {
       ${visibleColumns.has("mdns") ? "<th>mDNS name</th>" : ""}
       ${visibleColumns.has("arp") ? "<th>ARP status</th>" : ""}
       ${visibleColumns.has("uptime") ? "<th>Uptime %</th>" : ""}
-      ${visibleColumns.has("traffic") ? "<th>WiFi traffic (24h)</th>" : ""}
+      ${visibleColumns.has("traffic") ? `<th>WiFi traffic (${rangeLabel()})</th>` : ""}
       ${sortableTh("Last seen", "last_seen", state.lanSort)}
       <th></th>
     </tr>`;
@@ -2470,11 +2803,11 @@ function renderWifiPage(container) {
           <div class="hbar-chart" id="chart-wifi-security" data-empty="No data"></div>
         </div>
         <div class="card">
-          <div class="card-head"><h2>Probe activity <span class="card-sub">last 24h</span></h2></div>
+          <div class="card-head"><h2>Probe activity <span class="card-sub">${rangeLabel()}</span></h2></div>
           <div class="bar-chart" id="chart-wifi-activity" data-empty="No data"></div>
         </div>
         <div class="card">
-          <div class="card-head"><h2>WiFi channels</h2><span class="card-sub">probes per channel (24h)</span></div>
+          <div class="card-head"><h2>WiFi channels</h2><span class="card-sub">probes per channel (${rangeLabel()})</span></div>
           <div class="hbar-chart" id="chart-wifi-channel" data-empty="No data"></div>
         </div>
       </div>
@@ -2585,17 +2918,18 @@ function renderBlePage(container) {
     ${tab === "overview" ? `
       <div class="page-section kpi-row">
         ${kpiTile({
-          label: "BLE advertisements (24h)", icon: "bluetooth", tone: "orange",
+          label: `BLE advertisements (${rangeLabel()})`, icon: "bluetooth", tone: "orange",
           value: bleLast24h.length, sub: `${distinctMacs.size} distinct MACs`,
           sparkValues: hourlyCounts(state.bleRows), sparkColor: "var(--cat-2)",
+          navKey: "ble-devices",
         })}
         ${kpiTile({
           label: "With advertised name", icon: "eye", tone: "orange",
           value: named.length,
-          sub: bleLast24h.length ? `${Math.round((named.length / bleLast24h.length) * 100)}% of total (24h)` : "No data",
+          sub: bleLast24h.length ? `${Math.round((named.length / bleLast24h.length) * 100)}% of total (${rangeLabel()})` : "No data",
         })}
         ${kpiTile({
-          label: "Average RSSI (24h)", icon: "wifi", tone: "orange",
+          label: `Average RSSI (${rangeLabel()})`, icon: "wifi", tone: "orange",
           value: avg === null ? "—" : avg, valueSuffix: avg === null ? "" : "dBm",
           sub: "Closer to 0 = stronger signal",
         })}
@@ -2611,11 +2945,12 @@ function renderBlePage(container) {
             value: trackerCount,
             sub: trackerCount ? "AirTag/Tile/SmartTag-like advertisement seen" : "None detected",
             subTone: trackerCount ? "critical" : "good",
+            navKey: "ble-trackers",
           });
         })()}
       </div>
       <div class="page-section card">
-        <div class="card-head"><h2>BLE activity <span class="card-sub">last 24h</span></h2></div>
+        <div class="card-head"><h2>BLE activity <span class="card-sub">${rangeLabel()}</span></h2></div>
         <div class="bar-chart" id="chart-ble-activity" data-empty="No data"></div>
       </div>
     ` : ""}
@@ -2634,6 +2969,19 @@ function renderBlePage(container) {
 
   if (tab === "overview") {
     renderBarChart(document.getElementById("chart-ble-activity"), hourlyCounts(state.bleRows));
+    const goToBleDevices = (search) => {
+      state.bleTab = "devices";
+      savePersistedUiState({ bleTab: "devices" });
+      renderBlePage(container);
+      const input = document.getElementById("ble-devices-search");
+      if (input && search) { input.value = search; input.dispatchEvent(new Event("input")); }
+    };
+    wireKpiNav(container, {
+      "ble-devices": () => goToBleDevices(""),
+      // I tracker sono già in cima alla tabella device (ordinamento isTracker-first): basta
+      // portarci, senza inventare un filtro dedicato che esisterebbe solo per questo KPI.
+      "ble-trackers": () => goToBleDevices(""),
+    });
   }
   if (tab === "devices") {
     renderBleDevicesTable(document.getElementById("ble-devices-mount"));
@@ -2716,11 +3064,12 @@ function renderBleDevicesTable(container) {
       <span class="card-sub">a summary per MAC — name, manufacturer, signal and sightings, across all loaded history</span>
       <div class="filter-row" style="margin:0;">
         <div class="search-input">${ICON("search")}<input type="text" id="ble-devices-search" placeholder="Search by MAC, name, manufacturer…"></div>
+        ${inlineExportHtml("ble-devices")}
       </div>
     </div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Device</th><th>Type</th><th>Manufacturer</th><th>Average signal</th><th>Sightings</th><th>Last seen</th></tr></thead>
+        <thead><tr><th>Device</th><th>Type</th><th>Manufacturer</th><th>Average signal</th><th>Sightings</th><th>Last seen</th><th></th></tr></thead>
         <tbody id="ble-devices-body"></tbody>
       </table>
       <p class="empty-state hidden" id="ble-devices-empty">No BLE advertisements — check the data source in Settings.</p>
@@ -2752,6 +3101,7 @@ function renderBleDevicesTableBody() {
     <td>${signalBarsHtml(e.avgRssi)}</td>
     <td>${e.sightings}</td>
     <td>${formatTs(e.lastTs)}</td>
+    ${deviceRowActionsHtml(e.mac)}
   </tr>`).join("");
   document.getElementById("ble-devices-empty").classList.toggle("hidden", rows.length > 0);
   document.getElementById("ble-devices-pagination").innerHTML = rows.length ? paginationHtml("ble-devices", info) : "";
@@ -2759,6 +3109,9 @@ function renderBleDevicesTableBody() {
   body.querySelectorAll("[data-mac-link]").forEach((btn) => {
     btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
   });
+  wireDeviceRowActions(body, renderBleDevicesTableBody);
+  const bleCard = document.getElementById("ble-devices-mount");
+  if (bleCard) wireInlineExport(bleCard, "ble-devices", "ble_devices", () => rows);
 }
 
 function renderBleSection(container) {
@@ -3260,7 +3613,7 @@ function renderHouseRadarPage(container) {
     <div class="page-section card">
       <div class="card-head">
         <h2>Nearby</h2>
-        <span class="card-sub">SSIDs requested, adjacent networks, and WiFi/Bluetooth devices detected in the last 24h, by signal strength</span>
+        <span class="card-sub">SSIDs requested, adjacent networks, and WiFi/Bluetooth devices detected in the ${rangeLabel()} window, by signal strength</span>
       </div>
       <div class="radar-legend" id="radar-legend"></div>
       <div class="dintorni-map-wrap" id="radar-mount"></div>
@@ -3271,15 +3624,19 @@ function renderHouseRadarPage(container) {
 
     <div class="page-section card" id="system-health-mount"></div>
   `;
+  wireKpiNav(container, {
+    "dash-hosts": () => { window.location.hash = "#/host"; },
+    "dash-presence": () => navigateWithScroll("#/dashboard", "home-presence-mount"),
+  });
   renderHomePresenceCard(document.getElementById("home-presence-mount"));
   renderHouseRadarLegend(document.getElementById("radar-legend"));
-  renderDintorniAll();
+  renderNearbyAll();
   renderSystemHealthCard(document.getElementById("system-health-mount"));
 }
 
-function renderDintorniAll() {
+function renderNearbyAll() {
   const data = computeHouseRadar();
-  renderDintorniPanels(data);
+  renderNearbyPanels(data);
   renderHouseRadar(document.getElementById("radar-mount"), data);
 }
 
@@ -3294,7 +3651,7 @@ function renderHouseRadarLegend(container) {
       const key = btn.dataset.radarToggle;
       state.radarFilters[key] = !state.radarFilters[key];
       renderHouseRadarLegend(container);
-      renderDintorniAll();
+      renderNearbyAll();
     });
   });
 }
@@ -3315,7 +3672,7 @@ function dintorniPanelHtml({ title, icon, color, rows, rowHtml, emptyText, wifiS
     </div>`;
 }
 
-function renderDintorniPanels(data) {
+function renderNearbyPanels(data) {
   const mount = document.getElementById("dintorni-panels");
   if (!mount) return;
 
@@ -3351,7 +3708,7 @@ function renderDintorniPanels(data) {
     state.radarFilters.network ? dintorniPanelHtml({
       title: "SSIDs requested", icon: "wifi", color: RADAR_CATEGORY_META.network.color,
       rows: data.networks,
-      emptyText: "No SSIDs requested in probes in the last 24h.",
+      emptyText: `No SSIDs requested in probes in the ${rangeLabel()} window.`,
       wifiSection: "ssid",
       rowHtml: (e) => `<div class="dintorni-row">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
@@ -3363,7 +3720,7 @@ function renderDintorniPanels(data) {
     state.radarFilters.probe ? dintorniPanelHtml({
       title: "WiFi devices", icon: "wifi", color: RADAR_CATEGORY_META.probe.color,
       rows: data.probes,
-      emptyText: "No probes detected in the last 24h.",
+      emptyText: `No probes detected in the ${rangeLabel()} window.`,
       wifiSection: "devices",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
@@ -3374,7 +3731,7 @@ function renderDintorniPanels(data) {
     state.radarFilters.ap ? dintorniPanelHtml({
       title: "Adjacent networks", icon: "wifi", color: RADAR_CATEGORY_META.ap.color,
       rows: data.aps,
-      emptyText: "No WiFi network beacons detected in the last 24h.",
+      emptyText: `No WiFi network beacons detected in the ${rangeLabel()} window.`,
       wifiSection: "aps",
       rowHtml: (e) => `<div class="dintorni-row">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
@@ -3386,7 +3743,7 @@ function renderDintorniPanels(data) {
     state.radarFilters.ble ? dintorniPanelHtml({
       title: "Bluetooth devices", icon: "bluetooth", color: RADAR_CATEGORY_META.ble.color,
       rows: data.ble,
-      emptyText: "No Bluetooth devices detected in the last 24h.",
+      emptyText: `No Bluetooth devices detected in the ${rangeLabel()} window.`,
       viewAllHash: "#/ble", viewAllTarget: "ble-devices-mount",
       rowHtml: (e) => `<button type="button" class="dintorni-row dintorni-row-clickable" data-mac-link="${escapeHtml(e.mac)}">
         <span class="dot" style="background:${signalTierColor(e.avgRssi)}"></span>
@@ -3449,7 +3806,7 @@ function renderHouseRadar(container, data) {
       ${isoHouseSvg(geo)}
       <circle cx="${routerPoint.x.toFixed(1)}" cy="${routerPoint.y.toFixed(1)}" r="5" class="radar-router-dot"/>
     </svg></div>
-    <p class="empty-state">No data in the last 24h for the selected categories.</p>`;
+    <p class="empty-state">No data in the ${rangeLabel()} window for the selected categories.</p>`;
     return;
   }
 
@@ -3566,10 +3923,11 @@ function topKpiRowHtml() {
 
   return `
     ${kpiTile({
-      label: "Active hosts", icon: "monitor", tone: "good",
+      label: "Active devices", icon: "monitor", tone: "good",
       value: online, valueSuffix: `/ ${total}`,
       sub: `${total ? Math.round((online / total) * 100) : 0}% active`,
       sparkValues: hourlyDistinctMac(state.lanRows.filter((r) => r.status !== "offline")), sparkColor: "var(--status-good)",
+      navKey: "dash-hosts",
     })}
     ${kpiTile({
       label: "Presence", icon: "home", tone: presenceTotal ? (presenceHome ? "good" : "blue") : "blue",
@@ -3577,6 +3935,7 @@ function topKpiRowHtml() {
       sub: presenceTotal
         ? `${blePresence.home}/${blePresence.total} BLE · ${wifiPresence.home}/${wifiPresence.total} WiFi`
         : "Configure --ble-home-macs/--wifi-home-macs to enable",
+      navKey: "dash-presence",
     })}
   `;
 }
@@ -3592,7 +3951,7 @@ const HOST_OPTIONAL_COLUMNS = [
   { key: "mdns", label: "mDNS name" },
   { key: "arp", label: "ARP status" },
   { key: "uptime", label: "Uptime %" },
-  { key: "traffic", label: "WiFi traffic (24h)" },
+  { key: "traffic", label: "WiFi traffic" },
 ];
 const HOST_COLUMNS_KEY = "hs.host.visibleColumns";
 
@@ -3676,6 +4035,27 @@ function renderHost(container) {
   `;
   renderHostKpiRow(document.getElementById("host-kpi-row"));
   renderHostSection(document.getElementById("host-section-mount"));
+
+  // I KPI in cima portano alla porzione di tabella che li compone, invece di essere numeri
+  // inerti: stessa affordance introdotta sulla pagina WiFi, ora coerente ovunque.
+  wireKpiNav(container, {
+    "host-all": () => applyHostFilters({ status: "all", risk: "all" }),
+    "host-new": () => applyHostFilters({ status: "new", risk: "all" }),
+    "host-risk": () => applyHostFilters({ status: "all", risk: "high" }),
+  });
+}
+
+/** Imposta i filtri della tabella Network Discovery (che vivono nei <select> del suo header) e
+ * la ridisegna, portando la vista in evidenza. */
+function applyHostFilters({ status, risk }) {
+  const statusEl = document.getElementById("host-status-filter");
+  const riskEl = document.getElementById("host-risk-filter");
+  if (!statusEl || !riskEl) return;
+  if (status !== undefined) statusEl.value = status;
+  if (risk !== undefined) { riskEl.value = risk; state.hostFilters.risk = risk; }
+  getPagination("host").page = 1;
+  statusEl.dispatchEvent(new Event("change"));
+  document.getElementById("host-section-mount")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderHostKpiRow(container) {
@@ -3691,22 +4071,25 @@ function renderHostKpiRow(container) {
 
   container.innerHTML = `
     ${kpiTile({
-      label: "Total hosts", icon: "monitor", tone: "blue",
+      label: "Total devices", icon: "monitor", tone: "blue",
       value: total, sub: `${online} online · ${offline} offline`,
+      navKey: "host-all",
     })}
     ${kpiTile({
       label: "New devices", icon: "users", tone: "blue",
       value: newCount, sub: newCount ? "Seen for the first time in this scan" : "None in this scan",
+      navKey: "host-new",
     })}
     ${kpiTile({
       label: "At risk (High/Critical)", icon: "shield", tone: atRisk ? "critical" : "good",
       value: atRisk, sub: `${critical} critical · ${high} high`,
       subTone: atRisk ? "critical" : "good",
+      navKey: "host-risk",
     })}
   `;
 }
 
-function renderMappa(container) {
+function renderNetworkMapPage(container) {
   container.innerHTML = `<div class="card">
     <div class="card-head"><h2>Network map</h2><span class="card-sub">Schematic topology based on known devices</span></div>
     <div id="netmap-mount"></div>
@@ -3721,6 +4104,145 @@ function renderMappa(container) {
  * l'hash #/device/<mac>.
  * ---------------------------------------------------------------------- */
 
+/** Gli SSID "di casa" dichiarati al daemon con --home-ssid, letti da daemon_config.jsonl. Il
+ * daemon li scriveva già ma nessuno li usava: senza, la propria rete compariva fra le adiacenti
+ * come una vicina qualunque, indistinguibile. */
+function homeSsids() {
+  const daemonConfig = latestDaemonConfig(state.daemonConfigRows);
+  return new Set((daemonConfig?.home_ssids || []).map((s) => String(s).toLowerCase()));
+}
+function isHomeSsid(ssid) {
+  return !!ssid && homeSsids().has(String(ssid).toLowerCase());
+}
+function homeNetworkBadgeHtml(ssid) {
+  return isHomeSsid(ssid) ? `<span class="badge risk-badge tone-good" title="This SSID is configured as yours on the daemon (--home-ssid)">${ICON("home")}Your network</span>` : "";
+}
+
+/**
+ * Profilo di una rete WiFi adiacente (per BSSID). Prima le reti erano l'unica entità dell'app
+ * senza vista di dettaglio: righe inerti in tabella, pur avendo una storia vera da raccontare —
+ * come è cambiato il segnale, se ha cambiato canale o tipo di sicurezza, quali handshake e quali
+ * alert la riguardano.
+ */
+function renderNetworkProfile(container, bssid) {
+  const sightings = state.wifiNetworksRows
+    .filter((r) => r.bssid === bssid)
+    .map((r) => ({ ...r, _ts: parseTs(r.timestamp) || 0 }))
+    .sort((a, b) => b._ts - a._ts);
+
+  if (!sightings.length) {
+    container.innerHTML = `${backToOriginHtml()}<div class="card">
+      <p class="empty-state">No data for BSSID <span class="mono">${escapeHtml(bssid)}</span>. It may never have been detected, or no longer appear in the loaded logs.</p>
+    </div>`;
+    wireBackToOrigin(container);
+    return;
+  }
+
+  const latest = sightings[0];
+  const ssid = latest.ssid || "";
+  const label = getDeviceLabel(bssid);
+  const rssiValues = sightings.map((s) => s.rssi).filter((v) => typeof v === "number");
+  const avgRssi = rssiValues.length ? Math.round(rssiValues.reduce((a, b) => a + b, 0) / rssiValues.length) : null;
+  const channels = [...new Set(sightings.map((s) => s.channel).filter((c) => typeof c === "number"))];
+  const securities = [...new Set(sightings.map((s) => s.security).filter(Boolean))];
+  const handshakes = state.handshakeRows.filter((h) => h.bssid === bssid);
+  const stations = [...new Set(handshakes.map((h) => h.sta_mac).filter(Boolean))];
+  const relatedAlerts = computeAlerts().filter((a) =>
+    (a.mac && a.mac === bssid) || (ssid && `${a.desc}`.includes(ssid)));
+
+  container.innerHTML = `
+    ${backToOriginHtml()}
+    <div class="page-section card device-profile-head">
+      <div class="device-profile-title">
+        <h2>${escapeHtml(displayName(bssid, ssid || "(hidden network)"))}</h2>
+        <span class="mono">${escapeHtml(bssid)}</span>
+        ${wifiSecurityBadgeHtml(latest.security)}
+        ${homeNetworkBadgeHtml(ssid)}
+        ${trustBadgeHtml(bssid)}
+        ${channels.length > 1 ? `<span class="badge risk-badge tone-warning" title="Seen on more than one channel: normal for band steering, but also what a cloned AP looks like">Channel changed</span>` : ""}
+        ${securities.length > 1 ? `<span class="badge risk-badge tone-critical" title="The advertised security type changed over time — worth a look">Security changed</span>` : ""}
+      </div>
+      <div class="detail-grid">
+        <div><span>SSID</span>${escapeHtml(ssid) || '<span class="muted">hidden</span>'}</div>
+        <div><span>Vendor</span>${escapeHtml(latest.vendor) || "—"}</div>
+        <div><span>Channel</span>${latest.channel ?? "—"}${wifiBand(latest.channel) ? ` (${wifiBand(latest.channel)} GHz)` : ""}</div>
+        <div><span>Security</span>${WIFI_SECURITY_META[latest.security]?.label || "Unknown"}</div>
+        <div><span>Average signal</span>${avgRssi === null ? "—" : `${avgRssi} dBm`}</div>
+        <div><span>Sightings</span>${sightings.length.toLocaleString("en-GB")}</div>
+        <div><span>First seen</span>${formatTs(sightings[sightings.length - 1].timestamp)}</div>
+        <div><span>Last seen</span>${formatTs(latest.timestamp)}</div>
+      </div>
+      <div class="device-label-editor">
+        <div class="field">
+          <label for="network-name-input">Custom name</label>
+          <input type="text" id="network-name-input" value="${escapeHtml(label.name)}" placeholder="e.g. Neighbour upstairs">
+        </div>
+        <button class="btn ${label.trusted ? "btn-primary" : ""}" id="network-trust-toggle">
+          ${ICON("shield")}${label.trusted ? "Trusted — remove" : "Mark as trusted"}
+        </button>
+      </div>
+      <p class="field-hint">Marking a network as trusted works exactly like it does for a device: linked alerts drop one severity level, nothing gets hidden.</p>
+    </div>
+
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Beacon history</h2><span class="card-sub">${sightings.length} sightings</span></div>
+        <div class="table-scroll table-scroll-tall">
+          <table class="data-table">
+            <thead><tr><th>Timestamp</th><th>Channel</th><th>Security</th><th>Signal</th></tr></thead>
+            <tbody>${sightings.slice(0, 200).map((s) => `<tr>
+              <td>${formatTs(s.timestamp)}</td>
+              <td>${s.channel ?? '<span class="muted">—</span>'}</td>
+              <td>${wifiSecurityBadgeHtml(s.security)}</td>
+              <td>${signalBarsHtml(s.rssi)}</td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>
+        ${sightings.length > 200 ? `<p class="field-hint">Showing the 200 most recent of ${sightings.length.toLocaleString("en-GB")} sightings.</p>` : ""}
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Linked alerts</h2><span class="card-sub">${relatedAlerts.length} total</span></div>
+        <div class="alert-list" id="network-alerts">${relatedAlerts.length
+          ? relatedAlerts.slice(0, 20).map(alertItemHtml).join("")
+          : '<p class="empty-state">No alerts linked to this network.</p>'}</div>
+      </div>
+    </div>
+
+    <div class="page-section card">
+      <div class="card-head">
+        <h2>Handshakes captured</h2>
+        <span class="card-sub">${handshakes.length} for this BSSID${stations.length ? ` · ${stations.length} station(s) seen connecting` : ""}</span>
+      </div>
+      ${handshakes.length ? `
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Timestamp</th><th>Station</th><th>Messages</th><th>Pcap file</th></tr></thead>
+            <tbody>${handshakes.map((h) => `<tr>
+              <td>${formatTs(h.timestamp)}</td>
+              <td><button class="link-cell mono" data-mac-link="${escapeHtml(h.sta_mac)}">${escapeHtml(displayName(h.sta_mac, h.sta_mac))}</button></td>
+              <td>${Array.isArray(h.messages) && h.messages.length ? `${h.messages.length}/4 (${h.messages.join(",")})` : `${h.frame_count || 0} frames`}</td>
+              <td class="mono" title="${escapeHtml(h.pcap_path)}">${escapeHtml((h.pcap_path || "").split("/").pop())}</td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>
+      ` : `<p class="empty-state">No handshake captured for this network${isHomeSsid(ssid) ? " yet — it only happens when a device (re)connects while the sniffer is on this channel." : ": capture only runs for the networks listed in --home-ssid, never for networks merely detected nearby."}</p>`}
+    </div>
+  `;
+
+  wireBackToOrigin(container);
+  document.getElementById("network-name-input").addEventListener("change", (e) => {
+    setDeviceLabel(bssid, { name: e.target.value.trim() });
+    renderNetworkProfile(container, bssid);
+  });
+  document.getElementById("network-trust-toggle").addEventListener("click", () => {
+    setDeviceLabel(bssid, { trusted: !getDeviceLabel(bssid).trusted });
+    renderNetworkProfile(container, bssid);
+  });
+  container.querySelectorAll("[data-mac-link]").forEach((btn) => {
+    btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
+  });
+}
+
 function renderDeviceProfile(container, mac) {
   const lanCurrent = latestLanByMac(state.lanRows).find((d) => d.mac === mac);
   const history = sightingsForMac(mac);
@@ -3730,15 +4252,34 @@ function renderDeviceProfile(container, mac) {
   const deviceAlerts = computeAlerts().filter((a) => a.mac === mac);
   const uptimeSummary = computeUptimeSummary(mac);
 
-  const backButton = `<div class="page-section" style="margin-bottom:10px;">
-    <button class="btn btn-icon" id="device-back" title="Back to Network Discovery">${ICON("arrow-left")}</button>
-  </div>`;
+  // Dati che il daemon raccoglieva già per questo MAC ma che il profilo non mostrava: presenza
+  // (l'informazione più leggibile che abbiamo su un device di casa), traffico stimato, SSID
+  // richiesti e indirizzi IPv6. Erano visibili solo altrove, ognuno nella sua pagina.
+  const presenceEvents = [
+    ...state.wifiPresenceRows.filter((r) => r.mac === mac).map((r) => ({ ...r, radio: "WiFi" })),
+    ...state.blePresenceRows.filter((r) => r.mac === mac).map((r) => ({ ...r, radio: "BLE" })),
+  ].sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0));
+  const presenceTotals = {
+    homeMs: presenceEvents.reduce((sum, e) => sum + (typeof e.duration_s === "number" ? e.duration_s * 1000 : 0), 0),
+  };
+  const trafficBytes = state.wifiTrafficRows
+    .filter((r) => r.mac === mac && within24h(parseTs(r.timestamp)))
+    .reduce((sum, r) => sum + (Number(r.bytes) || 0), 0);
+  const requestedSsids = [...new Set(state.wifiRows
+    .filter((r) => r.mac === mac && r.ssid && r.ssid.trim())
+    .map((r) => r.ssid.trim()))];
+  const ipv6ForMac = state.ipv6Rows
+    .filter((r) => r.mac === mac)
+    .sort((a, b) => (parseTs(b.timestamp) || 0) - (parseTs(a.timestamp) || 0))
+    .filter((r, i, arr) => arr.findIndex((x) => x.ipv6 === r.ipv6) === i);
+
+  const backButton = backToOriginHtml();
 
   if (!lanCurrent && !history.length && !wifiHits.length && !bleHits.length) {
     container.innerHTML = `${backButton}<div class="card">
       <p class="empty-state">No data for MAC <span class="mono">${escapeHtml(mac)}</span>. It may have never been detected, or no longer appears in the loaded logs.</p>
     </div>`;
-    document.getElementById("device-back").addEventListener("click", () => { window.location.hash = "#/host"; });
+    wireBackToOrigin(container);
     return;
   }
 
@@ -3787,6 +4328,7 @@ function renderDeviceProfile(container, mac) {
           ${ICON("shield")}${label.trusted ? "Trusted — remove" : "Mark as trusted"}
         </button>
       </div>
+      ${inventoryEditorHtml(mac)}
       <div class="device-identity-section">
         <span class="device-identity-heading">Same physical device as</span>
         <div class="device-identity-chips">
@@ -3870,9 +4412,53 @@ function renderDeviceProfile(container, mac) {
         </div>
       </div>
     </div>
+    <div class="page-section grid-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>Presence</h2>
+          <span class="card-sub">${presenceEvents.length} arrival/departure events${presenceTotals.homeMs ? ` · ${formatDuration(presenceTotals.homeMs)} at home in the loaded history` : ""}</span>
+        </div>
+        ${presenceEvents.length ? `
+          <div class="table-scroll">
+            <table class="data-table"><thead><tr><th>Timestamp</th><th>Event</th><th>Radio</th><th>Duration</th></tr></thead>
+            <tbody>${presenceEvents.slice(0, 30).map((e) => `<tr>
+              <td>${formatTs(e.timestamp)}</td>
+              <td>${e.event === "arrived" ? '<span class="badge status-online"><span class="dot"></span>Arrived</span>' : '<span class="badge status-offline"><span class="dot"></span>Left</span>'}</td>
+              <td>${e.radio}</td>
+              <td>${typeof e.duration_s === "number" ? formatDuration(e.duration_s * 1000) : '<span class="muted">—</span>'}</td>
+            </tr>`).join("")}</tbody></table>
+          </div>
+          ${presenceEvents.length > 30 ? `<p class="field-hint">Showing the 30 most recent of ${presenceEvents.length} events.</p>` : ""}
+        ` : `<p class="empty-state">Not tracked for presence. Add this MAC to <code>--wifi-home-macs</code>/<code>--ble-home-macs</code>, or to the <code>devices</code> section of the daemon's config file.</p>`}
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Requested SSIDs &amp; IPv6</h2>
+          <span class="card-sub">networks this device asked for, and its IPv6 addresses if seen</span>
+        </div>
+        <div class="detail-grid">
+          <div><span>WiFi traffic (${rangeLabel()})</span>${trafficBytes ? formatBytes(trafficBytes) : "—"}</div>
+          <div><span>SSIDs requested</span>${requestedSsids.length || "—"}</div>
+        </div>
+        ${requestedSsids.length ? `<div class="chip-list">${requestedSsids.slice(0, 20).map((s) =>
+          `<span class="badge">${escapeHtml(s)}${isHomeSsid(s) ? " ★" : ""}</span>`).join("")}</div>` : ""}
+        ${ipv6ForMac.length ? `
+          <div class="table-scroll" style="margin-top:12px;">
+            <table class="data-table"><thead><tr><th>IPv6 address</th><th>Scope</th><th>State</th><th>Last seen</th></tr></thead>
+            <tbody>${ipv6ForMac.map((r) => `<tr>
+              <td class="mono">${escapeHtml(r.ipv6)}</td>
+              <td>${escapeHtml(r.scope || "—")}</td>
+              <td>${escapeHtml(r.state || "—")}</td>
+              <td>${formatTs(r.timestamp)}</td>
+            </tr>`).join("")}</tbody></table>
+          </div>
+        ` : `<p class="field-hint">No IPv6 address seen for this MAC (needs <code>--ipv6-discovery</code> on the daemon, and a dual-stack network).</p>`}
+      </div>
+    </div>
     <p class="field-hint">MACs in WiFi probes and BLE advertisements are often randomized by modern devices and may not match the LAN interface MAC of the same device: the sections above stay empty in that case, it's not an error.</p>
   `;
-  document.getElementById("device-back").addEventListener("click", () => { window.location.hash = "#/host"; });
+  wireBackToOrigin(container);
+  wireInventoryEditor(container, mac, () => renderDeviceProfile(container, mac));
   document.getElementById("device-name-input").addEventListener("change", (e) => {
     setDeviceLabel(mac, { name: e.target.value.trim() });
     renderDeviceProfile(container, mac);
@@ -3911,12 +4497,12 @@ function renderDeviceProfile(container, mac) {
   });
 }
 
-function renderScansioni(container) {
+function renderScansPage(container) {
   container.innerHTML = `<div class="page-section card" id="scansioni-mount"></div>`;
-  renderScansioniBody(document.getElementById("scansioni-mount"));
+  renderScansPageBody(document.getElementById("scansioni-mount"));
 }
 
-function renderScansioniBody(container) {
+function renderScansPageBody(container) {
   const cycles = computeScanCycles();
   const info = paginate(cycles, "scansioni");
   container.innerHTML = `
@@ -3938,19 +4524,24 @@ function renderScansioniBody(container) {
     </div>
   `;
   document.getElementById("scansioni-pagination").innerHTML = cycles.length ? paginationHtml("scansioni", info) : "";
-  wirePagination(document.getElementById("scansioni-pagination"), "scansioni", () => renderScansioniBody(container));
+  wirePagination(document.getElementById("scansioni-pagination"), "scansioni", () => renderScansPageBody(container));
 }
 
 function alertItemHtml(a) {
   const dismissed = isDismissed(a.id);
   const snoozed = isSnoozed(a.id);
-  const identifier = a.mac ? `MAC ${escapeHtml(a.mac)}` : a.ip ? `IP ${escapeHtml(a.ip)}` : null;
+  // Il MAC di un alert è un device come tutti gli altri: cliccabile e chiamato col suo nome,
+  // esattamente come in ogni altra tabella dell'app (prima era testo morto).
+  const identifier = a.mac
+    ? `<button class="link-cell" data-mac-link="${escapeHtml(a.mac)}">${escapeHtml(displayName(a.mac, a.mac))}</button>`
+    : a.ip ? `IP ${escapeHtml(a.ip)}` : null;
   return `<div class="alert-item ${dismissed ? "is-dismissed" : ""} ${snoozed ? "is-snoozed" : ""}">
     <span class="alert-icon sev-${a.severity}">${ICON(a.icon || "alert-triangle")}</span>
     <div class="alert-body">
       <div class="alert-title">
         ${escapeHtml(a.title)}
         ${a.source === "detect" ? `<span class="source-tag">${ICON("shield")}Detected by daemon</span>` : ""}
+        ${a.homeOccupied === false ? `<span class="source-tag tone-critical" title="Nobody configured for presence tracking was home when this happened${a.escalated ? " — severity raised one level (--presence-aware-alerts)" : ""}">${ICON("home")}Home empty</span>` : ""}
         ${snoozed ? `<span class="source-tag" title="Snoozed until ${formatTs(snoozedUntil(a.id))}">${ICON("clock")}Snoozed until ${formatTs(snoozedUntil(a.id))}</span>` : ""}
       </div>
       <div class="alert-desc">${escapeHtml(a.desc)}</div>
@@ -3976,7 +4567,7 @@ function getAlertPresets() {
 }
 function saveAlertPresets(list) { localStorage.setItem(ALERT_PRESETS_KEY, JSON.stringify(list)); }
 
-function renderAvvisi(container) {
+function renderAlertsPage(container) {
   const all = computeAlerts();
 
   const typesPresent = [...new Set(all.map((a) => a.type).filter(Boolean))]
@@ -3986,11 +4577,46 @@ function renderAvvisi(container) {
     state.alertsTypeFilter = "all"; // the selected type no longer appears among the current alerts
   }
 
+  const active = all.filter((a) => !isDismissed(a.id) && !isSnoozed(a.id));
+  const criticalCount = active.filter((a) => a.severity === "critical").length;
+  const homeEmptyCount = active.filter((a) => a.homeOccupied === false).length;
+
   container.innerHTML = `
+    <div class="page-section kpi-row">
+      ${kpiTile({
+        label: "Active alerts", icon: "bell", tone: active.length ? "critical" : "good",
+        value: active.length, sub: `${all.length} total, including dismissed and snoozed`,
+        navKey: "alerts-active",
+      })}
+      ${kpiTile({
+        label: "Critical", icon: "alert-triangle", tone: criticalCount ? "critical" : "good",
+        value: criticalCount, sub: criticalCount ? "Need attention now" : "Nothing critical right now",
+        subTone: criticalCount ? "critical" : "good", navKey: "alerts-critical",
+      })}
+      ${kpiTile({
+        label: "While home was empty", icon: "home", tone: homeEmptyCount ? "critical" : "blue",
+        value: homeEmptyCount,
+        sub: homeEmptyCount ? "Nobody home when these fired" : "None — or presence tracking is off",
+        navKey: "alerts-home-empty",
+      })}
+      ${kpiTile({
+        label: "Snoozed / dismissed", icon: "clock", tone: "blue",
+        value: all.length - active.length, sub: "Hidden from the active list",
+        navKey: "alerts-hidden",
+      })}
+    </div>
+
     <div class="card">
       <div class="card-head">
         <h2>Alerts</h2>
         <div class="filter-row" style="margin:0;">
+          <div class="search-input">${ICON("search")}<input type="text" id="alerts-search" placeholder="Search alerts, devices…"></div>
+          <select class="select-control" id="alerts-severity-filter">
+            <option value="all">All severities</option>
+            <option value="critical">Critical</option>
+            <option value="serious">Serious</option>
+            <option value="info">Info</option>
+          </select>
           <select class="select-control" id="alerts-type-filter">
             <option value="all">All types</option>
             ${typesPresent.map((t) => `<option value="${escapeHtml(t.type)}">${escapeHtml(t.label)}</option>`).join("")}
@@ -4001,6 +4627,7 @@ function renderAvvisi(container) {
             <option value="snoozed">Snoozed</option>
             <option value="dismissed">Dismissed</option>
           </select>
+          ${inlineExportHtml("alerts")}
         </div>
       </div>
       <div class="preset-row" id="preset-row"></div>
@@ -4019,17 +4646,58 @@ function renderAvvisi(container) {
     renderAlertList();
     renderPresetChips();
   });
+  document.getElementById("alerts-severity-filter").value = state.alertsSeverityFilter;
+  document.getElementById("alerts-severity-filter").addEventListener("change", (e) => {
+    state.alertsSeverityFilter = e.target.value;
+    renderAlertList();
+  });
+  document.getElementById("alerts-search").addEventListener("input", renderAlertList);
+  wireKpiNav(container, {
+    "alerts-active": () => { setAlertsView({ status: "active", severity: "all", homeEmpty: false }); },
+    "alerts-critical": () => { setAlertsView({ status: "active", severity: "critical", homeEmpty: false }); },
+    "alerts-home-empty": () => { setAlertsView({ status: "all", severity: "all", homeEmpty: true }); },
+    "alerts-hidden": () => { setAlertsView({ status: "dismissed", severity: "all", homeEmpty: false }); },
+  });
+  wireInlineExport(container, "alerts", "alerts_filtered", () => visibleAlerts().map((a) => ({
+    severity: a.severity, type: a.type, title: a.title, desc: a.desc,
+    mac: a.mac || "", name: a.mac ? displayName(a.mac, "") : "", home_occupied: a.homeOccupied ?? "",
+    timestamp: a.ts ? new Date(a.ts).toISOString() : "",
+  })));
   renderAlertList();
   renderPresetChips();
 
-  function renderAlertList() {
+  /** Applica una vista completa (stato + severità + solo "casa vuota") e ridisegna: usata dai KPI
+   * cliccabili in cima, così ogni numero mostrato porta esattamente alla lista che lo compone. */
+  function setAlertsView({ status, severity, homeEmpty }) {
+    state.alertsFilter = status;
+    state.alertsSeverityFilter = severity;
+    state.alertsHomeEmptyOnly = homeEmpty;
+    document.getElementById("alerts-filter").value = status;
+    document.getElementById("alerts-severity-filter").value = severity;
+    renderAlertList();
+    renderPresetChips();
+  }
+
+  function visibleAlerts() {
+    const search = (document.getElementById("alerts-search")?.value || "").trim().toLowerCase();
     let list = all;
     if (state.alertsFilter === "active") list = list.filter((a) => !isDismissed(a.id) && !isSnoozed(a.id));
     if (state.alertsFilter === "snoozed") list = list.filter((a) => isSnoozed(a.id));
     if (state.alertsFilter === "dismissed") list = list.filter((a) => isDismissed(a.id));
     if (state.alertsTypeFilter !== "all") list = list.filter((a) => a.type === state.alertsTypeFilter);
+    if (state.alertsSeverityFilter !== "all") list = list.filter((a) => a.severity === state.alertsSeverityFilter);
+    if (state.alertsHomeEmptyOnly) list = list.filter((a) => a.homeOccupied === false);
+    if (search) {
+      list = list.filter((a) => `${a.title} ${a.desc} ${a.mac || ""} ${a.ip || ""} ${a.mac ? displayName(a.mac, "") : ""}`
+        .toLowerCase().includes(search));
+    }
+    return list;
+  }
+
+  function renderAlertList() {
+    const list = visibleAlerts();
     const el = document.getElementById("alert-list");
-    if (!list.length) { el.innerHTML = '<p class="empty-state">No alerts in this category.</p>'; return; }
+    if (!list.length) { el.innerHTML = '<p class="empty-state">No alerts match these filters.</p>'; return; }
     el.innerHTML = list.map(alertItemHtml).join("");
     el.querySelectorAll("[data-dismiss]").forEach((btn) => {
       btn.addEventListener("click", () => { toggleDismiss(btn.dataset.dismiss); renderAlertList(); updateNavBadge(); });
@@ -4044,6 +4712,9 @@ function renderAvvisi(container) {
     });
     el.querySelectorAll("[data-unsnooze]").forEach((btn) => {
       btn.addEventListener("click", () => { unsnoozeAlert(btn.dataset.unsnooze); renderAlertList(); updateNavBadge(); });
+    });
+    el.querySelectorAll("[data-mac-link]").forEach((btn) => {
+      btn.addEventListener("click", () => goToDevice(btn.dataset.macLink));
     });
   }
 
@@ -4095,77 +4766,53 @@ function formatBytes(bytes) {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
-function moduleStatusRow(label, key) {
-  const s = state.sourceStatus[key];
+/** Riga di stato di *connettività* di una sorgente dati (il file è raggiungibile da qui?). Da non
+ * confondere con "System health" in Dashboard, che dice se il modulo è acceso sul daemon: le due
+ * domande sono diverse e prima l'app rispondeva a entrambe con questa sola, deducendola dai dati
+ * caricati — ambiguo, perché un file assente può voler dire tanto "modulo spento" quanto
+ * "dashboard collegata al posto sbagliato". */
+function sourceStatusRow(source) {
+  const s = state.sourceStatus[source.key];
   let tone = "muted", text = "Not loaded yet";
   if (s) {
     if (s.ok && s.count > 0) {
       tone = "good";
-      text = `Active — ${s.count} rows loaded`;
+      text = `Reachable — ${s.count.toLocaleString("en-GB")} rows loaded`;
       if (s.truncated) text += ` (most recent only — ${formatBytes(s.totalBytes)} file, limited to the last ${formatBytes(TAIL_FETCH_BYTES)})`;
     } else if (s.ok && s.count === 0) {
-      tone = "warning"; text = "Source reachable, no rows yet";
+      tone = "warning"; text = "Reachable, no rows yet";
     } else {
-      tone = "muted"; text = "Not detected (file missing or module not active on the daemon)";
+      tone = "muted"; text = "Not found (file missing, or the module isn't running on the daemon)";
     }
   }
+  const localFile = source.fileKey ? state[source.fileKey] : null;
   return `<div class="module-status-row">
     <span class="module-status-dot tone-${tone}"></span>
-    <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(text)}</span></div>
+    <div>
+      <strong>${escapeHtml(source.label)}</strong>
+      <span>${escapeHtml(text)} · <code>${escapeHtml(localFile ? `${localFile.name} (local file)` : sourceUrl(source))}</code></span>
+    </div>
   </div>`;
 }
 
-function renderImpostazioni(container) {
+function renderSettingsPage(container) {
   const themeMode = getSetting("theme");
   const densityMode = getSetting("density");
   container.innerHTML = `
     <div class="page-section card">
-      <div class="card-head"><h2>Module status</h2><span class="card-sub">inferred from the data actually loaded, not from a status endpoint</span></div>
-      <div class="module-status-list">
-        ${moduleStatusRow("LAN discovery", "lan")}
-        ${moduleStatusRow("WiFi probes (--wifi-iface)", "wifi")}
-        ${moduleStatusRow("BLE scan (--ble)", "ble")}
-        ${moduleStatusRow("Fingerprinting (--fingerprint)", "fingerprint")}
-        ${moduleStatusRow("Estimated WiFi traffic", "wifiTraffic")}
-        ${moduleStatusRow("Adjacent WiFi networks (beacons)", "wifiNetworks")}
-        ${moduleStatusRow("DHCP client discovery (--dhcp-discovery)", "dhcpEvents")}
-        ${moduleStatusRow("OS fingerprint (--os-fingerprint)", "osFingerprint")}
-        ${moduleStatusRow("DHCP lease cross-check (--dhcp-lease-source)", "dhcpLeases")}
-        ${moduleStatusRow("Daily trend rollup (--no-trend-rollup to disable)", "trendDaily")}
-        ${moduleStatusRow("BLE identity link suggestions (--no-ble-identity-linking to disable)", "bleIdentityLinks")}
-        ${moduleStatusRow("BLE presence tracking (--ble-home-macs)", "blePresence")}
-        ${moduleStatusRow("Deep port scan (--deep-port-scan)", "deepScan")}
-        ${moduleStatusRow("Handshake capture (--capture-handshakes)", "handshake")}
-        ${moduleStatusRow("WiFi presence tracking (--wifi-home-macs)", "wifiPresence")}
-        ${moduleStatusRow("Daemon config snapshot (active modules, home MACs)", "daemonConfig")}
-        ${moduleStatusRow("Detection alerts", "alerts")}
+      <div class="card-head">
+        <h2>Data sources</h2>
+        <span class="card-sub">whether each daemon log is reachable from here — <em>not</em> whether the module is on: that answer comes from the daemon itself, in "System health" on the Dashboard</span>
       </div>
-      <p class="field-hint">Missing hosts that a tool like <code>nmap</code> does find? LAN discovery already retries hosts that don't answer the first ARP request (<code>--arp-retries</code>, default 2); two more fallbacks — <code>--icmp-fallback</code> and <code>--tcp-fallback</code> — can be enabled on the daemon for hosts still missing after that. These are daemon flags, not dashboard settings: see the README for details.</p>
-    </div>
-
-    <div class="page-section card">
-      <div class="card-head"><h2>Data sources</h2></div>
       <div class="settings-grid">
-        <div class="field"><label for="set-lan-url">LAN discovery log (.jsonl)</label><input type="text" id="set-lan-url" value="${escapeHtml(getSetting("lanUrl"))}"></div>
-        <div class="field"><label for="set-lan-file">Or load a local file</label><input type="file" id="set-lan-file" accept=".jsonl,.ndjson,.json,.txt"></div>
-        <div class="field"><label for="set-wifi-url">WiFi probe log (.jsonl)</label><input type="text" id="set-wifi-url" value="${escapeHtml(getSetting("wifiUrl"))}"></div>
-        <div class="field"><label for="set-wifi-file">Or load a local file</label><input type="file" id="set-wifi-file" accept=".jsonl,.ndjson,.json,.txt"></div>
-        <div class="field"><label for="set-ble-url">BLE scan log (.jsonl)</label><input type="text" id="set-ble-url" value="${escapeHtml(getSetting("bleUrl"))}"></div>
-        <div class="field"><label for="set-ble-file">Or load a local file</label><input type="file" id="set-ble-file" accept=".jsonl,.ndjson,.json,.txt"></div>
-        <div class="field"><label for="set-alerts-url">Detection alert log (.jsonl)</label><input type="text" id="set-alerts-url" value="${escapeHtml(getSetting("alertsUrl"))}"></div>
-        <div class="field"><label for="set-fingerprint-url">Device fingerprint log (.jsonl)</label><input type="text" id="set-fingerprint-url" value="${escapeHtml(getSetting("fingerprintUrl"))}"></div>
-        <div class="field"><label for="set-wifi-traffic-url">WiFi traffic log (.jsonl)</label><input type="text" id="set-wifi-traffic-url" value="${escapeHtml(getSetting("wifiTrafficUrl"))}"></div>
-        <div class="field"><label for="set-wifi-networks-url">Adjacent WiFi networks log (.jsonl)</label><input type="text" id="set-wifi-networks-url" value="${escapeHtml(getSetting("wifiNetworksUrl"))}"></div>
-        <div class="field"><label for="set-dhcp-events-url">DHCP client discovery log (.jsonl)</label><input type="text" id="set-dhcp-events-url" value="${escapeHtml(getSetting("dhcpEventsUrl"))}"></div>
-        <div class="field"><label for="set-os-fingerprint-url">OS fingerprint log (.jsonl)</label><input type="text" id="set-os-fingerprint-url" value="${escapeHtml(getSetting("osFingerprintUrl"))}"></div>
-        <div class="field"><label for="set-dhcp-leases-url">DHCP lease cross-check log (.jsonl)</label><input type="text" id="set-dhcp-leases-url" value="${escapeHtml(getSetting("dhcpLeasesUrl"))}"></div>
-        <div class="field"><label for="set-trend-daily-url">Daily trend rollup log (.jsonl)</label><input type="text" id="set-trend-daily-url" value="${escapeHtml(getSetting("trendDailyUrl"))}"></div>
-        <div class="field"><label for="set-ble-identity-links-url">BLE identity link suggestions log (.jsonl)</label><input type="text" id="set-ble-identity-links-url" value="${escapeHtml(getSetting("bleIdentityLinksUrl"))}"></div>
-        <div class="field"><label for="set-ble-presence-url">BLE presence log (.jsonl)</label><input type="text" id="set-ble-presence-url" value="${escapeHtml(getSetting("blePresenceUrl"))}"></div>
-        <div class="field"><label for="set-deep-scan-url">Deep port scan log (.jsonl)</label><input type="text" id="set-deep-scan-url" value="${escapeHtml(getSetting("deepScanUrl"))}"></div>
-        <div class="field"><label for="set-handshake-url">Handshake capture log (.jsonl)</label><input type="text" id="set-handshake-url" value="${escapeHtml(getSetting("handshakeUrl"))}"></div>
-        <div class="field"><label for="set-wifi-presence-url">WiFi presence log (.jsonl)</label><input type="text" id="set-wifi-presence-url" value="${escapeHtml(getSetting("wifiPresenceUrl"))}"></div>
-        <div class="field"><label for="set-daemon-config-url">Daemon config snapshot (.jsonl)</label><input type="text" id="set-daemon-config-url" value="${escapeHtml(getSetting("daemonConfigUrl"))}"></div>
+        <div class="field">
+          <label for="set-log-base">Log folder (base URL or path)</label>
+          <input type="text" id="set-log-base" value="${escapeHtml(getSetting("logBase"))}" placeholder="e.g. /logs or http://raspberrypi.local:8080">
+        </div>
+        <div class="field">
+          <label for="set-api-url">Query API (optional, <code>--api</code> on the daemon)</label>
+          <input type="text" id="set-api-url" value="${escapeHtml(getSetting("apiUrl"))}" placeholder="http://raspberrypi.local:8099">
+        </div>
         <div class="field">
           <label for="set-refresh">Auto-refresh</label>
           <select id="set-refresh" class="select-control">
@@ -4178,8 +4825,25 @@ function renderImpostazioni(container) {
           </select>
         </div>
       </div>
-      <p class="field-hint">If the dashboard is opened as a local file (<code>file://</code>) fetching via URL won't work due to browser security restrictions: use the "load a local file" fields, or serve this folder with <code>python3 -m http.server</code>. With very large logs, 1-5s intervals re-read the whole file every cycle: if you notice slowdowns, increase the interval. The alert/fingerprint/traffic/adjacent-networks logs are optional: if the corresponding detection modules aren't active on the daemon, the missing file doesn't cause errors.</p>
+      <p class="field-hint">All the daemon's logs normally live in the same folder (that's what <code>dashboard/link-logs.sh</code> sets up), so setting the folder once is enough — each file below only needs its own entry if you keep it somewhere else. The query API is optional: when set, pages that need the full history use it instead of the truncated tail of the large JSONL files.</p>
+      <div class="module-status-list">
+        ${DATA_SOURCES.map((s) => sourceStatusRow(s)).join("")}
+      </div>
+      <details class="source-overrides">
+        <summary>Per-source overrides and local files</summary>
+        <div class="settings-grid">
+          ${DATA_SOURCES.map((s) => `
+            <div class="field">
+              <label for="set-src-${s.key}">${escapeHtml(s.label)}</label>
+              <input type="text" id="set-src-${s.key}" data-source-url="${s.key}" value="${escapeHtml(getSetting(sourceSettingKey(s)))}">
+            </div>
+            ${s.fileKey ? `<div class="field"><label for="set-file-${s.key}">${escapeHtml(s.label)} — load a local file</label><input type="file" id="set-file-${s.key}" data-source-file="${s.key}" accept=".jsonl,.ndjson,.json,.txt"></div>` : ""}
+          `).join("")}
+        </div>
+      </details>
+      <p class="field-hint">If the dashboard is opened as a local file (<code>file://</code>) fetching via URL won't work due to browser security restrictions: use the "load a local file" fields, or serve this folder with <code>python3 -m http.server</code>. With very large logs, 1-5s intervals re-read the whole file every cycle: if you notice slowdowns, increase the interval. Every source except LAN, WiFi and BLE is optional: a missing file just means that module isn't running on the daemon.</p>
     </div>
+
 
     <div class="page-section card">
       <div class="card-head"><h2>Notifications</h2><span class="card-sub">desktop notifications for new critical alerts, while this tab stays open</span></div>
@@ -4228,26 +4892,24 @@ function renderImpostazioni(container) {
   `;
   document.getElementById("set-refresh").value = getSetting("refreshMs");
 
-  document.getElementById("set-lan-url").addEventListener("change", (e) => { setSetting("lanUrl", e.target.value.trim() || SETTINGS_DEFAULTS.lanUrl); state.lanFile = null; loadAll(); });
-  document.getElementById("set-wifi-url").addEventListener("change", (e) => { setSetting("wifiUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiUrl); state.wifiFile = null; loadAll(); });
-  document.getElementById("set-lan-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.lanFile = e.target.files[0]; loadAll(); } });
-  document.getElementById("set-wifi-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.wifiFile = e.target.files[0]; loadAll(); } });
-  document.getElementById("set-ble-url").addEventListener("change", (e) => { setSetting("bleUrl", e.target.value.trim() || SETTINGS_DEFAULTS.bleUrl); state.bleFile = null; loadAll(); });
-  document.getElementById("set-ble-file").addEventListener("change", (e) => { if (e.target.files[0]) { state.bleFile = e.target.files[0]; loadAll(); } });
-  document.getElementById("set-alerts-url").addEventListener("change", (e) => { setSetting("alertsUrl", e.target.value.trim() || SETTINGS_DEFAULTS.alertsUrl); loadAll(); });
-  document.getElementById("set-fingerprint-url").addEventListener("change", (e) => { setSetting("fingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.fingerprintUrl); loadAll(); });
-  document.getElementById("set-wifi-traffic-url").addEventListener("change", (e) => { setSetting("wifiTrafficUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiTrafficUrl); loadAll(); });
-  document.getElementById("set-wifi-networks-url").addEventListener("change", (e) => { setSetting("wifiNetworksUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiNetworksUrl); loadAll(); });
-  document.getElementById("set-dhcp-events-url").addEventListener("change", (e) => { setSetting("dhcpEventsUrl", e.target.value.trim() || SETTINGS_DEFAULTS.dhcpEventsUrl); loadAll(); });
-  document.getElementById("set-os-fingerprint-url").addEventListener("change", (e) => { setSetting("osFingerprintUrl", e.target.value.trim() || SETTINGS_DEFAULTS.osFingerprintUrl); loadAll(); });
-  document.getElementById("set-dhcp-leases-url").addEventListener("change", (e) => { setSetting("dhcpLeasesUrl", e.target.value.trim() || SETTINGS_DEFAULTS.dhcpLeasesUrl); loadAll(); });
-  document.getElementById("set-trend-daily-url").addEventListener("change", (e) => { setSetting("trendDailyUrl", e.target.value.trim() || SETTINGS_DEFAULTS.trendDailyUrl); loadAll(); });
-  document.getElementById("set-ble-identity-links-url").addEventListener("change", (e) => { setSetting("bleIdentityLinksUrl", e.target.value.trim() || SETTINGS_DEFAULTS.bleIdentityLinksUrl); loadAll(); });
-  document.getElementById("set-ble-presence-url").addEventListener("change", (e) => { setSetting("blePresenceUrl", e.target.value.trim() || SETTINGS_DEFAULTS.blePresenceUrl); loadAll(); });
-  document.getElementById("set-deep-scan-url").addEventListener("change", (e) => { setSetting("deepScanUrl", e.target.value.trim() || SETTINGS_DEFAULTS.deepScanUrl); loadAll(); });
-  document.getElementById("set-handshake-url").addEventListener("change", (e) => { setSetting("handshakeUrl", e.target.value.trim() || SETTINGS_DEFAULTS.handshakeUrl); loadAll(); });
-  document.getElementById("set-wifi-presence-url").addEventListener("change", (e) => { setSetting("wifiPresenceUrl", e.target.value.trim() || SETTINGS_DEFAULTS.wifiPresenceUrl); loadAll(); });
-  document.getElementById("set-daemon-config-url").addEventListener("change", (e) => { setSetting("daemonConfigUrl", e.target.value.trim() || SETTINGS_DEFAULTS.daemonConfigUrl); loadAll(); });
+  document.getElementById("set-log-base").addEventListener("change", (e) => { setSetting("logBase", e.target.value.trim()); loadAll(); });
+  document.getElementById("set-api-url").addEventListener("change", (e) => { setSetting("apiUrl", e.target.value.trim()); loadAll(); });
+  container.querySelectorAll("[data-source-url]").forEach((input) => {
+    input.addEventListener("change", (e) => {
+      const source = sourceByKey[input.dataset.sourceUrl];
+      setSetting(sourceSettingKey(source), e.target.value.trim() || source.file);
+      if (source.fileKey) state[source.fileKey] = null; // un URL esplicito ha la meglio sul file locale caricato prima
+      loadAll();
+    });
+  });
+  container.querySelectorAll("[data-source-file]").forEach((input) => {
+    input.addEventListener("change", (e) => {
+      if (!e.target.files[0]) return;
+      state[sourceByKey[input.dataset.sourceFile].fileKey] = e.target.files[0];
+      loadAll();
+    });
+  });
+
   document.getElementById("set-refresh").addEventListener("change", (e) => { setSetting("refreshMs", e.target.value); setupRefreshTimer(); });
 
   [["set-net-label", "netLabel"], ["set-net-gateway", "netGateway"]].forEach(([id, key]) => {
@@ -4272,7 +4934,7 @@ function renderImpostazioni(container) {
           "Blocked at the browser level — check this site's notification permission in your browser settings to re-allow it.";
       }
     }
-    renderImpostazioni(container);
+    renderSettingsPage(container);
   });
   document.getElementById("set-notifications-test")?.addEventListener("click", () => {
     new Notification("Home Sentinel — test notification", {
@@ -4311,25 +4973,41 @@ function exportCardHtml(title, sub, key, statusKey) {
   </div>`;
 }
 
-function renderEsporta(container) {
+function renderExportPage(container) {
   const lanCurrent = latestLanByMac(state.lanRows);
   const alerts = computeAlerts();
+  // Guidato da DATA_SOURCES: ogni sorgente caricata è anche esportabile, senza doversi
+  // ricordare di aggiungere a mano una card per ogni modulo nuovo (presence, deep scan e
+  // handshake erano rimasti fuori proprio così).
   container.innerHTML = `<div class="export-grid">
     ${exportCardHtml("LAN devices (current status)", `${lanCurrent.length} devices`, "lan-current", "lan")}
-    ${exportCardHtml("Full LAN discovery log", `${state.lanRows.length} rows`, "lan-log", "lan")}
-    ${exportCardHtml("WiFi probes", `${state.wifiRows.length} rows`, "wifi", "wifi")}
-    ${exportCardHtml("BLE scan", `${state.bleRows.length} rows`, "ble", "ble")}
-    ${exportCardHtml("Device fingerprints", `${state.fingerprintRows.length} rows`, "fingerprint", "fingerprint")}
-    ${exportCardHtml("Estimated WiFi traffic", `${state.wifiTrafficRows.length} rows`, "wifi-traffic", "wifiTraffic")}
-    ${exportCardHtml("Adjacent WiFi networks", `${state.wifiNetworksRows.length} rows`, "wifi-networks", "wifiNetworks")}
-    ${exportCardHtml("DHCP client discovery", `${state.dhcpEventsRows.length} rows`, "dhcp-events", "dhcpEvents")}
-    ${exportCardHtml("OS fingerprint", `${state.osFingerprintRows.length} rows`, "os-fingerprint", "osFingerprint")}
-    ${exportCardHtml("DHCP lease cross-check", `${state.dhcpLeasesRows.length} rows`, "dhcp-leases", "dhcpLeases")}
-    ${exportCardHtml("Daily trend rollup", `${state.trendDailyRows.length} rows`, "trend-daily", "trendDaily")}
-    ${exportCardHtml("Alerts", `${alerts.length} alerts`, "alerts", "alerts")}
+    ${DATA_SOURCES.filter((s) => s.exportName).map((s) =>
+      exportCardHtml(s.label, `${state[s.rows].length.toLocaleString("en-GB")} rows`, `src:${s.key}`, s.key)).join("")}
+    ${exportCardHtml("Alerts (as shown in the app)", `${alerts.length} alerts`, "alerts", "alerts")}
   </div>`;
   container.querySelectorAll("[data-export]").forEach((btn) => {
     btn.addEventListener("click", () => doExport(btn.dataset.export, btn.dataset.format));
+  });
+}
+
+/** Bottoni CSV/JSON da mettere nell'intestazione di una tabella, per esportare esattamente quello
+ * che si sta guardando senza passare dalla pagina Esporta (e senza perdere i filtri applicati). */
+function inlineExportHtml(id) {
+  return `<div class="inline-export">
+    <button class="btn btn-icon" data-inline-export="${id}" data-format="csv" title="Export these rows as CSV">${ICON("download")}CSV</button>
+    <button class="btn btn-icon" data-inline-export="${id}" data-format="json" title="Export these rows as JSON">${ICON("download")}JSON</button>
+  </div>`;
+}
+
+/** Collega i bottoni creati da inlineExportHtml: `rowsProvider` ritorna le righe attualmente
+ * visibili (già filtrate/ordinate), così l'export riflette la vista, non la sorgente grezza. */
+function wireInlineExport(container, id, filename, rowsProvider) {
+  container.querySelectorAll(`[data-inline-export="${id}"]`).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const rows = rowsProvider().map(stripInternal);
+      downloadBlob(btn.dataset.format === "json" ? toJsonBlob(rows) : toCsvBlob(rows), `${filename}.${btn.dataset.format}`);
+      showToast(`Exported ${rows.length.toLocaleString("en-GB")} row${rows.length === 1 ? "" : "s"} to ${filename}.${btn.dataset.format}`);
+    });
   });
 }
 
@@ -4388,26 +5066,28 @@ function downloadBlob(blob, filename) {
 }
 function doExport(key, format) {
   let rows, filename;
-  if (key === "lan-current") { rows = latestLanByMac(state.lanRows).map(stripInternal); filename = "lan_devices_current"; }
-  else if (key === "lan-log") { rows = state.lanRows; filename = "lan_discovery_log"; }
-  else if (key === "wifi") { rows = state.wifiRows; filename = "wifi_probes"; }
-  else if (key === "ble") { rows = state.bleRows; filename = "ble_discovery"; }
-  else if (key === "fingerprint") { rows = state.fingerprintRows; filename = "fingerprint_discovery"; }
-  else if (key === "wifi-traffic") { rows = state.wifiTrafficRows; filename = "wifi_traffic"; }
-  else if (key === "wifi-networks") { rows = state.wifiNetworksRows; filename = "wifi_networks"; }
-  else if (key === "dhcp-events") { rows = state.dhcpEventsRows; filename = "dhcp_events"; }
-  else if (key === "os-fingerprint") { rows = state.osFingerprintRows; filename = "os_fingerprint"; }
-  else if (key === "dhcp-leases") { rows = state.dhcpLeasesRows; filename = "dhcp_leases"; }
-  else if (key === "trend-daily") { rows = state.trendDailyRows; filename = "trend_daily"; }
-  else if (key === "alerts") {
-    rows = computeAlerts().map((a) => ({ id: a.id, severity: a.severity, title: a.title, desc: a.desc, mac: a.mac, timestamp: a.ts ? new Date(a.ts).toISOString() : "" }));
+  if (key.startsWith("src:")) {
+    // Sorgente del registro: le righe grezze così come caricate dal daemon.
+    const source = sourceByKey[key.slice(4)];
+    if (!source || !source.exportName) return;
+    rows = state[source.rows];
+    filename = source.exportName;
+  } else if (key === "lan-current") {
+    rows = latestLanByMac(state.lanRows).map(stripInternal);
+    filename = "lan_devices_current";
+  } else if (key === "alerts") {
+    rows = computeAlerts().map((a) => ({
+      id: a.id, severity: a.severity, title: a.title, desc: a.desc,
+      mac: a.mac, name: a.mac ? displayName(a.mac, "") : "",
+      timestamp: a.ts ? new Date(a.ts).toISOString() : "",
+    }));
     filename = "alerts";
   } else return;
   downloadBlob(format === "json" ? toJsonBlob(rows) : toCsvBlob(rows), `${filename}.${format}`);
   showToast(`Exported ${rows.length.toLocaleString("en-GB")} row${rows.length === 1 ? "" : "s"} to ${filename}.${format}`);
 }
 
-function renderAiuto(container) {
+function renderHelpPage(container) {
   container.innerHTML = `
     <div class="card help-section">
       <h3>How it works</h3>
@@ -4426,17 +5106,25 @@ function renderAiuto(container) {
       <h3>Pages</h3>
       <ul>
         <li><strong>Dashboard</strong> (home) — active hosts and unified BLE+WiFi presence at the top, then "Nearby": a large isometric house at the center with cards connected by guide lines for SSIDs requested in probes, adjacent networks detected from their own beacons, and WiFi/Bluetooth devices detected in the last 24h (closer = stronger signal, not actual position — a purely illustrative view, not a real map or physical distance). The house always shows up to 10 cards, distributed across whichever categories are active in the filters at the top (hiding a category redistributes its slots to the others). Below the house: scan status, a Network Discovery summary (totals, active/offline, risk distribution) and panels with a quick preview for each category — a "View all" button on each jumps to the corresponding page (Network Discovery, WiFi or BLE) with the complete, searchable list and full details, opening the right tab directly. "SSIDs requested" are networks saved on devices nearby, not necessarily networks present here; "Adjacent networks" are genuinely detected around you (BSSID/SSID/channel from their beacons). Click a card or a row for details. Then "Who's home" (one row per configured home MAC, or per linked identity if a BLE and a WiFi MAC have been explicitly linked as the same physical device via "Group by identity") and, last, "System health" (which optional daemon modules are actually active, read from <code>daemon_config.jsonl</code>, with the flag to enable any that's off).</li>
+        <li><strong>Any WiFi network</strong> also has its own profile (click a row in "Adjacent networks"): beacon history, channel and security changes over time, handshakes captured for it and linked alerts. Your own network — the SSID configured with <code>--home-ssid</code> on the daemon — is marked "Your network" everywhere it appears, instead of looking like just another neighbour.</li>
         <li><strong>Network Discovery</strong> — KPI row (total hosts, new devices, at-risk count), then the full list of known LAN devices with device type and risk score (0-100, based on exposed ports and linked alerts); the hostname is a link to the device's full profile. Filter by status, type, vendor, risk level, trust and open ports, or toggle "Stale only" to surface devices offline for more than 30 days. "Columns" adds OS guess, mDNS name, ARP status (silent on the router's DHCP lease table), Uptime % and WiFi traffic (24h) — hidden by default to keep the table compact. "Group by identity" merges MACs linked as the same physical device into one row — the same link Dashboard's "Who's home" and the WiFi/BLE presence cards use to unify a device's BLE and WiFi MAC. Save recurring filter combinations as presets, or select rows with the checkboxes to trust or export several devices at once. From a row's action menu you can assign a custom name and mark a device as trusted (reduces noise: lower risk score, less severe linked alerts). A device's full profile also shows its last optional deep port scan (<code>--deep-port-scan</code>), if any, with how many ports it found beyond the regular scan.</li>
         <li><strong>WiFi</strong> — four tabs. <strong>Overview</strong>: a KPI row for adjacent networks (total detected, open, WPA2/WPA3, plus handshake captures) — click any tile to jump straight to the matching filtered list — a "Networks by security" breakdown chart, and probe activity/channel distribution charts for the last 24h. <strong>Networks</strong>: "Adjacent networks" (WiFi networks genuinely detected around you from their own beacons, filterable by security type — Open/WEP/WPA/WPA2-WPA3 — and by band, 2.4 vs 5 GHz; security is classified from the beacon itself and requires <code>--wifi-iface</code>) and "SSIDs requested" (a summary per network name requested in probes, not a list of physically present networks; click a row to see which devices requested it). <strong>Devices</strong>: "Nearby WiFi devices" (external devices detected via probes, one row per MAC) and the raw probe log for row-by-row analysis. <strong>Security</strong>: a "Presence" card with arrival/departure events for the home MAC addresses configured with <code>--wifi-home-macs</code> — fed by both the regular LAN/ARP scan (works even without <code>--wifi-iface</code>) and, if active, probe requests — and a "Handshake captures" card for the WPA/WPA2 handshakes captured for the home networks in <code>--home-ssid</code> when <code>--capture-handshakes</code> is active (metadata only, the actual <code>.pcap</code> file to run through aircrack-ng/hashcat stays on the Pi). Estimated WiFi traffic per device is not shown here: it's an optional column on the Network Discovery page, and it also remains in the CSV export and the periodic email report.</li>
         <li><strong>BLE</strong> — three tabs. <strong>Overview</strong>: KPIs (including a "Possible trackers" count) and 24h activity. <strong>Devices</strong>: the "BLE devices" table — a summary per MAC with a heuristic device type (wearable, audio, possible tracker...), manufacturer, signal and number of sightings, trackers highlighted — and the raw advertisement log for row-by-row analysis. <strong>Security</strong>: a "Presence" card with arrival/departure events for the home MACs configured with <code>--ble-home-macs</code>. From a device's full profile you can also see and act on suggested identity links across a rotated BLE address (same advertised name/services reappearing on a new MAC shortly after the old one went quiet) — a suggestion only, never applied automatically.</li>
-        <li><strong>Timeline</strong> — unified chronological feed of all notable events (new/offline, alerts, fingerprint), filterable by category.</li>
+        <li><strong>Timeline</strong> — one chronological feed for every module that's running: devices appearing and going offline, presence arrivals and departures, alerts, WPA handshakes captured, deep scans, DHCP requests, OS guesses and router port forwards. Searchable, filterable by category and paginated.</li>
         <li><strong>Scans</strong> — history of LAN discovery cycles.</li>
-        <li><strong>Alerts</strong> — new devices and risky open ports (computed by the dashboard), plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, possible deauth/disassoc flood, BLE tracker presence, possible BLE spoofing, new ports on known devices); filterable by type and status (Active/All/Snoozed/Dismissed), with filters savable as presets. Besides Dismiss (hidden until restored), each active alert can be Snoozed for 1h/24h/7 days — it reappears among Active on its own once the snooze expires, without needing to remember to restore it. See <strong>Settings</strong> to enable desktop notifications for new critical-severity alerts.</li>
-        <li><strong>Trend</strong> — trend of new devices and alerts over the last 7/30 days, calculated from the already-loaded history.</li>
-        <li><strong>Settings</strong> — daemon module status (from <code>daemon_config.jsonl</code> when available, otherwise inferred from loaded data), data sources (JSON Lines), theme.</li>
-        <li><strong>Export</strong> — download the current data as CSV or JSON.</li>
+        <li><strong>Alerts</strong> — a KPI row (active, critical, fired while the home was empty, hidden) where every tile opens the list behind it, then new devices and risky open ports computed by the dashboard, plus alerts from the daemon-side detection modules if active (ARP spoofing, rogue DHCP, WiFi evil twin, deauth/disassoc flood, BLE tracker presence, BLE spoofing, recurring unknown WiFi devices, router port forwards to risky ports, new ports on known devices). Searchable and filterable by severity, type and status (Active/All/Snoozed/Dismissed), with filters savable as presets and an inline CSV/JSON export of exactly what's on screen. A "Home empty" tag marks alerts that fired while nobody tracked for presence was home — with <code>--presence-aware-alerts</code> on the daemon those also come in one severity level higher. The device an alert refers to is a link to its profile. Besides Dismiss (hidden until restored), each active alert can be Snoozed for 1h/24h/7 days. See <strong>Settings</strong> to enable desktop notifications for new critical-severity alerts.</li>
+        <li><strong>Trend</strong> — how many new devices and alerts per day, over the window chosen in the top bar (at least 7 days, since a daily chart of 24 hours would be a single bar).</li>
+        <li><strong>What changed</strong> — not <em>how many</em> but <em>which</em>: the selected window compared with the one immediately before it. Devices that appeared or went away, devices whose open ports changed, WiFi networks that appeared, and networks that changed their advertised security type.</li>
+        <li><strong>Settings</strong> — one folder setting for all the daemon's logs (each file can still be pointed elsewhere individually), the optional query API address, auto-refresh, notifications, theme and row density. The status list here answers "is this file reachable from the browser?"; whether a module is actually running on the daemon is answered by "System health" on the Dashboard, which reads it from the daemon itself.</li>
+        <li><strong>Export</strong> — every loaded data source as CSV or JSON, plus the current device list. Large tables also have their own CSV/JSON buttons in the header, which export exactly the filtered rows you're looking at.</li>
       </ul>
       <p class="field-hint">Press <strong>Ctrl+K</strong> (or <strong>⌘K</strong>) at any time for global search across pages, devices and alerts. The "Collapse" button at the bottom of the side menu shrinks it to icons only, for more room on pages with wide tables. On narrower screens the side menu becomes a drawer, opened from the menu button next to the page title.</p>
+    </div>
+    <div class="card help-section">
+      <h3>Time window, and installing the app</h3>
+      <p>The selector in the top bar sets one time window for the whole app: KPIs, charts, the Nearby view and the period comparison all follow it, so a number seen on one page always covers the same period as a number on another. It's remembered between reloads.</p>
+      <p>The dashboard can be installed as an app (Add to home screen / Install): once installed it opens in its own window and still starts when the Pi is unreachable, showing why instead of a browser error. Data is never served from the cache — only the app itself is — so what you see is always live or nothing at all.</p>
+      <p>The status pill next to the refresh button answers two separate questions: whether the logs are reachable from this browser, and whether the daemon that writes them is still alive (it writes a heartbeat file every 30s). A stopped daemon leaves its files in place, so without the heartbeat everything would keep looking fine while the data quietly aged.</p>
     </div>
     <div class="card help-section">
       <h3>Known limitations</h3>
@@ -4464,7 +5152,7 @@ function renderAiuto(container) {
  * Router / shell
  * ---------------------------------------------------------------------- */
 
-// "mappa" (renderMappa/renderNetworkMap) è volutamente esclusa da ROUTES:
+// "mappa" (renderNetworkMapPage/renderNetworkMap) è volutamente esclusa da ROUTES:
 // su una rete piatta a singolo segmento la topologia a stella non aggiunge
 // informazione reale rispetto alla tabella Host. Il codice resta pronto per
 // quando avrà senso (subnet/VLAN multiple, routing reale) — va solo
@@ -4475,12 +5163,13 @@ const ROUTES = [
   { id: "wifi", label: "WiFi", icon: "wifi", title: "WiFi", subtitle: "Probe requests, adjacent networks, presence and handshake capture", render: renderWifiPage },
   { id: "ble", label: "BLE", icon: "bluetooth", title: "BLE", subtitle: "Bluetooth Low Energy scan, device tracking and presence", render: renderBlePage },
   { id: "timeline", label: "Timeline", icon: "clock", title: "Timeline", subtitle: "Unified chronological feed of all events", render: renderTimeline },
-  { id: "scans", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansioni },
-  { id: "alerts", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAvvisi },
+  { id: "scans", label: "Scans", icon: "radar", title: "Scans", subtitle: "History of LAN discovery cycles", render: renderScansPage },
+  { id: "alerts", label: "Alerts", icon: "bell", title: "Alerts", subtitle: "Events that need attention", render: renderAlertsPage },
   { id: "trend", label: "Trend", icon: "trending-up", title: "Trend", subtitle: "Historical trend of devices and alerts", render: renderTrend },
-  { id: "settings", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderImpostazioni },
-  { id: "export", label: "Export", icon: "download", title: "Export", subtitle: "Download the collected data", render: renderEsporta },
-  { id: "help", label: "Help", icon: "help", title: "Help", subtitle: "Quick guide to Home Sentinel", render: renderAiuto },
+  { id: "changes", label: "What changed", icon: "layers", title: "What changed", subtitle: "This period compared with the one before it", render: renderWhatChanged },
+  { id: "settings", label: "Settings", icon: "sliders", title: "Settings", subtitle: "Data sources, network and appearance", render: renderSettingsPage },
+  { id: "export", label: "Export", icon: "download", title: "Export", subtitle: "Download the collected data", render: renderExportPage },
+  { id: "help", label: "Help", icon: "help", title: "Help", subtitle: "Quick guide to Home Sentinel", render: renderHelpPage },
 ];
 
 function getRouteById(id) { return ROUTES.find((r) => r.id === id) || ROUTES[0]; }
@@ -4565,8 +5254,19 @@ function onRouteChange() {
     state.deviceProfileMac = decodeURIComponent(param);
     document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
     document.getElementById("page-title").textContent = "Device profile";
-    document.getElementById("page-subtitle").textContent = state.deviceProfileMac;
+    document.getElementById("page-subtitle").textContent = displayName(state.deviceProfileMac, state.deviceProfileMac);
     document.getElementById("page-icon").innerHTML = ICON("monitor");
+    renderCurrentRoute();
+    return;
+  }
+
+  if (id === "network" && param) {
+    state.route = "network";
+    state.networkProfileBssid = decodeURIComponent(param);
+    document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
+    document.getElementById("page-title").textContent = "Network profile";
+    document.getElementById("page-subtitle").textContent = state.networkProfileBssid;
+    document.getElementById("page-icon").innerHTML = ICON("wifi");
     renderCurrentRoute();
     return;
   }
@@ -4601,6 +5301,8 @@ function renderCurrentRoute() {
   }
   if (state.route === "device") {
     renderDeviceProfile(root, state.deviceProfileMac);
+  } else if (state.route === "network") {
+    renderNetworkProfile(root, state.networkProfileBssid);
   } else {
     getRouteById(state.route).render(root);
   }
@@ -4667,18 +5369,65 @@ function setupTopbar() {
   });
 }
 
+/** Quanto è "fresco" l'ultimo battito del daemon. Oltre 3 intervalli senza aggiornamenti lo si
+ * considera fermo: un margine di due battiti persi (rete lenta, carico) prima di allarmare. */
+const HEARTBEAT_STALE_FACTOR = 3;
+
+function daemonLiveness() {
+  const beat = state.heartbeatRows[state.heartbeatRows.length - 1];
+  if (!beat) return { known: false };
+  const ts = parseTs(beat.timestamp);
+  if (ts === null) return { known: false };
+  const ageMs = Date.now() - ts;
+  const intervalMs = (Number(beat.interval_s) || 30) * 1000;
+  return {
+    known: true,
+    alive: ageMs <= intervalMs * HEARTBEAT_STALE_FACTOR,
+    ageMs,
+    ts,
+    uptimeMs: (Number(beat.uptime_s) || 0) * 1000,
+    beat,
+  };
+}
+
+/**
+ * Stato in alto a destra. Risponde a due domande diverse, che prima erano confuse in una sola:
+ * i file sono raggiungibili da qui (fetch) *e* il daemon che li scrive è ancora vivo (heartbeat).
+ * Un daemon fermo lascia i file al loro posto, quindi il solo fetch continuerebbe a dire "Online"
+ * mentre i dati invecchiano — che è esattamente il caso in cui si vorrebbe essere avvisati.
+ */
 function updateStatusPill() {
   const pill = document.getElementById("status-pill");
   const text = document.getElementById("status-pill-text");
   const dropdown = document.getElementById("status-dropdown");
   const ok = state.lastFetchOk;
-  pill.classList.toggle("is-down", ok === false);
-  text.textContent = ok === false ? "Error" : ok === true ? "Online" : "Waiting";
+  const live = daemonLiveness();
+
+  let label, down;
+  if (ok === false) { label = "Error"; down = true; }
+  else if (ok === null) { label = "Waiting"; down = false; }
+  else if (live.known && !live.alive) { label = "Daemon stale"; down = true; }
+  else { label = "Online"; down = false; }
+
+  pill.classList.toggle("is-down", down);
+  text.textContent = label;
+  pill.title = live.known
+    ? (live.alive
+      ? `Daemon alive — last heartbeat ${formatRelativeTime(live.ts)}`
+      : `No heartbeat for ${formatDuration(live.ageMs)}: the daemon may have stopped, the data below is not updating`)
+    : "No heartbeat file: enable it on the daemon (it writes one by default) to tell 'quiet network' from 'daemon stopped'";
+
+  const rowsLoaded = DATA_SOURCES
+    .filter((s) => state[s.rows].length)
+    .map((s) => `${state[s.rows].length.toLocaleString("en-GB")} ${s.label.toLowerCase()}`)
+    .join(" · ") || "nothing loaded yet";
+
   dropdown.innerHTML = `
-    <div><strong>LAN source</strong><br>${escapeHtml(state.lanFile ? `${state.lanFile.name} (local file)` : getSetting("lanUrl"))}</div>
-    <div><strong>WiFi source</strong><br>${escapeHtml(state.wifiFile ? `${state.wifiFile.name} (local file)` : getSetting("wifiUrl"))}</div>
-    <div><strong>BLE source</strong><br>${escapeHtml(state.bleFile ? `${state.bleFile.name} (local file)` : getSetting("bleUrl"))}</div>
-    <div><strong>Rows loaded</strong><br>${state.lanRows.length} LAN · ${state.wifiRows.length} WiFi · ${state.bleRows.length} BLE · ${state.alertsRows.length} alerts · ${state.fingerprintRows.length} fingerprints</div>
+    <div><strong>Daemon</strong><br>${live.known
+      ? `${live.alive ? "alive" : "no heartbeat"} — last beat ${escapeHtml(formatRelativeTime(live.ts))}${live.uptimeMs ? `, up ${escapeHtml(formatDuration(live.uptimeMs))}` : ""}`
+      : "heartbeat not available"}</div>
+    <div><strong>Log folder</strong><br>${escapeHtml(getSetting("logBase") || "(same folder as this page)")}</div>
+    <div><strong>Rows loaded</strong><br>${escapeHtml(rowsLoaded)}</div>
   `;
 }
 
@@ -4753,7 +5502,7 @@ function readUrlParams() {
  * Command palette (Ctrl+K): ricerca globale su pagine, dispositivi, alert
  * ---------------------------------------------------------------------- */
 
-const CMDK_TYPE_LABELS = { page: "Pages", device: "Devices", alert: "Alerts" };
+const CMDK_TYPE_LABELS = { page: "Pages", device: "Devices", network: "WiFi networks", ssid: "Requested SSIDs", alert: "Alerts" };
 let cmdkResults = [];
 let cmdkActiveIndex = 0;
 
@@ -4766,16 +5515,52 @@ function computeSearchIndex() {
       if (window.location.hash === hash) onRouteChange(); else window.location.hash = hash;
     } });
   }
-  for (const d of latestLanByMac(state.lanRows)) {
+  const seen = new Set();
+  const addDevice = (mac, label, sub, icon, extra) => {
+    if (!mac || seen.has(mac)) return;
+    seen.add(mac);
     items.push({
-      type: "device", label: d.hostname || d.mac, sub: `${d.ip} · ${d.vendor || "unknown vendor"}`, icon: "monitor",
-      keywords: `${d.ip} ${d.mac} ${d.hostname || ""} ${d.vendor || ""}`, action: () => goToDevice(d.mac),
+      type: "device", label, sub, icon,
+      // Il nome assegnato (etichetta locale o alias dal file di configurazione del daemon) fa
+      // parte delle chiavi di ricerca: cercare "Marco" deve trovare il device chiamato Marco,
+      // che è esattamente il motivo per cui gli si dà un nome.
+      keywords: `${mac} ${label} ${sub} ${getDeviceLabel(mac).name || ""} ${daemonDeviceAlias(mac)} ${extra || ""}`,
+      action: () => goToDevice(mac),
+    });
+  };
+
+  for (const d of latestLanByMac(state.lanRows)) {
+    addDevice(d.mac, displayName(d.mac, d.hostname || d.mac), `${d.ip} · ${d.vendor || "unknown vendor"}`, "monitor",
+      `${d.ip} ${d.hostname || ""} ${d.vendor || ""}`);
+  }
+  for (const e of computeWifiDeviceOverview()) {
+    addDevice(e.mac, displayName(e.mac, e.mac), `WiFi device · ${e.vendor || "unknown vendor"}`, "wifi", e.vendor);
+  }
+  for (const e of computeBleDeviceOverview(state.bleRows)) {
+    addDevice(e.mac, displayName(e.mac, e.name || e.mac), `BLE device · ${e.manufacturer || "unknown manufacturer"}`, "bluetooth",
+      `${e.name || ""} ${e.manufacturer || ""} ${e.deviceType || ""}`);
+  }
+
+  for (const net of computeWifiApOverview()) {
+    items.push({
+      type: "network", label: net.label, sub: `${net.bssid} · channel ${net.channel ?? "?"} · ${WIFI_SECURITY_META[net.security]?.label || "Unknown"}`,
+      icon: "wifi", keywords: `${net.label} ${net.bssid} ${net.vendor || ""} ${net.security}`,
+      action: () => goToNetwork(net.bssid),
     });
   }
+  for (const e of computeWifiSsidOverview(state.wifiRows)) {
+    items.push({
+      type: "ssid", label: e.key, sub: `requested by ${e.macs.size} device(s) in probe requests`,
+      icon: "wifi", keywords: e.key,
+      action: () => navigateToWifiSection("ssid"),
+    });
+  }
+
   for (const a of computeAlerts().slice(0, 100)) {
     items.push({
       type: "alert", label: a.title, sub: a.desc, icon: a.icon,
-      keywords: `${a.title} ${a.desc} ${a.mac || ""}`, action: () => { window.location.hash = "#/alerts"; },
+      keywords: `${a.title} ${a.desc} ${a.mac || ""} ${a.mac ? displayName(a.mac, "") : ""}`,
+      action: () => { window.location.hash = "#/alerts"; },
     });
   }
   return items;
@@ -4853,6 +5638,37 @@ function setupCmdk() {
  * Init
  * ---------------------------------------------------------------------- */
 
+/** Selettore di periodo in topbar: una sola scelta valida per tutte le pagine, persistita fra un
+ * refresh e l'altro come le altre preferenze di vista. */
+function initTimeRange() {
+  const el = document.getElementById("time-range");
+  el.innerHTML = TIME_RANGES.map((r) => `<option value="${r.id}">${escapeHtml(r.label)}</option>`).join("");
+  el.value = state.timeRange;
+  el.addEventListener("change", () => {
+    state.timeRange = el.value;
+    savePersistedUiState({ timeRange: el.value });
+    renderCurrentRoute();
+  });
+}
+
+/**
+ * Registra il service worker e mostra il badge quando l'app gira installata. Senza, le notifiche
+ * desktop funzionano solo con la scheda aperta (come dice l'Aiuto) e la dashboard non si apre
+ * affatto se il Pi non risponde. Fallisce in silenzio dove i service worker non sono disponibili
+ * (pagina aperta da file://, browser senza supporto): sono un miglioramento, non un requisito.
+ */
+function initPwa() {
+  if (window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone) {
+    const badge = document.getElementById("pwa-badge");
+    badge.innerHTML = `${ICON("home")}installed`;
+    badge.classList.remove("hidden");
+  }
+  if (!("serviceWorker" in navigator) || location.protocol === "file:") return;
+  navigator.serviceWorker.register("sw.js").catch(() => {
+    // Registrazione fallita (contesto non sicuro, permessi, ...): l'app funziona lo stesso.
+  });
+}
+
 function init() {
   readUrlParams();
   initTheme();
@@ -4865,6 +5681,8 @@ function init() {
   renderSidebarNav();
   initSidebarCollapse();
   initMobileNav();
+  initTimeRange();
+  initPwa();
   setupTopbar();
   setupCmdk();
   updateStatusPill();

@@ -1,0 +1,19 @@
+{
+  "name": "Home Sentinel",
+  "short_name": "Sentinel",
+  "description": "Continuous discovery and monitoring of the devices on your home network: LAN, WiFi and BLE.",
+  "start_url": "./index.html#/dashboard",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0e16",
+  "theme_color": "#0a0e16",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
