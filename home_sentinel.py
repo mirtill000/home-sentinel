@@ -1674,55 +1674,72 @@ def load_config_file(path: str) -> dict:
 
 @dataclass
 class ConfigDevices:
-    """Sezione 'devices' del file di configurazione, già normalizzata: i MAC "di casa" per il
-    tracking presenza, la mappa mac -> alias e la scheda d'inventario completa per MAC."""
+    """Sezione 'users' del file di configurazione, già normalizzata: i MAC "di casa" per il
+    tracking presenza, la mappa mac -> utente proprietario (solo per l'identità di presence, non
+    per il nome del device — vedi devices_from_config) e la scheda d'inventario completa per MAC."""
 
     wifi_macs: set[str] = field(default_factory=set)
     ble_macs: set[str] = field(default_factory=set)
-    aliases: dict[str, str] = field(default_factory=dict)
+    presence_owners: dict[str, str] = field(default_factory=dict)
     inventory: dict[str, dict] = field(default_factory=dict)
 
 
-# Campi liberi d'inventario per device (--config, sezione "devices"): non hanno alcun effetto sul
+# Campi liberi d'inventario per device (--config, sezione "users"): non hanno alcun effetto sul
 # comportamento del daemon, viaggiano solo fino alla dashboard via daemon_config.jsonl, dove
 # diventano la scheda del device condivisa fra tutti i browser (invece della sola etichetta locale
-# per-browser in localStorage, che continua comunque a vincere se impostata).
-INVENTORY_FIELDS = ("owner", "room", "type", "notes")
+# per-browser in localStorage, che continua comunque a vincere se impostata). "owner" non è qui:
+# è sempre il nome dell'utente a cui il MAC è associato, non serve un campo separato che potrebbe
+# disallinearsi da esso.
+INVENTORY_FIELDS = ("room", "type", "notes")
 
 
 def devices_from_config(config: dict) -> ConfigDevices:
-    """Estrae dalla sezione 'devices' del file di configurazione i MAC WiFi/BLE 'di casa' (si
-    sommano a quelli eventualmente passati con --wifi-home-macs/--ble-home-macs, non li
-    sostituiscono), la mappa mac -> alias e la scheda d'inventario per MAC (proprietario, stanza,
-    tipo, tag, note) — questi ultimi puramente descrittivi, per la dashboard."""
-    devices = config.get("devices", [])
-    if not isinstance(devices, list):
-        raise SystemExit("File di configurazione: 'devices' deve essere una lista")
+    """Estrae dalla sezione 'users' del file di configurazione i MAC WiFi/BLE 'di casa' (si sommano
+    a quelli eventualmente passati con --wifi-home-macs/--ble-home-macs, non li sostituiscono), la
+    mappa mac -> nome utente (usata solo per l'identità di presence in "Chi c'è in casa", MAI come
+    nome del device altrove — quello resta discovery/etichetta impostata dalla dashboard, vedi
+    displayName() lato frontend) e la scheda d'inventario per MAC (stanza, tipo, tag, note, più
+    "owner" = il nome dell'utente stesso).
+
+    L'associazione dei MAC è quindi all'UTENTE ("chi possiede questi dispositivi"), non al singolo
+    device: un utente può elencare più MAC WiFi/BLE (telefono, laptop, smartwatch...) sotto un solo
+    'name', tutti sommati al suo tracking di presenza."""
+    users = config.get("users", [])
+    if not isinstance(users, list):
+        raise SystemExit("File di configurazione: 'users' deve essere una lista")
     result = ConfigDevices()
-    for entry in devices:
+    for entry in users:
         if not isinstance(entry, dict):
-            raise SystemExit(f"File di configurazione: voce 'devices' non valida (deve essere un oggetto): {entry!r}")
+            raise SystemExit(f"File di configurazione: voce 'users' non valida (deve essere un oggetto): {entry!r}")
         name = str(entry.get("name") or "").strip()
+        if not name:
+            raise SystemExit(f"File di configurazione: ogni utente in 'users' deve avere un 'name': {entry!r}")
         tags = entry.get("tags") or []
         if not isinstance(tags, list):
-            raise SystemExit(f"File di configurazione: 'tags' del device {name or '(senza nome)'} deve essere una lista")
-        card = {"name": name, "tags": [str(t).strip() for t in tags if str(t).strip()]}
+            raise SystemExit(f"File di configurazione: 'tags' dell'utente {name} deve essere una lista")
+        card = {"name": name, "owner": name, "tags": [str(t).strip() for t in tags if str(t).strip()]}
         for key in INVENTORY_FIELDS:
             value = str(entry.get(key) or "").strip()
             if value:
                 card[key] = value
 
-        wifi_mac = str(entry.get("wifi_mac") or "").strip().lower()
-        ble_mac = str(entry.get("ble_mac") or "").strip().lower()
-        for mac, bucket in ((wifi_mac, result.wifi_macs), (ble_mac, result.ble_macs)):
-            if not mac:
-                continue
-            bucket.add(mac)
-            if name:
-                result.aliases[mac] = name
-            # Entrambi i MAC dello stesso device puntano alla stessa scheda: per la dashboard sono
-            # due indirizzi della stessa identità fisica, esattamente come un link manuale.
-            result.inventory[mac] = card
+        wifi_macs = entry.get("wifi_macs") or []
+        ble_macs = entry.get("ble_macs") or []
+        if not isinstance(wifi_macs, list):
+            raise SystemExit(f"File di configurazione: 'wifi_macs' dell'utente {name} deve essere una lista")
+        if not isinstance(ble_macs, list):
+            raise SystemExit(f"File di configurazione: 'ble_macs' dell'utente {name} deve essere una lista")
+
+        for raw_macs, bucket in ((wifi_macs, result.wifi_macs), (ble_macs, result.ble_macs)):
+            for raw_mac in raw_macs:
+                mac = str(raw_mac or "").strip().lower()
+                if not mac:
+                    continue
+                bucket.add(mac)
+                result.presence_owners[mac] = name
+                # Tutti i MAC dello stesso utente puntano alla stessa scheda: per la dashboard sono
+                # dispositivi diversi della stessa persona, condividono owner/stanza/tag/note.
+                result.inventory[mac] = card
     return result
 
 
@@ -2602,7 +2619,7 @@ def main() -> None:
     if args.presence_aware_alerts and not occupancy.configured:
         LOG.warning(
             "--presence-aware-alerts richiede almeno un MAC 'di casa' "
-            "(--wifi-home-macs/--ble-home-macs o la sezione devices di --config): escalation disattivata"
+            "(--wifi-home-macs/--ble-home-macs o la sezione users di --config): escalation disattivata"
         )
     alert_manager.set_occupancy(occupancy, escalate_when_empty=args.presence_aware_alerts)
 
@@ -2616,9 +2633,11 @@ def main() -> None:
     # sia quali moduli opzionali sono realmente attivi (pannello "Salute del sistema" in
     # Dashboard) — calcolato come funzione pura della configurazione, non dallo stato degli
     # oggetti effettivamente costruiti, perché detector come evil_twin_detector/deauth_detector
-    # esistono solo dentro lo scope del blocco "if args.wifi_iface" più sopra. Include anche gli
-    # alias dei device (da --config, sezione "devices"), così la dashboard può mostrare i nomi
-    # anche a chi apre l'app per la prima volta, senza doverli reimpostare a mano per ogni MAC.
+    # esistono solo dentro lo scope del blocco "if args.wifi_iface" più sopra. Include anche la
+    # mappa mac -> utente proprietario (da --config, sezione "users"): usata SOLO per l'identità
+    # di presence in "Chi c'è in casa" (mostrare "Marco" invece del solo MAC), mai come nome del
+    # device altrove nella dashboard — quello resta sempre discovery (hostname/mDNS) o
+    # un'etichetta impostata a mano dalla dashboard stessa (vedi displayName() lato frontend).
     modules = {
         "fingerprint": bool(args.fingerprint),
         "os_fingerprint": bool(args.os_fingerprint),
@@ -2654,7 +2673,7 @@ def main() -> None:
         "ble_home_macs": sorted(ble_home_macs),
         "wifi_home_macs": sorted(wifi_home_macs),
         "home_ssids": sorted(home_ssids),
-        "device_aliases": config_devices.aliases,
+        "presence_owners": config_devices.presence_owners,
         "device_inventory": config_devices.inventory,
         "modules": modules,
     })

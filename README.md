@@ -73,48 +73,53 @@ esplicitamente con il campo `"subnet"` del file di configurazione
 
 `--config /percorso/config.json` legge da un file JSON opzionale
 impostazioni comuni che altrimenti andrebbero ripetute da riga di comando —
-per ora, soprattutto, l'elenco dei device "di casa" con un alias o il nome
-della persona a cui sono associati (vedi `config.example.json` come punto
-di partenza):
+per ora, soprattutto, l'elenco degli **utenti** di casa e dei MAC WiFi/BLE
+associati a ciascuno (vedi `config.example.json` come punto di partenza):
 
 ```json
 {
-  "devices": [
+  "users": [
     {
       "name": "Marco",
-      "wifi_mac": "aa:bb:cc:dd:ee:01",
-      "ble_mac": "11:22:33:44:55:01",
-      "owner": "Marco Rossi",
+      "wifi_macs": ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:04"],
+      "ble_macs": ["11:22:33:44:55:01"],
       "room": "Studio",
       "type": "Smartphone",
       "tags": ["personale", "mobile"],
-      "notes": "iPhone 14"
+      "notes": "wifi_macs: iPhone 14 e MacBook"
     },
-    { "name": "Sonia", "wifi_mac": "aa:bb:cc:dd:ee:02" }
+    { "name": "Sonia", "wifi_macs": ["aa:bb:cc:dd:ee:02"] }
   ]
 }
 ```
 
-I MAC WiFi/BLE elencati qui si **sommano** a quelli eventualmente passati
-con `--wifi-home-macs`/`--ble-home-macs` (stesso tracking presenza/assenza,
-vedi sotto), non li sostituiscono — puoi usare solo il file, solo i flag, o
-entrambi insieme. Gli alias vengono scritti anche in `daemon_config.jsonl`
-(campo `device_aliases`), da cui la dashboard li legge automaticamente per
-mostrare subito il nome della persona invece del solo MAC/hostname, su
-qualunque browser la si apra — senza dover reimpostare l'etichetta a mano
-per ognuno (un'etichetta impostata localmente dalla dashboard stessa
-continua comunque a valere, e ha sempre la precedenza su quella del file).
-Un parametro passato esplicitamente da riga di comando ha sempre la
-precedenza sul valore corrispondente nel file di configurazione.
+L'associazione è **all'utente** (una persona), non al singolo device: uno
+stesso utente può elencare più MAC WiFi/BLE (telefono, laptop, smartwatch...)
+sotto un solo `name`. Tutti i MAC elencati qui si **sommano** a quelli
+eventualmente passati con `--wifi-home-macs`/`--ble-home-macs` (stesso
+tracking presenza/assenza, vedi sotto), non li sostituiscono — puoi usare
+solo il file, solo i flag, o entrambi insieme. Un parametro passato
+esplicitamente da riga di comando ha sempre la precedenza sul valore
+corrispondente nel file di configurazione.
 
-I campi `owner`, `room`, `type`, `tags` e `notes` sono **puramente
-descrittivi**: non cambiano nulla nel comportamento del daemon, viaggiano
-fino alla dashboard (campo `device_inventory` di `daemon_config.jsonl`) e lì
-diventano la **scheda del device**, visibile nel suo profilo. A differenza
-delle etichette impostate dalla dashboard — che restano nel `localStorage`
-di quel singolo browser — questi valgono ovunque si apra l'app; un campo
-compilato a mano nella dashboard ha comunque la precedenza su quello del
-file, per lo stesso device.
+Il `name` dell'utente **non** diventa il nome mostrato per i singoli device
+nella dashboard (Network Discovery, WiFi, BLE, Alert...): quello resta
+sempre discovery (hostname/mDNS) o un'etichetta impostata a mano dalla
+dashboard, com'era prima — `--config` non lo tocca. Il `name` viene invece
+usato esclusivamente in **"Chi c'è in casa"**, dove identifica la persona
+invece del solo MAC (scritto in `daemon_config.jsonl` come
+`presence_owners`), su qualunque browser apra la dashboard, senza dover
+etichettare a mano ogni singolo MAC.
+
+I campi `room`, `type`, `tags` e `notes` sono **puramente descrittivi**: non
+cambiano nulla nel comportamento del daemon, viaggiano fino alla dashboard
+(campo `device_inventory` di `daemon_config.jsonl`, con `owner` impostato
+automaticamente al `name` dell'utente) e lì diventano la **scheda del
+device**, visibile nel suo profilo — condivisa da tutti i MAC dello stesso
+utente. A differenza delle etichette impostate dalla dashboard — che restano
+nel `localStorage` di quel singolo browser — questi valgono ovunque si apra
+l'app; un campo compilato a mano nella dashboard ha comunque la precedenza
+su quello del file, per lo stesso device.
 
 ## Output
 
@@ -286,14 +291,15 @@ Un MAC è considerato assente dopo `--wifi-presence-away-timeout-s`
 (default 300s, come il BLE) senza segnali da **nessuna** delle due fonti.
 
 **`daemon_config.jsonl`**:
-`{timestamp, subnet, lan_iface, wifi_iface, ble_home_macs, wifi_home_macs, home_ssids, device_aliases, modules}`
+`{timestamp, subnet, lan_iface, wifi_iface, ble_home_macs, wifi_home_macs, home_ssids, presence_owners, modules}`
 Una riga scritta una sola volta ad ogni avvio del daemon, snapshot della
 configurazione effettiva: la subnet rilevata automaticamente (o forzata via
 `--config`), le interfacce in uso, l'elenco completo dei MAC "di casa"
 configurati via `--ble-home-macs`/`--wifi-home-macs` e/o la sezione
-`devices` del file di configurazione, gli alias assegnati a ciascun MAC
-(`device_aliases`, mappa mac -> nome, usata dalla dashboard come vedi
-sopra), gli SSID di casa (`--home-ssid`) e un oggetto `modules` con un booleano per ciascun
+`users` del file di configurazione, l'utente proprietario di ciascun MAC
+(`presence_owners`, mappa mac -> nome, usata dalla dashboard **solo** in
+"Chi c'è in casa" — mai come nome del device altrove, vedi sopra), gli SSID
+di casa (`--home-ssid`) e un oggetto `modules` con un booleano per ciascun
 modulo opzionale (`fingerprint`, `os_fingerprint`, `dhcp_discovery`,
 `detect_rogue_dhcp`, `dhcp_lease_source`, `deep_port_scan`,
 `arp_detection`, `trend_rollup`, `ble`, `ble_tracker_detection`,

@@ -765,14 +765,17 @@ function setDeviceLabel(mac, patch) {
   saveDeviceLabels(labels);
 }
 
-/** Alias assegnato via file di configurazione del daemon (--config, sezione "devices"), scritto
- * in daemon_config.jsonl: un secondo livello di nome, sotto l'etichetta locale (che vince sempre
- * se impostata) ma sopra al fallback hostname/MAC — utile perché arriva già pronto su qualunque
- * browser/dispositivo apra la dashboard, senza dover rifare a mano l'assegnazione per ognuno. */
-function daemonDeviceAlias(mac) {
+/** Nome dell'utente proprietario di un MAC, da file di configurazione del daemon (--config,
+ * sezione "users"), scritto in daemon_config.jsonl come presence_owners. Va usato SOLO per
+ * l'identità di presence (es. "Chi c'è in casa": mostrare "Marco" invece del solo MAC) — mai come
+ * nome del device altrove nella dashboard (Network Discovery, WiFi, BLE, Alert...), che deve
+ * restare sempre discovery (hostname/mDNS) o un'etichetta impostata a mano, vedi displayName(). Un
+ * utente in --config può avere più MAC (telefono, laptop...): questo non li rinomina, li associa
+ * solo alla stessa persona ai fini della presenza. */
+function presenceOwnerName(mac) {
   const daemonConfig = latestDaemonConfig(state.daemonConfigRows);
-  const aliases = daemonConfig && daemonConfig.device_aliases;
-  return (aliases && aliases[String(mac).toLowerCase()]) || "";
+  const owners = daemonConfig && daemonConfig.presence_owners;
+  return (owners && owners[String(mac).toLowerCase()]) || "";
 }
 
 /* ---------------------------------------------------------------------- *
@@ -862,9 +865,13 @@ function wireInventoryEditor(container, mac, rerender) {
 
 /** Nome da mostrare per un device: etichetta locale se impostata (propria o ereditata
  * dall'identità collegata), poi l'alias da --config, altrimenti il fallback (hostname/MAC). */
+/** Nome del DEVICE mostrato ovunque compaia un MAC: solo l'etichetta impostata a mano dalla
+ * dashboard, altrimenti il fallback passato dal chiamante (tipicamente hostname/MAC da discovery)
+ * — MAI il "users" di --config, che associa i MAC a una persona per la presenza, non un nome al
+ * device (vedi presenceOwnerName(), usato invece esplicitamente da computeHomePresence). */
 function displayName(mac, fallback) {
   const label = getDeviceLabel(mac);
-  return label.name || daemonDeviceAlias(mac) || fallback;
+  return label.name || fallback;
 }
 
 /** Rinomina rapida di un device (es. "Marco", "Sonia") senza dover passare dal profilo completo —
@@ -3423,8 +3430,8 @@ const MODULE_META = {
   ble_tracker_detection: { label: "BLE tracker detection", flag: "--ble (and --no-ble-tracker-detection not passed)" },
   ble_identity_linking: { label: "BLE identity link suggestions", flag: "--ble (and --no-ble-identity-linking not passed)" },
   ble_evil_twin: { label: "BLE evil twin/spoofing", flag: "--ble --ble-watch-names ..." },
-  ble_presence: { label: "BLE presence tracking", flag: "--ble --ble-home-macs ... (or devices with ble_mac in --config)" },
-  wifi_presence: { label: "WiFi presence tracking", flag: "--wifi-home-macs ... (or devices with wifi_mac in --config)" },
+  ble_presence: { label: "BLE presence tracking", flag: "--ble --ble-home-macs ... (or users with ble_macs in --config)" },
+  wifi_presence: { label: "WiFi presence tracking", flag: "--wifi-home-macs ... (or users with wifi_macs in --config)" },
   presence_aware_alerts: { label: "Presence-aware alerting", flag: "--presence-aware-alerts (needs WiFi/BLE home MACs configured)" },
   wifi_networks: { label: "Adjacent WiFi networks", flag: "--wifi-iface (and --no-wifi-networks not passed)" },
   wifi_traffic: { label: "Estimated WiFi traffic", flag: "--wifi-iface (and --no-wifi-traffic not passed)" },
@@ -3443,7 +3450,7 @@ const CLI_FLAG_GROUPS = [
   {
     title: "Core & LAN discovery",
     flags: [
-      ["--config", "Optional JSON config file for settings otherwise repeated on the command line — mainly the list of \"home\" devices with their alias (see config.example.json). CLI flags always take precedence over the file."],
+      ["--config", "Optional JSON config file for settings otherwise repeated on the command line — mainly a \"users\" list mapping each household member to their WiFi/BLE MACs for presence tracking (see config.example.json). Does not set the device name shown in the dashboard, which always comes from discovery or a dashboard-set label. CLI flags always take precedence over the file."],
       ["--lan-iface", "Interface for the ARP scan and automatic subnet detection (default: the default route's interface)."],
       ["--interval", "Seconds between LAN scan cycles (default: 60)."],
       ["--arp-timeout", "How long to wait for ARP replies per scan round, in seconds (default: 2)."],
@@ -3521,7 +3528,7 @@ const CLI_FLAG_GROUPS = [
   {
     title: "WiFi presence",
     flags: [
-      ["--wifi-home-macs", "\"Home\" WiFi MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated — same principle as --ble-home-macs on the WiFi side. Adds up with (doesn't replace) any wifi_mac set on a device in --config's \"devices\" section. Detected both by the ARP scan (--lan-iface, works even without --wifi-iface: a device already connected is already present) and, if --wifi-iface is active, by probe requests (useful for a device not yet connected)."],
+      ["--wifi-home-macs", "\"Home\" WiFi MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated — same principle as --ble-home-macs on the WiFi side. Adds up with (doesn't replace) the wifi_macs listed for any user in --config's \"users\" section. Detected both by the ARP scan (--lan-iface, works even without --wifi-iface: a device already connected is already present) and, if --wifi-iface is active, by probe requests (useful for a device not yet connected)."],
       ["--wifi-presence-log", "Path of the JSON Lines file for WiFi arrival/departure events (default: /var/log/home-sentinel/wifi_presence.jsonl)."],
       ["--wifi-presence-away-timeout-s", "Seconds without a probe request from a \"home\" MAC before considering it away — same default as BLE, but WiFi probes can be less frequent/predictable due to MAC randomization and reduced probing for privacy; raise it if you notice false \"left\" events (default: 300)."],
     ],
@@ -3540,7 +3547,7 @@ const CLI_FLAG_GROUPS = [
       ["--ble-identity-log", "Path of the JSON Lines file for BLE identity link suggestions (default: /var/log/home-sentinel/ble_identity_links.jsonl)."],
       ["--ble-identity-rotation-window-s", "Maximum window, in seconds, between a MAC disappearing and a new one appearing with the same advertised signature, for them to be suggested as the same device (default: 1200)."],
       ["--ble-watch-names", "\"Home\" BLE names to monitor for possible spoofing/cloning (e.g. a smart lock), comma-separated."],
-      ["--ble-home-macs", "\"Home\" BLE MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated. Adds up with (doesn't replace) any ble_mac set on a device in --config's \"devices\" section."],
+      ["--ble-home-macs", "\"Home\" BLE MACs (e.g. household smartphones) for arrival/departure tracking, comma-separated. Adds up with (doesn't replace) the ble_macs listed for any user in --config's \"users\" section."],
       ["--ble-presence-log", "Path of the JSON Lines file for BLE arrival/departure events (default: /var/log/home-sentinel/ble_presence.jsonl)."],
       ["--ble-presence-away-timeout-s", "Seconds without an advertisement from a \"home\" MAC before considering it away (default: 300)."],
     ],
@@ -3703,7 +3710,9 @@ function computeHomePresence() {
     const since = home ? Math.min(...arrivedNow.map((e) => e.latest.ts)) : null;
     return {
       canonical: g.canonical,
-      label: displayName(g.canonical, g.canonical),
+      // Qui, e solo qui, il nome utente da --config ha priorità sul MAC grezzo come fallback:
+      // "Chi c'è in casa" mostra PERSONE, non device — è esattamente il caso d'uso di "users".
+      label: displayName(g.canonical, presenceOwnerName(g.canonical) || g.canonical),
       home,
       since,
       techs: [...new Set(g.entries.map((e) => e.tech))],
@@ -5835,10 +5844,10 @@ function computeSearchIndex() {
     seen.add(mac);
     items.push({
       type: "device", label, sub, icon,
-      // Il nome assegnato (etichetta locale o alias dal file di configurazione del daemon) fa
-      // parte delle chiavi di ricerca: cercare "Marco" deve trovare il device chiamato Marco,
-      // che è esattamente il motivo per cui gli si dà un nome.
-      keywords: `${mac} ${label} ${sub} ${getDeviceLabel(mac).name || ""} ${daemonDeviceAlias(mac)} ${extra || ""}`,
+      // Il nome assegnato (etichetta locale, o l'utente proprietario da --config) fa parte delle
+      // chiavi di ricerca: cercare "Marco" deve trovare anche i suoi device, pur senza che "Marco"
+      // sia il loro nome visualizzato — è il motivo stesso per cui --config lo associa ai suoi MAC.
+      keywords: `${mac} ${label} ${sub} ${getDeviceLabel(mac).name || ""} ${presenceOwnerName(mac)} ${extra || ""}`,
       action: () => goToDevice(mac),
     });
   };
