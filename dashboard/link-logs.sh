@@ -33,6 +33,12 @@
 # distinguere "rete tranquilla" da "daemon fermo". Finché il modulo relativo
 # non è attivo sul daemon, il file resta semplicemente assente.
 #
+# Oltre a questo elenco noto, una seconda passata collega ANCHE qualunque altro *.jsonl già
+# presente in SRC_DIR ma non nella lista sopra (segnalato con "NEW"): copre il caso di un modulo
+# aggiunto al daemon il cui log sia stato dimenticato qui — quella lista serve solo a poter creare
+# il symlink anche PRIMA che il file esista (con il messaggio "non ancora presente"), per un file
+# che già esiste basta il nome.
+#
 # Uso:
 #   ./link-logs.sh [directory log sorgente]
 # Default directory sorgente: /var/log/home-sentinel
@@ -57,6 +63,22 @@ for f in "${FILES[@]}"; do
     echo "..   $f -> $src (non ancora presente: verrà servito appena il modulo relativo scrive la prima riga)"
   fi
 done
+
+# Seconda passata: qualunque altro .jsonl già scritto in SRC_DIR ma non nell'elenco sopra — un
+# modulo nuovo il cui log non è ancora stato aggiunto a FILES (la lista sopra esiste solo per
+# poter creare il symlink ANCHE prima che il file esista, con il messaggio "non ancora presente";
+# per un file che già esiste basta il nome). Senza questa passata, dimenticare di aggiornare FILES
+# per un nuovo modulo farebbe sparire silenziosamente il suo log dalla dashboard servita da qui,
+# esattamente il tipo di disallineamento capitato altrove nel progetto (es. MODULE_META).
+shopt -s nullglob
+for src in "$SRC_DIR"/*.jsonl; do
+  f="$(basename "$src")"
+  if [[ ! " ${FILES[*]} " == *" $f "* ]]; then
+    ln -sf "$src" "$DEST_DIR/$f"
+    echo "NEW  $f -> $src (non nell'elenco noto di questo script — aggiungilo a FILES qui sopra se è un modulo stabile)"
+  fi
+done
+shopt -u nullglob
 
 echo
 echo "Fatto. Servi questa cartella con:"
