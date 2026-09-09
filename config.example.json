@@ -1,28 +1,26 @@
 {
   "_comment": "Copia questo file (es. in /etc/home-sentinel/config.json) e personalizzalo, poi passa --config /etc/home-sentinel/config.json a home_sentinel.py. Il JSON non supporta commenti: i campi che iniziano con '_' sono ignorati dal daemon, usali solo come promemoria.",
 
-  "_devices_comment": "Ogni voce descrive un device di casa. 'wifi_mac'/'ble_mac' lo iscrivono al tracking presenza (si sommano a --wifi-home-macs/--ble-home-macs). 'name' diventa il nome mostrato ovunque nella dashboard; 'owner', 'room', 'type', 'tags' e 'notes' sono puramente descrittivi e formano la scheda del device, condivisa da tutti i browser che aprono la dashboard.",
-  "devices": [
+  "_users_comment": "Ogni voce descrive una PERSONA di casa, non un singolo device: 'wifi_macs'/'ble_macs' sono liste (un utente può avere più device — telefono, laptop, smartwatch...) e si sommano a --wifi-home-macs/--ble-home-macs per il tracking presenza. 'name' identifica la persona in 'Chi c'è in casa' — NON diventa il nome mostrato per i singoli device altrove nella dashboard (Network Discovery, WiFi, BLE...): quello resta sempre discovery (hostname/mDNS) o un'etichetta assegnata a mano dalla dashboard. 'room', 'type', 'tags' e 'notes' sono puramente descrittivi e formano la scheda condivisa da tutti i browser che aprono la dashboard (con 'owner' impostato automaticamente al 'name' dell'utente).",
+  "users": [
     {
       "name": "Marco",
-      "wifi_mac": "aa:bb:cc:dd:ee:01",
-      "ble_mac": "11:22:33:44:55:01",
-      "owner": "Marco Rossi",
+      "wifi_macs": ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:04"],
+      "ble_macs": ["11:22:33:44:55:01"],
       "room": "Studio",
       "type": "Smartphone",
       "tags": ["personale", "mobile"],
-      "notes": "iPhone 14"
+      "notes": "wifi_macs: iPhone 14 e MacBook"
     },
     {
       "name": "Sonia",
-      "wifi_mac": "aa:bb:cc:dd:ee:02",
-      "owner": "Sonia Bianchi",
+      "wifi_macs": ["aa:bb:cc:dd:ee:02"],
       "room": "Camera",
       "type": "Smartphone"
     },
     {
       "name": "NAS",
-      "wifi_mac": "aa:bb:cc:dd:ee:03",
+      "wifi_macs": ["aa:bb:cc:dd:ee:03"],
       "room": "Sgabuzzino",
       "type": "NAS",
       "tags": ["always-on"],
